@@ -1,0 +1,74 @@
+{
+  "functions": [
+    {
+      "body": [
+        {
+          "attrs": {
+            "array_size": null,
+            "name": "x",
+            "type": "int",
+            "value": {
+              "kind": "literal",
+              "type": "int",
+              "value": 10
+            }
+          },
+          "kind": "let"
+        },
+        {
+          "attrs": {
+            "name": "x",
+            "value": {
+              "kind": "binary",
+              "left": {
+                "kind": "ident",
+                "name": "x"
+              },
+              "op": "+",
+              "right": {
+                "kind": "literal",
+                "type": "int",
+                "value": 10
+              }
+            }
+          },
+          "kind": "assign"
+        },
+        {
+          "attrs": {
+            "expr": {
+              "args": [
+                {
+                  "kind": "ident",
+                  "name": "x"
+                }
+              ],
+              "callee": {
+                "kind": "ident",
+                "name": "print"
+              },
+              "kind": "call"
+            }
+          },
+          "kind": "expr"
+        },
+        {
+          "attrs": {
+            "value": {
+              "kind": "ident",
+              "name": "x"
+            }
+          },
+          "kind": "return"
+        }
+      ],
+      "name": "main",
+      "params": [],
+      "return_type": "int"
+    }
+  ],
+  "source": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+  "stubs": [],
+  "top_level": [],
+  "version": "0.1"
+}

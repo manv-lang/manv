@@ -1,0 +1,6 @@
+name = "run_hello"
+command = "run"
+target = "."
+expect_exit = 0
+expect_stdout_contains = ["Hello, World!"]
+

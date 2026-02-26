@@ -1,0 +1,13 @@
+name = "compile_cuda"
+command = "compile"
+target = "."
+backend = "cuda-ptx"
+expect_exit = 0
+expect_files = [
+  ".manv/target/main.ast.json",
+  ".manv/target/main.hir.json",
+  ".manv/target/main.graph.json",
+  ".manv/target/main.kernel.json",
+  ".manv/target/main.cuda.ptx",
+]
+

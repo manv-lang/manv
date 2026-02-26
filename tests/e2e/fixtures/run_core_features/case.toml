@@ -1,0 +1,6 @@
+name = "run_core_features"
+command = "run"
+target = "."
+expect_exit = 0
+expect_stdout_contains = ["15", "10", "8", "9", "True"]
+

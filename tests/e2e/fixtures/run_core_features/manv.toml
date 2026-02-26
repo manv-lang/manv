@@ -1,0 +1,9 @@
+[package]
+name = "run_core_features"
+version = "0.1.0"
+entry = "src/main.mv"
+
+[build]
+target_dir = ".manv/target"
+dist_dir = "dist"
+

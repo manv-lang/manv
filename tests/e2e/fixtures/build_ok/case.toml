@@ -1,0 +1,9 @@
+name = "build_ok"
+command = "build"
+target = "."
+expect_exit = 0
+expect_files = [
+  "dist/build_ok/run.py",
+  "dist/build_ok/src/main.mv",
+]
+

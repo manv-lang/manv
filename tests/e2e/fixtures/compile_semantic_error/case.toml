@@ -1,0 +1,6 @@
+name = "compile_semantic_error"
+command = "compile"
+target = "."
+expect_exit = 1
+expect_stderr_contains = ["undefined variable 'y'"]
+

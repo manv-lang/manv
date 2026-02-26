@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "manv"
+version = "0.1.0"
+description = "manv language toolchain MVP"
+authors = ["r0d <ramsy0dev@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+typer = "^0.16.1"
+prompt-toolkit = "^3.0.52"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.0"
+
+[tool.poetry.scripts]
+manv = "manv.cli:app"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

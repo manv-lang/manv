@@ -1,0 +1,3 @@
+fn main() -> int:
+    print("Build Hello")
+    return 0

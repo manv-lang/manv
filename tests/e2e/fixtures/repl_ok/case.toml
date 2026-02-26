@@ -1,0 +1,10 @@
+name = "repl_ok"
+command = "repl"
+expect_exit = 0
+repl_input = """
+let x = 2
+x + 3
+:q
+"""
+expect_stdout_contains = ["5"]
+

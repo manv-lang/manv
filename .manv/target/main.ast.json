@@ -1,0 +1,177 @@
+{
+  "declarations": [
+    {
+      "body": [
+        {
+          "array_size": null,
+          "name": "x",
+          "node": "LetStmt",
+          "span": {
+            "column": 5,
+            "end_column": null,
+            "end_line": null,
+            "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+            "line": 3,
+            "node": "Span"
+          },
+          "type_name": "int",
+          "value": {
+            "literal_type": "int",
+            "node": "LiteralExpr",
+            "span": {
+              "column": 13,
+              "end_column": null,
+              "end_line": null,
+              "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+              "line": 3,
+              "node": "Span"
+            },
+            "value": 10
+          }
+        },
+        {
+          "name": "x",
+          "node": "AssignStmt",
+          "span": {
+            "column": 7,
+            "end_column": null,
+            "end_line": null,
+            "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+            "line": 4,
+            "node": "Span"
+          },
+          "value": {
+            "left": {
+              "name": "x",
+              "node": "IdentifierExpr",
+              "span": {
+                "column": 9,
+                "end_column": null,
+                "end_line": null,
+                "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+                "line": 4,
+                "node": "Span"
+              }
+            },
+            "node": "BinaryExpr",
+            "op": "+",
+            "right": {
+              "literal_type": "int",
+              "node": "LiteralExpr",
+              "span": {
+                "column": 13,
+                "end_column": null,
+                "end_line": null,
+                "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+                "line": 4,
+                "node": "Span"
+              },
+              "value": 10
+            },
+            "span": {
+              "column": 9,
+              "end_column": null,
+              "end_line": null,
+              "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+              "line": 4,
+              "node": "Span"
+            }
+          }
+        },
+        {
+          "expr": {
+            "args": [
+              {
+                "name": "x",
+                "node": "IdentifierExpr",
+                "span": {
+                  "column": 11,
+                  "end_column": null,
+                  "end_line": null,
+                  "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+                  "line": 5,
+                  "node": "Span"
+                }
+              }
+            ],
+            "callee": {
+              "name": "print",
+              "node": "IdentifierExpr",
+              "span": {
+                "column": 5,
+                "end_column": null,
+                "end_line": null,
+                "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+                "line": 5,
+                "node": "Span"
+              }
+            },
+            "node": "CallExpr",
+            "span": {
+              "column": 12,
+              "end_column": null,
+              "end_line": null,
+              "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+              "line": 5,
+              "node": "Span"
+            }
+          },
+          "node": "ExprStmt",
+          "span": {
+            "column": 12,
+            "end_column": null,
+            "end_line": null,
+            "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+            "line": 5,
+            "node": "Span"
+          }
+        },
+        {
+          "node": "ReturnStmt",
+          "span": {
+            "column": 5,
+            "end_column": null,
+            "end_line": null,
+            "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+            "line": 6,
+            "node": "Span"
+          },
+          "value": {
+            "name": "x",
+            "node": "IdentifierExpr",
+            "span": {
+              "column": 12,
+              "end_column": null,
+              "end_line": null,
+              "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+              "line": 6,
+              "node": "Span"
+            }
+          }
+        }
+      ],
+      "name": "main",
+      "node": "FnDecl",
+      "params": [],
+      "return_type": "int",
+      "span": {
+        "column": 1,
+        "end_column": null,
+        "end_line": null,
+        "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+        "line": 2,
+        "node": "Span"
+      }
+    }
+  ],
+  "node": "Program",
+  "span": {
+    "column": 1,
+    "end_column": null,
+    "end_line": null,
+    "file": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+    "line": 1,
+    "node": "Span"
+  },
+  "statements": []
+}

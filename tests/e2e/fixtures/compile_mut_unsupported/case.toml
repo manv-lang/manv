@@ -1,0 +1,6 @@
+name = "compile_mut_unsupported"
+command = "compile"
+target = "."
+expect_exit = 1
+expect_stderr_contains = ["`mut` declarations are not supported"]
+

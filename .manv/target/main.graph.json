@@ -1,0 +1,154 @@
+{
+  "functions": [
+    {
+      "edges": [
+        {
+          "from": "n1",
+          "to": "n2"
+        },
+        {
+          "from": "n2",
+          "to": "n4"
+        },
+        {
+          "from": "n4",
+          "to": "n5"
+        },
+        {
+          "from": "n5",
+          "to": "n6"
+        },
+        {
+          "from": "n5",
+          "to": "n7"
+        }
+      ],
+      "name": "main",
+      "nodes": [
+        {
+          "attrs": {
+            "value": 10
+          },
+          "dtype": "int",
+          "effects": [
+            "pure"
+          ],
+          "id": "n1",
+          "inputs": [],
+          "op": "const",
+          "outputs": [
+            "n1"
+          ],
+          "shape": null
+        },
+        {
+          "attrs": {
+            "array_size": null
+          },
+          "dtype": "int",
+          "effects": [
+            "writes_memory"
+          ],
+          "id": "n2",
+          "inputs": [
+            "n1"
+          ],
+          "op": "bind",
+          "outputs": [
+            "x"
+          ],
+          "shape": null
+        },
+        {
+          "attrs": {},
+          "dtype": "dynamic",
+          "effects": [
+            "pure"
+          ],
+          "id": "n4",
+          "inputs": [
+            "n2",
+            "n1"
+          ],
+          "op": "binary::+",
+          "outputs": [
+            "n4"
+          ],
+          "shape": null
+        },
+        {
+          "attrs": {},
+          "dtype": "dynamic",
+          "effects": [
+            "writes_memory"
+          ],
+          "id": "n5",
+          "inputs": [
+            "n4"
+          ],
+          "op": "assign",
+          "outputs": [
+            "x"
+          ],
+          "shape": null
+        },
+        {
+          "attrs": {
+            "arity": 1
+          },
+          "dtype": "dynamic",
+          "effects": [
+            "dynamic_dispatch",
+            "may_throw"
+          ],
+          "id": "n6",
+          "inputs": [
+            "arg::print",
+            "n5"
+          ],
+          "op": "call",
+          "outputs": [
+            "n6"
+          ],
+          "shape": null
+        },
+        {
+          "attrs": {},
+          "dtype": "void",
+          "effects": [
+            "writes_memory"
+          ],
+          "id": "n7",
+          "inputs": [
+            "n5"
+          ],
+          "op": "return",
+          "outputs": [],
+          "shape": null
+        }
+      ],
+      "optimization": {
+        "constant_folding": 0,
+        "cse": 1,
+        "dead_nodes_removed": 0,
+        "fusion": 0,
+        "layout_normalization": 0,
+        "memory_reuse": 0
+      },
+      "params": [],
+      "regions": []
+    }
+  ],
+  "kind": "tensor_dag",
+  "optimization": {
+    "constant_folding": 0,
+    "cse": 1,
+    "dead_nodes_removed": 0,
+    "fusion": 0,
+    "layout_normalization": 0,
+    "memory_reuse": 0
+  },
+  "source": "/mnt/c/Users/0rams/Documents/Coding/Projects/manv-lang/manv/main.mv",
+  "stubs": [],
+  "version": "0.1"
+}

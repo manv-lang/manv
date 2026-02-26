@@ -1,0 +1,6 @@
+
+fn main() -> int:
+    int x = 10
+    x = x + 10
+    print(x)
+    return x

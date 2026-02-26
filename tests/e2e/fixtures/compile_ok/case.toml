@@ -1,0 +1,11 @@
+name = "compile_ok"
+command = "compile"
+target = "."
+expect_exit = 0
+expect_files = [
+  ".manv/target/main.ast.json",
+  ".manv/target/main.hir.json",
+  ".manv/target/main.graph.json",
+  ".manv/target/main.kernel.json",
+]
+
