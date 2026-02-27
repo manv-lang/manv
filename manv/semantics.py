@@ -4,9 +4,18 @@ from dataclasses import dataclass
 
 from . import ast
 from .diagnostics import Diagnostic, ManvError, diag
+from .intrinsics import (
+    BUILTIN_ALIASES,
+    IntrinsicTypeVar,
+    intrinsic_type_matches,
+    is_std_source_path,
+    resolve_call_alias_name,
+    resolve_intrinsic,
+    resolve_intrinsic_name_from_callee,
+)
 
 
-BUILTIN_FUNCTIONS = {"print", "len"}
+BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
 PRIMITIVE_TYPES = {"int", "float", "bool", "str", "u8", "usize", "array", "map", "none"}
 BUILTIN_TYPES = {
     "object",
@@ -59,6 +68,7 @@ class Scope:
 class SemanticAnalyzer:
     def __init__(self, file: str):
         self.file = file
+        self.is_std_source = is_std_source_path(file)
         self.diagnostics: list[Diagnostic] = []
         self.functions: dict[str, ast.FnDecl] = {}
         self.types: set[str] = set(BUILTIN_TYPES)
@@ -182,6 +192,14 @@ class SemanticAnalyzer:
                 self._analyze_expr(stmt.value, scope, as_callee=False)
             return
 
+        if isinstance(stmt, ast.SyscallStmt):
+            target_type = self._analyze_expr(stmt.target, scope, as_callee=False)
+            if target_type and target_type not in {"str", "int"}:
+                self._add_error("E2024", f"syscall target must be str or int, got {target_type}", stmt.span.line, stmt.span.column)
+            for arg in stmt.args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return
+
         if isinstance(stmt, ast.TryStmt):
             try_scope = Scope(parent=scope)
             for inner in stmt.try_body:
@@ -236,12 +254,62 @@ class SemanticAnalyzer:
 
         self._add_error("E2099", f"unsupported statement '{type(stmt).__name__}'", 1, 1)
 
+    def _analyze_intrinsic_call(
+        self,
+        intrinsic_name: str,
+        args: list[object],
+        scope: Scope,
+        *,
+        line: int,
+        col: int,
+        enforce_std_only: bool,
+    ) -> str | None:
+        spec = resolve_intrinsic(intrinsic_name)
+        if spec is None:
+            self._add_error("E2020", f"unknown intrinsic '{intrinsic_name}'", line, col)
+            for arg in args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return None
+
+        if enforce_std_only and spec.std_only and not self.is_std_source:
+            self._add_error("E2022", f"intrinsic '{intrinsic_name}' is restricted to std sources", line, col)
+
+        got_types: list[str | None] = [self._analyze_expr(arg, scope, as_callee=False) for arg in args]
+        expected = spec.arg_types
+        if len(args) != len(expected):
+            self._add_error(
+                "E2021",
+                f"intrinsic '{intrinsic_name}' expects {len(expected)} args, got {len(args)}",
+                line,
+                col,
+            )
+        else:
+            for idx, (exp, got) in enumerate(zip(expected, got_types, strict=True)):
+                if not intrinsic_type_matches(exp, got):
+                    label = exp.name if isinstance(exp, IntrinsicTypeVar) else exp
+                    self._add_error(
+                        "E2021",
+                        f"intrinsic '{intrinsic_name}' arg {idx + 1} type mismatch: expected {label}, got {got}",
+                        line,
+                        col,
+                    )
+
+        if isinstance(spec.return_type, IntrinsicTypeVar):
+            return None
+        ret = str(spec.return_type)
+        if ret == "none":
+            return None
+        return ret
+
     def _analyze_expr(self, expr: object, scope: Scope, as_callee: bool) -> str | None:
         if isinstance(expr, ast.LiteralExpr):
             return expr.literal_type
 
         if isinstance(expr, ast.IdentifierExpr):
             if expr.name == "std":
+                return "namespace"
+            if expr.name == "__intrin":
+                self._add_error("E2023", "invalid '__intrin' usage; only '__intrin.<name>(...)' is allowed", expr.span.line, expr.span.column)
                 return "namespace"
             if as_callee:
                 if expr.name in self.functions or expr.name in BUILTIN_FUNCTIONS or expr.name in self.types:
@@ -272,14 +340,32 @@ class SemanticAnalyzer:
             return left or right
 
         if isinstance(expr, ast.CallExpr):
+            intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee)
+            if intrinsic_name is not None:
+                return self._analyze_intrinsic_call(
+                    intrinsic_name,
+                    expr.args,
+                    scope,
+                    line=expr.span.line,
+                    col=expr.span.column,
+                    enforce_std_only=True,
+                )
+
+            alias = resolve_call_alias_name(expr.callee)
+            if alias is not None:
+                return self._analyze_intrinsic_call(
+                    alias,
+                    expr.args,
+                    scope,
+                    line=expr.span.line,
+                    col=expr.span.column,
+                    enforce_std_only=False,
+                )
+
             self._analyze_expr(expr.callee, scope, as_callee=True)
             for arg in expr.args:
                 self._analyze_expr(arg, scope, as_callee=False)
             if isinstance(expr.callee, ast.IdentifierExpr):
-                if expr.callee.name == "len":
-                    return "int"
-                if expr.callee.name == "print":
-                    return None
                 fn = self.functions.get(expr.callee.name)
                 if fn:
                     return fn.return_type
@@ -288,6 +374,11 @@ class SemanticAnalyzer:
             return None
 
         if isinstance(expr, ast.AttributeExpr):
+            if isinstance(expr.value, ast.IdentifierExpr) and expr.value.name == "__intrin":
+                if as_callee:
+                    return "fn"
+                self._add_error("E2023", "invalid '__intrin' usage; only '__intrin.<name>(...)' is allowed", expr.span.line, expr.span.column)
+                return None
             base_type = self._analyze_expr(expr.value, scope, as_callee=False)
             if base_type == "namespace":
                 return "namespace_attr"
@@ -302,6 +393,14 @@ class SemanticAnalyzer:
             for e in expr.elements:
                 self._analyze_expr(e, scope, as_callee=False)
             return "array"
+
+        if isinstance(expr, ast.SyscallExpr):
+            target_type = self._analyze_expr(expr.target, scope, as_callee=False)
+            if target_type and target_type not in {"str", "int"}:
+                self._add_error("E2024", f"syscall target must be str or int, got {target_type}", expr.span.line, expr.span.column)
+            for arg in expr.args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return "map"
 
         if isinstance(expr, ast.MapExpr):
             for k, v in expr.entries:

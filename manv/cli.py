@@ -43,11 +43,11 @@ def _fail(err: ManvError) -> None:
 
 
 def _title(text: str) -> None:
-    typer.echo(f"== {text} ==")
+    typer.echo(f"[{text}]")
 
 
 def _kv(key: str, value: object) -> None:
-    typer.echo(f"  {key:<12} {value}")
+    typer.echo(f"{key}: {value}")
 
 
 @app.command()
@@ -56,16 +56,52 @@ def version() -> None:
 
 
 @app.command()
-def init(path: Annotated[str, typer.Argument(help="project directory")] = ".") -> None:
+def init(
+    path: Annotated[str, typer.Argument(help="project directory")] = ".",
+    std: Annotated[bool, typer.Option("--std", help="initialize the standard-library project scaffold")] = False,
+    name: Annotated[str | None, typer.Option("--name", help="project.name for project.toml")] = None,
+    description: Annotated[str | None, typer.Option("--description", help="project description")] = None,
+    author: Annotated[str | None, typer.Option("--author", help="author display name")]= None,
+    requires_python: Annotated[str | None, typer.Option("--python", help="project.requires-python constraint")] = None,
+    interactive: Annotated[bool, typer.Option("--interactive", help="prompt for project metadata (Poetry-style init flow)")] = False,
+) -> None:
+    if interactive:
+        base_name = Path(path).resolve().name or "manv-project"
+        if std:
+            name = "std"
+        else:
+            name = typer.prompt("Project name", default=(name or base_name)).strip()
+        description = typer.prompt(
+            "Description",
+            default=(description or ("ManV standard library" if std else "")),
+        ).strip()
+        author = typer.prompt("Author", default=(author or "ManV Developer")).strip()
+        requires_python = typer.prompt("Requires Python", default=(requires_python or ">=3.12")).strip()
+
+    if std:
+        name = "std"
+
     try:
-        ctx = init_project(path)
+        ctx = init_project(
+            path,
+            std=std,
+            name=name,
+            description=description,
+            author=author,
+            requires_python=requires_python,
+        )
     except ManvError as err:
         _fail(err)
     _title("Init")
     _kv("project", ctx.root)
-    _kv("config", ctx.root / "manv.toml")
+    _kv("config", ctx.root / "project.toml")
     _kv("entry", ctx.entry)
-    _kv("tests", ctx.root / "tests" / "e2e" / "hello_world" / "case.toml")
+    if std:
+        _kv("mode", "std")
+        _kv("tests", ctx.root / "tests" / "e2e" / "std_smoke" / "case.toml")
+    else:
+        _kv("mode", "app")
+        _kv("tests", ctx.root / "tests" / "e2e" / "hello_world" / "case.toml")
     typer.echo("status: initialized")
 
 
@@ -140,7 +176,7 @@ def compile_cmd(
     typer.echo("artifacts:")
     for kind, path in written.items():
         typer.echo(f"  - {kind:<12} {path}")
-        
+
 
 @app.command()
 def build(
@@ -238,7 +274,7 @@ def add(
     try:
         ctx = discover_target(target)
 
-        manifest_path = ctx.config_path or (ctx.root / "manv.toml")
+        manifest_path = ctx.config_path or (ctx.root / "project.toml")
         try:
             entry_rel = str(ctx.entry.relative_to(ctx.root))
         except ValueError:
@@ -324,8 +360,28 @@ def dap(
     _fail(ManvError(diag("E8401", f"unsupported dap transport: {transport}", "dap", 1, 1)))
 
 
+
+@app.command()
+def lsp(
+    transport: Annotated[str, typer.Option(help="language server transport: stdio|tcp")] = "stdio",
+    host: Annotated[str, typer.Option(help="tcp bind host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="tcp bind port")] = 2087,
+) -> None:
+    try:
+        from .lsp_server import start_stdio as lsp_start_stdio
+        from .lsp_server import start_tcp as lsp_start_tcp
+    except Exception as err:
+        _fail(ManvError(diag("E8501", f"failed to load LSP server: {err}", "lsp", 1, 1)))
+        return
+
+    if transport == "stdio":
+        lsp_start_stdio()
+        return
+    if transport == "tcp":
+        lsp_start_tcp(host=host, port=port)
+        return
+    _fail(ManvError(diag("E8502", f"unsupported lsp transport: {transport}", "lsp", 1, 1)))
+
 if __name__ == "__main__":
     app()
-
-
 

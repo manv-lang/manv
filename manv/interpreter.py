@@ -14,6 +14,15 @@ from .object_runtime import (
     OutOfMemoryError,
     TypeObject,
 )
+from .intrinsics import (
+    IntrinsicCallable,
+    IntrinsicNamespace,
+    StdCallable,
+    StdNamespace,
+    invoke_intrinsic,
+    resolve_call_alias_name,
+    std_namespace_attr,
+)
 from .runtime import unsupported_feature
 from .semantics_core import eval_binary, eval_unary
 
@@ -241,6 +250,10 @@ class Interpreter:
             value = self.eval_expr(stmt.value, env)
             self._raise_value(value, stmt.span)
 
+        if isinstance(stmt, ast.SyscallStmt):
+            self.eval_expr(ast.SyscallExpr(target=stmt.target, args=stmt.args, span=stmt.span), env)
+            return None
+
         if isinstance(stmt, ast.TryStmt):
             self._execute_try(stmt, env, in_loop=in_loop)
             return None
@@ -351,7 +364,9 @@ class Interpreter:
 
         if isinstance(expr, ast.IdentifierExpr):
             if expr.name == "std":
-                return {"__std__": True}
+                return StdNamespace()
+            if expr.name == "__intrin":
+                return IntrinsicNamespace()
             if expr.name in self.functions:
                 return self.functions[expr.name]
             if expr.name in self.types:
@@ -387,6 +402,11 @@ class Interpreter:
                 out[k] = self.eval_expr(value, env)
             return out
 
+        if isinstance(expr, ast.SyscallExpr):
+            target = self.eval_expr(expr.target, env)
+            call_args = [self.eval_expr(arg, env) for arg in expr.args]
+            return self._invoke_intrinsic("syscall_invoke", [target, call_args], expr.span)
+
         if isinstance(expr, ast.IndexExpr):
             target = self.eval_expr(expr.value, env)
             index = self.eval_expr(expr.index, env)
@@ -402,22 +422,20 @@ class Interpreter:
 
         if isinstance(expr, ast.AttributeExpr):
             base = self.eval_expr(expr.value, env)
-            if isinstance(base, dict) and base.get("__std__") is True and expr.attr in {"gpu", "memory"}:
-                return {"__stub_module__": expr.attr}
+            namespaced = std_namespace_attr(base, expr.attr)
+            if namespaced is not None:
+                return namespaced
             return self._lookup_attr(base, expr.attr, expr.span)
 
         if isinstance(expr, ast.CallExpr):
             args = [self.eval_expr(arg, env) for arg in expr.args]
 
             if isinstance(expr.callee, ast.IdentifierExpr):
-                name = expr.callee.name
-                if name == "print":
-                    self.stdout.write(" ".join(self._stringify(a) for a in args) + "\n")
-                    return None
-                if name == "len":
-                    if len(args) != 1:
-                        self._raise_runtime("TypeError", "len expects one argument", expr.span)
-                    return len(args[0])
+                alias = resolve_call_alias_name(expr.callee)
+                if alias is not None:
+                    if alias == "io_print":
+                        return self._invoke_intrinsic(alias, [args], expr.span)
+                    return self._invoke_intrinsic(alias, args, expr.span)
 
             callee = self.eval_expr(expr.callee, env)
             return self._call_value(callee, args, expr.span)
@@ -431,8 +449,10 @@ class Interpreter:
             return self._call_function(callee.function, [callee.receiver, *args])
         if isinstance(callee, TypeObject):
             return self._construct_instance(callee, args, span)
-        if isinstance(callee, dict) and "__stub_module__" in callee:
-            raise unsupported_feature(f"std.{callee['__stub_module__']}", self.file, span.line, span.column)
+        if isinstance(callee, IntrinsicCallable):
+            return self._invoke_intrinsic(callee.name, args, span)
+        if isinstance(callee, StdCallable):
+            return self._invoke_intrinsic(callee.intrinsic, args, span)
         self._raise_runtime("TypeError", "call target is not callable", span)
 
     def _construct_instance(self, type_obj: TypeObject, args: list[Any], span: Any) -> InstanceObject:
@@ -520,6 +540,38 @@ class Interpreter:
             self.call_stack.pop()
         return None
 
+    def _gc_intrinsic_hooks(self) -> dict[str, Any]:
+        return {
+            "collect": self.heap.collect,
+            "stats": lambda: {
+                "objects": len(self.heap._records),
+                "roots": len(self.heap.roots_snapshot()),
+                "deterministic_gc": bool(self.heap.deterministic_gc),
+                "gc_stress": bool(self.heap.gc_stress),
+            },
+            "set_deterministic_gc": lambda flag: setattr(self.heap, "deterministic_gc", bool(flag)),
+            "set_gc_stress": lambda flag: setattr(self.heap, "gc_stress", bool(flag)),
+        }
+
+    def _invoke_intrinsic(self, name: str, args: list[Any], span: Any) -> Any:
+        try:
+            return invoke_intrinsic(
+                name,
+                args,
+                stdout_write=self.stdout.write,
+                stdin_readline=lambda: "",
+                gc_hooks=self._gc_intrinsic_hooks(),
+            )
+        except TypeError as exc:
+            self._raise_runtime("TypeError", f"intrinsic {name}: {exc}", span)
+        except ValueError as exc:
+            self._raise_runtime("ValueError", f"intrinsic {name}: {exc}", span)
+        except FileNotFoundError as exc:
+            self._raise_runtime("RuntimeError", f"intrinsic {name}: {exc}", span)
+        except OSError as exc:
+            self._raise_runtime("RuntimeError", f"intrinsic {name}: {exc}", span)
+        except Exception as exc:
+            self._raise_runtime("RuntimeError", f"intrinsic {name}: {exc}", span)
     def _raise_value(self, value: Any, span: Any) -> None:
         if isinstance(value, ExceptionObject):
             raise RaiseSignal(value)
@@ -598,6 +650,3 @@ class Interpreter:
 
     def _span_of(self, node: Any) -> Any:
         return getattr(node, "span", type("_S", (), {"line": 1, "column": 1})())
-
-
-

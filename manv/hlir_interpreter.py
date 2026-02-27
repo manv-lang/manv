@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, TextIO
 
 from .hlir import HFunction, HInstruction, HModule
+from .intrinsics import BUILTIN_ALIASES, IntrinsicNamespace, StdNamespace, invoke_intrinsic, std_namespace_attr
 from .semantics_core import eval_binary, eval_unary
 
 
@@ -76,15 +77,10 @@ class HLIRInterpreter:
         if self.tracer is not None:
             self.tracer.on_call(name, args, depth)
 
-        if name == "print":
-            self.stdout.write(" ".join(str(a) for a in args) + "\n")
-            if self.tracer is not None:
-                self.tracer.on_return(name, None, depth)
-            return None
-        if name == "len":
-            if len(args) != 1:
-                raise RuntimeError("len expects one argument")
-            out = len(args[0])
+        alias = BUILTIN_ALIASES.get(name)
+        if alias is not None:
+            payload = [args] if alias == "io_print" else list(args)
+            out = self._invoke_intrinsic(alias, payload)
             if self.tracer is not None:
                 self.tracer.on_return(name, out, depth)
             return out
@@ -151,6 +147,18 @@ class HLIRInterpreter:
         finally:
             self.call_stack.pop()
 
+    def _invoke_intrinsic(self, name: str, args: list[Any]) -> Any:
+        try:
+            return invoke_intrinsic(
+                name,
+                args,
+                stdout_write=self.stdout.write,
+                stdin_readline=lambda: "",
+                gc_hooks={},
+            )
+        except Exception as exc:
+            raise RuntimeError(f"intrinsic {name}: {exc}") from exc
+
     def _resolve_value(self, token: str, values: dict[str, Any], vars_mem: dict[str, Any]) -> Any:
         if token.startswith("%"):
             return values[token]
@@ -185,7 +193,9 @@ class HLIRInterpreter:
         if op == "load_var":
             name = instr.args[0]
             if name == "std":
-                return {"__std__": True}
+                return StdNamespace()
+            if name == "__intrin":
+                return IntrinsicNamespace()
             if name not in vars_mem:
                 raise RuntimeError(f"undefined variable: {name}")
             return vars_mem[name]
@@ -221,9 +231,13 @@ class HLIRInterpreter:
         if op == "attr":
             base = resolved_args[0]
             attr = str(instr.attrs.get("attr"))
-            if isinstance(base, dict) and base.get("__std__") is True and attr in {"gpu", "memory"}:
-                return {"__stub_module__": attr}
+            namespaced = std_namespace_attr(base, attr)
+            if namespaced is not None:
+                return namespaced
             raise RuntimeError(f"unsupported attribute: {attr}")
+        if op == "intrinsic_call":
+            name = str(instr.attrs.get("name", ""))
+            return self._invoke_intrinsic(name, list(resolved_args))
         if op == "call":
             callee = str(instr.attrs.get("callee", ""))
             if callee == "<dynamic>":

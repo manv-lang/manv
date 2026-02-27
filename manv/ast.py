@@ -145,6 +145,20 @@ class ContinueStmt:
 
 
 @dataclass
+class SyscallStmt:
+    target: Any
+    args: list[Any]
+    span: Span
+
+
+@dataclass
+class SyscallExpr:
+    target: Any
+    args: list[Any]
+    span: Span
+
+
+@dataclass
 class UnsupportedStmt:
     feature: str
     detail: str

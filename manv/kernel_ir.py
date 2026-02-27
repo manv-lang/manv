@@ -500,7 +500,8 @@ def _partition_kernelizable_nodes(nodes: list[dict[str, Any]]) -> tuple[list[dic
     for node in nodes:
         effects = {str(e) for e in node.get("effects", [])}
         op = str(node.get("op", ""))
-        non_graphable = bool(node.get("attrs", {}).get("non_graphable"))
+        attrs = node.get("attrs", {}) if isinstance(node.get("attrs"), dict) else {}
+        non_graphable = bool(attrs.get("non_graphable"))
         reason = None
         if non_graphable:
             reason = "non_graphable_region"
@@ -508,6 +509,8 @@ def _partition_kernelizable_nodes(nodes: list[dict[str, Any]]) -> tuple[list[dic
             reason = "effect_blocked"
         elif op in {"raise", "try_region", "if_region", "while_region"}:
             reason = "control_or_exception"
+        elif op == "intrinsic_call" and not bool(attrs.get("pure_for_kernel", False)):
+            reason = "intrinsic_not_kernel_safe"
 
         if reason is None:
             eligible.append(node)
@@ -518,7 +521,7 @@ def _partition_kernelizable_nodes(nodes: list[dict[str, Any]]) -> tuple[list[dic
                     "op": op,
                     "effects": sorted(effects),
                     "reason": reason,
+                    "intrinsic": attrs.get("name") if op == "intrinsic_call" else None,
                 }
             )
     return eligible, skipped
-

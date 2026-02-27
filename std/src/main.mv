@@ -1,0 +1,191 @@
+# Core builtins
+fn std_core_len(x) -> int:
+    return __intrin.core_len(x)
+
+fn std_core_repr(x) -> str:
+    return __intrin.core_repr(x)
+
+fn std_core_hash(x) -> int:
+    return __intrin.core_hash(x)
+
+fn std_core_min(items: array):
+    return __intrin.core_min(items)
+
+fn std_core_max(items: array):
+    return __intrin.core_max(items)
+
+fn std_core_sum(items: array):
+    return __intrin.core_sum(items)
+
+fn std_core_any(items: array) -> bool:
+    return __intrin.core_any(items)
+
+fn std_core_all(items: array) -> bool:
+    return __intrin.core_all(items)
+
+fn std_core_sorted(items: array) -> array:
+    return __intrin.core_sorted(items)
+
+fn std_core_range(stop: int) -> array:
+    return __intrin.core_range(stop)
+
+fn std_core_enumerate(items: array) -> array:
+    return __intrin.core_enumerate(items)
+
+fn std_core_zip(items: array) -> array:
+    return __intrin.core_zip(items)
+
+fn std_core_int(x) -> int:
+    return __intrin.core_int(x)
+
+fn std_core_float(x) -> float:
+    return __intrin.core_float(x)
+
+fn std_core_bool(x) -> bool:
+    return __intrin.core_bool(x)
+
+fn std_core_str(x) -> str:
+    return __intrin.core_str(x)
+
+fn std_core_iter(x):
+    return __intrin.core_iter(x)
+
+fn std_core_next(it):
+    return __intrin.core_next(it)
+
+# IO
+fn std_io_print(parts):
+    return __intrin.io_print(parts)
+
+fn std_io_read_line() -> str:
+    return __intrin.io_read_line()
+
+# Filesystem
+fn std_fs_exists(path: str) -> bool:
+    return __intrin.fs_exists(path)
+
+fn std_fs_read_text(path: str) -> str:
+    return __intrin.fs_read_text(path)
+
+fn std_fs_write_text(path: str, data: str):
+    return __intrin.fs_write_text(path, data)
+
+fn std_fs_mkdir(path: str, recursive: bool):
+    return __intrin.fs_mkdir(path, recursive)
+
+fn std_fs_list(path: str) -> array:
+    return __intrin.fs_list(path)
+
+fn std_fs_remove(path: str):
+    return __intrin.fs_remove(path)
+
+# Path
+fn std_path_join(parts: array) -> str:
+    return __intrin.path_join(parts)
+
+fn std_path_basename(path: str) -> str:
+    return __intrin.path_basename(path)
+
+fn std_path_dirname(path: str) -> str:
+    return __intrin.path_dirname(path)
+
+fn std_path_normalize(path: str) -> str:
+    return __intrin.path_normalize(path)
+
+fn std_path_is_abs(path: str) -> bool:
+    return __intrin.path_is_abs(path)
+
+# Time / Random
+fn std_time_now_ms() -> int:
+    return __intrin.time_now_ms()
+
+fn std_time_monotonic_ms() -> int:
+    return __intrin.time_monotonic_ms()
+
+fn std_time_sleep_ms(ms: int):
+    return __intrin.time_sleep_ms(ms)
+
+fn std_rand_seed(seed: int):
+    return __intrin.rand_seed(seed)
+
+fn std_rand_int(lo: int, hi: int) -> int:
+    return __intrin.rand_int(lo, hi)
+
+fn std_rand_float() -> float:
+    return __intrin.rand_float()
+
+# JSON
+fn std_json_parse(text: str) -> map:
+    return __intrin.json_parse(text)
+
+fn std_json_stringify(value) -> str:
+    return __intrin.json_stringify(value)
+
+# System / OS / Process / URL / HTTP
+fn std_sys_capabilities() -> map:
+    return __intrin.sys_capabilities()
+
+fn std_sys_require(name: str):
+    return __intrin.sys_require(name)
+
+fn std_os_getenv(name: str) -> str:
+    return __intrin.os_getenv(name)
+
+fn std_os_setenv(name: str, value: str):
+    return __intrin.os_setenv(name, value)
+
+fn std_os_getcwd() -> str:
+    return __intrin.os_getcwd()
+
+fn std_os_chdir(path: str):
+    return __intrin.os_chdir(path)
+
+fn std_process_run(argv: array) -> map:
+    return __intrin.process_run(argv)
+
+fn std_url_parse(url: str) -> map:
+    return __intrin.url_parse(url)
+
+fn std_http_request(method: str, url: str, body: str, headers: map) -> map:
+    return __intrin.http_request(method, url, body, headers)
+
+fn std_syscall(target, args: array) -> map:
+    return __intrin.syscall_invoke(target, args)
+
+fn std_syscall_posix(number: int, args: array) -> map:
+    return __intrin.syscall_invoke(number, args)
+
+fn std_syscall_windows(name: str, args: array) -> map:
+    return __intrin.syscall_invoke(name, args)
+
+# Memory
+fn std_mem_collect():
+    return __intrin.mem_collect()
+
+fn std_mem_stats() -> map:
+    return __intrin.mem_stats()
+
+fn std_mem_set_deterministic_gc(flag: bool):
+    return __intrin.mem_set_deterministic_gc(flag)
+
+fn std_mem_set_gc_stress(flag: bool):
+    return __intrin.mem_set_gc_stress(flag)
+
+# GPU
+fn std_gpu_backends() -> array:
+    return __intrin.gpu_backends()
+
+fn std_gpu_capabilities() -> map:
+    return __intrin.gpu_capabilities()
+
+fn std_gpu_dispatch(kernel: map, backend: str, target: str, inputs: map, launch: map) -> map:
+    return __intrin.gpu_dispatch(kernel, backend, target, inputs, launch)
+
+fn main() -> int:
+    print("std ready")
+
+    let caps = std_sys_capabilities()
+    print(std_core_len(caps))
+    print(std_core_len(std_gpu_backends()))
+
+    return 0

@@ -1,0 +1,12 @@
+[project]
+name = "compile_break_outside"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "ManV Developer" }]
+
+[tool.manv]
+entry = "src/main.mv"
+target-dir = ".manv/target"
+dist-dir = "dist"

@@ -91,13 +91,17 @@ def ensure_manifest(path: Path, *, project_name: str, entry_rel: str) -> None:
         return
 
     template = (
-        "[package]\n"
+        "[project]\n"
         f"name = \"{project_name}\"\n"
         "version = \"0.1.0\"\n"
-        f"entry = \"{entry_rel}\"\n\n"
-        "[build]\n"
-        "target_dir = \".manv/target\"\n"
-        "dist_dir = \"dist\"\n"
+        "description = \"\"\n"
+        "readme = \"README.md\"\n"
+        "requires-python = \">=3.12\"\n"
+        "authors = [{ name = \"ManV Developer\" }]\n\n"
+        "[tool.manv]\n"
+        f"entry = \"{entry_rel}\"\n"
+        "target-dir = \".manv/target\"\n"
+        "dist-dir = \"dist\"\n"
     )
     path.write_text(template, encoding="utf-8")
 
@@ -110,14 +114,35 @@ def add_dependency_entry(
 ) -> None:
     data = tomllib.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
 
-    deps = data.get("dependencies")
+    if not isinstance(data, dict):
+        data = {}
+
+    tool = data.get("tool")
+    if tool is None:
+        tool = {}
+    if not isinstance(tool, dict):
+        raise ManvError(diag("E8101", "[tool] must be a table", str(manifest_path), 1, 1))
+
+    manv = tool.get("manv")
+    if manv is None:
+        manv = {}
+    if not isinstance(manv, dict):
+        raise ManvError(diag("E8101", "[tool.manv] must be a table", str(manifest_path), 1, 1))
+
+    deps = manv.get("dependencies")
     if deps is None:
-        deps = {}
+        legacy = data.get("dependencies")
+        deps = dict(legacy) if isinstance(legacy, dict) else {}
     if not isinstance(deps, dict):
-        raise ManvError(diag("E8101", "[dependencies] must be a table", str(manifest_path), 1, 1))
+        raise ManvError(diag("E8101", "[tool.manv.dependencies] must be a table", str(manifest_path), 1, 1))
 
     deps[dependency_name] = payload
-    data["dependencies"] = deps
+    manv["dependencies"] = deps
+    tool["manv"] = manv
+    data["tool"] = tool
+    if "dependencies" in data and isinstance(data["dependencies"], dict):
+        del data["dependencies"]
+
     manifest_path.write_text(_dump_toml(data), encoding="utf-8")
 
 
@@ -236,7 +261,7 @@ def _dump_toml(data: dict[str, Any]) -> str:
     lines: list[str] = []
 
     top_keys = list(data.keys())
-    preferred = ["package", "build", "registries", "dependencies"]
+    preferred = ["project", "tool", "registries", "dependencies", "package", "build"]
     ordered_top = [k for k in preferred if k in top_keys] + [k for k in top_keys if k not in preferred]
 
     for key in ordered_top:
@@ -284,6 +309,11 @@ def _fmt_value(value: Any) -> str:
         return f'"{value.replace("\\", "\\\\").replace("\"", "\\\"")}"'
     if isinstance(value, list):
         return "[" + ", ".join(_fmt_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in sorted(value.keys()):
+            parts.append(f"{_fmt_key(str(key))} = {_fmt_value(value[key])}")
+        return "{ " + ", ".join(parts) + " }"
     raise ValueError(f"unsupported TOML value type: {type(value).__name__}")
 
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .hir import HIRModule
+from .intrinsics import intrinsic_effect_names, resolve_intrinsic
 
 
 @dataclass
@@ -181,6 +182,27 @@ def _lower_stmt(
             edges.append({"from": value_ref, "to": node_id})
         return
 
+    if kind == "syscall":
+        target_ref = _lower_expr(attrs.get("target"), builder, nodes, edges, env_outputs)
+        args_ref = _lower_expr({"kind": "array", "elements": attrs.get("args", [])}, builder, nodes, edges, env_outputs)
+        inputs = [i for i in [target_ref, args_ref] if i]
+        node_id = builder.next_id()
+        nodes.append(
+            {
+                "id": node_id,
+                "op": "syscall",
+                "inputs": inputs,
+                "outputs": [],
+                "dtype": "void",
+                "shape": None,
+                "attrs": {"name": "syscall_invoke"},
+                "effects": ["reads_memory", "writes_memory", "dynamic_dispatch", "may_throw"],
+            }
+        )
+        for src in inputs:
+            edges.append({"from": src, "to": node_id})
+        return
+
     if kind in {"break", "continue"}:
         node_id = builder.next_id()
         nodes.append(
@@ -302,6 +324,32 @@ def _lower_expr(
             edges.append({"from": inner, "to": node_id})
         return node_id
 
+    if kind == "intrinsic_call":
+        name = str(expr.get("name", ""))
+        arg_refs = [_lower_expr(a, builder, nodes, edges, env_outputs) for a in expr.get("args", [])]
+        inputs = [i for i in arg_refs if i]
+        spec = resolve_intrinsic(name)
+        effects = ["may_throw"] if spec is None else intrinsic_effect_names(spec)
+        node_id = builder.next_id()
+        nodes.append(
+            {
+                "id": node_id,
+                "op": f"intrinsic::{name}",
+                "inputs": inputs,
+                "outputs": [node_id],
+                "dtype": "dynamic" if spec is None else str(spec.return_type),
+                "shape": None,
+                "attrs": {
+                    "name": name,
+                    "signature_id": name,
+                    "pure_for_kernel": bool(spec.pure_for_kernel) if spec is not None else False,
+                },
+                "effects": effects,
+            }
+        )
+        for src in inputs:
+            edges.append({"from": src, "to": node_id})
+        return node_id
     if kind == "call":
         callee = _lower_expr(expr.get("callee"), builder, nodes, edges, env_outputs)
         arg_refs = [_lower_expr(a, builder, nodes, edges, env_outputs) for a in expr.get("args", [])]
@@ -342,6 +390,44 @@ def _lower_expr(
         )
         return node_id
 
+    if kind == "syscall":
+        target_ref = _lower_expr(expr.get("target"), builder, nodes, edges, env_outputs)
+        arg_refs = [_lower_expr(a, builder, nodes, edges, env_outputs) for a in expr.get("args", [])]
+        array_id = builder.next_id()
+        arr_inputs = [i for i in arg_refs if i]
+        nodes.append(
+            {
+                "id": array_id,
+                "op": "array",
+                "inputs": arr_inputs,
+                "outputs": [array_id],
+                "dtype": "array",
+                "shape": None,
+                "attrs": {"from": "syscall_args"},
+                "effects": ["allocates"],
+            }
+        )
+        for src in arr_inputs:
+            edges.append({"from": src, "to": array_id})
+
+        node_id = builder.next_id()
+        inputs = [i for i in [target_ref, array_id] if i]
+        nodes.append(
+            {
+                "id": node_id,
+                "op": "intrinsic::syscall_invoke",
+                "inputs": inputs,
+                "outputs": [node_id],
+                "dtype": "map",
+                "shape": None,
+                "attrs": {"name": "syscall_invoke", "signature_id": "syscall_invoke", "pure_for_kernel": False},
+                "effects": ["reads_memory", "writes_memory", "dynamic_dispatch", "may_throw"],
+            }
+        )
+        for src in inputs:
+            edges.append({"from": src, "to": node_id})
+        return node_id
+
     node_id = builder.next_id()
     nodes.append(
         {
@@ -356,3 +442,4 @@ def _lower_expr(
         }
     )
     return node_id
+

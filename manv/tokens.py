@@ -50,6 +50,7 @@ KEYWORDS = {
     "finally",
     "raise",
     "as",
+    "syscall",
     "gpu",
     "memory",
 }

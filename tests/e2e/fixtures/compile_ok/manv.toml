@@ -1,9 +1,0 @@
-[package]
-name = "compile_ok"
-version = "0.1.0"
-entry = "src/main.mv"
-
-[build]
-target_dir = ".manv/target"
-dist_dir = "dist"
-

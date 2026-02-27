@@ -20,7 +20,7 @@ def build_target(path: str | Path | None, out_dir: Path | None = None) -> Path:
     (bundle_root / "src").mkdir(parents=True, exist_ok=True)
     shutil.copy2(context.entry, bundle_root / "src" / context.entry.name)
     if context.config_path and context.config_path.exists():
-        shutil.copy2(context.config_path, bundle_root / "manv.toml")
+        shutil.copy2(context.config_path, bundle_root / context.config_path.name)
 
     package_root = Path(__file__).resolve().parent
     shutil.copytree(package_root, bundle_root / "manv", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))

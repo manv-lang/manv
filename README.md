@@ -1,84 +1,90 @@
-# manv
+# ManV
 
-`manv` (manipulate variable) is a Python-implemented language toolchain MVP with:
+ManV (Manipulate Variable) is a modern language and runtime initiative focused on high-performance computing, machine learning workloads, and direct GPU-oriented execution.
 
-- Rust-leaning declarations and Python-style indentation blocks
-- No Rust-style `mut`; declarations use `let` or C-style typed declarations
-- Interpreter execution path for fast iteration (`run`, `repl`)
-- Compiler pipeline artifacts through Kernel IR:
-  - AST
-  - HIR
-  - Graph IR (tensor/dataflow DAG)
-  - Kernel IR
-- Registry-aware package management from CLI (`auth`, `add`)
+It is designed to feel approachable while still exposing a serious compiler architecture for low-level control and future backend expansion.
 
-## Quickstart
+## Why ManV
 
-```bash
-poetry install
-poetry run manv init demo
-cd demo
-poetry run manv run
-poetry run manv compile --emit ast,hir,graph,kernel
-poetry run manv compile --backend cuda-ptx
-poetry run manv build
-poetry run manv test
-```
+- Built for ML and GPU-heavy workloads from day one.
+- Hybrid runtime model: fast interpreter iteration with a compiler pipeline for optimization.
+- Multi-stage IR architecture that keeps semantics explicit and debuggable.
+- Cross-platform toolchain and project workflow.
+- Standard library strategy centered on language-authored source backed by internal intrinsics.
 
-## Commands
+## Architecture Value
 
-- `manv init [path]`
+ManV uses a structured lowering pipeline:
+
+`AST -> HLIR -> Graph IR -> Kernel IR -> backend boundary`
+
+This gives ManV clear separation between:
+
+- Language semantics
+- Optimization and graph transformations
+- Kernel formation
+- Backend-specific code generation and dispatch
+
+The result is a foundation that is easier to validate, test, and scale across CPU and GPU targets.
+
+## Execution Model
+
+ManV currently prioritizes semantic consistency:
+
+- Interpreter mode for fast feedback loops and debugging.
+- Compiled mode that remains HLIR-authoritative for parity in v1.
+- Kernelization paths with safe fallback when regions are not eligible.
+
+## Tooling
+
+CLI surface:
+
+- `manv init [path] [--std]`
 - `manv run [file|project]`
-- `manv compile [file|project] --emit ast,hir,graph,kernel [--backend none|cuda-ptx] [--optimize/--no-optimize]`
+- `manv compile [file|project]`
 - `manv build [file|project]`
 - `manv repl`
-- `manv test [path]`\n- `manv dap --transport stdio|tcp [--host 127.0.0.1 --port 4711]`
+- `manv test [path]`
+- `manv dap --transport stdio|tcp [--host 127.0.0.1 --port 4711]`\r\n- `manv lsp --transport stdio|tcp [--host 127.0.0.1 --port 2087]`
 
-Registry and dependencies:
+Package and registry operations:
 
-- `manv auth login --registry <url> --token <token>`
+- `manv auth login`
 - `manv auth status`
 - `manv auth logout`
-- `manv add <name[@version]> [project]`
-- `manv add <git-url> [project] [--branch <name>|--tag <name>|--rev <sha>]`
+- `manv add <name[@version]>`
+- `manv add <git-url>`
 
-Compile artifacts are emitted to `.manv/target` by default.
+Build artifacts are emitted to `.manv/target` by default.
 
-## Core Language Features
+## Standard Library Direction
 
-Variables:
+ManV is moving to a pure language-authored standard library model.
 
-```mv
-int x = 10
-array p[10]
-str f = "hello world"
+- `__intrin.*` provides the internal compiler/runtime bridge.
+- Intrinsics are validated by semantic analysis and lowered through HLIR.
+- Runtime behavior stays consistent between interpreter and compiled execution.
+- `manv init <path> --std` scaffolds the compiler-shipped ManV `std` source.
+- `syscall(...)` is available as both statement and expression form.
+- `std` includes typed syscall wrappers: `std_syscall_posix(...)` and `std_syscall_windows(...)`.
+
+Example:
+
+```manv
+fn main() -> int:
+    let r = syscall("getpid")
+    print(r["ok"])
+    return 0
 ```
 
-Expressions and control flow:
+## Current Status
 
-```mv
-if (x > 0) and not false:
-    x = x + 1
-while x < 20:
-    x = x + 2
-    if x == 14:
-        continue
-    if x > 18:
-        break
-```
+ManV is an active v1 foundation phase with emphasis on:
 
-Functions and data aggregation:
+- Semantic correctness
+- Deterministic diagnostics and testing
+- Debugger integration (DAP)
+- Language tooling integration (LSP via pygls)
+- Backend extensibility for future native GPU execution
 
-```mv
-fn add(a: int, b: int) -> int:
-    return a + b
-
-map m = {"k": 1}
-array nums[3] = [1, 2]
-nums[2] = add(nums[0], nums[1])
-m["k2"] = nums[2]
-```
-
-
-Debug adapter architecture and behavior are documented in DEBUGGING.md.
-
+Debug adapter design details are documented in `DEBUGGING.md`.

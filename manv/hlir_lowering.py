@@ -6,6 +6,7 @@ from typing import Any
 from . import ast
 from .diagnostics import Span
 from .hlir import HBasicBlock, HFunction, HInstruction, HModule, HTerminator, Provenance, SourceSpan
+from .intrinsics import intrinsic_effect_names, resolve_call_alias_name, resolve_intrinsic, resolve_intrinsic_name_from_callee
 
 
 @dataclass
@@ -269,6 +270,22 @@ class HLIRLowerer:
             state.terminate("unreachable", [], node=stmt)
             return
 
+        if isinstance(stmt, ast.SyscallStmt):
+            target = self._lower_expr(state, stmt.target)
+            arg_values = [self._lower_expr(state, arg) for arg in stmt.args]
+            arg_array = state.tmp()
+            state.emit(HInstruction(op="array", dest=arg_array, args=arg_values, effects=["allocates"]), node=stmt)
+            state.emit(
+                HInstruction(
+                    op="intrinsic_call",
+                    args=[target, arg_array],
+                    attrs={"name": "syscall_invoke", "pure_for_kernel": False},
+                    effects=["reads_memory", "writes_memory", "dynamic_dispatch", "may_throw"],
+                ),
+                node=stmt,
+            )
+            return
+
         if isinstance(stmt, ast.TryStmt):
             # v1 lowering keeps explicit marker + flattened bodies for artifact visibility.
             state.emit(
@@ -422,6 +439,31 @@ class HLIRLowerer:
 
         if isinstance(expr, ast.CallExpr):
             arg_values = [self._lower_expr(state, arg) for arg in expr.args]
+            intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or resolve_call_alias_name(expr.callee)
+            if intrinsic_name is not None:
+                spec = resolve_intrinsic(intrinsic_name)
+                effects = ["may_throw"] if spec is None else intrinsic_effect_names(spec)
+                ret_type = "dynamic"
+                if spec is not None and isinstance(spec.return_type, str):
+                    ret_type = spec.return_type
+                out = state.new_temp()
+                state.emit(
+                    HInstruction(
+                        op="intrinsic_call",
+                        dest=out,
+                        type_name=ret_type,
+                        args=arg_values,
+                        attrs={
+                            "name": intrinsic_name,
+                            "signature_id": intrinsic_name,
+                            "pure_for_kernel": bool(spec.pure_for_kernel) if spec is not None else False,
+                        },
+                        effects=effects,
+                    ),
+                    node=expr,
+                )
+                return out
+
             callee_name = "<dynamic>"
             if isinstance(expr.callee, ast.IdentifierExpr):
                 callee_name = expr.callee.name
@@ -433,6 +475,25 @@ class HLIRLowerer:
                     args=arg_values,
                     attrs={"callee": callee_name},
                     effects=["dynamic_dispatch", "may_throw"],
+                ),
+                node=expr,
+            )
+            return out
+
+        if isinstance(expr, ast.SyscallExpr):
+            target = self._lower_expr(state, expr.target)
+            arg_values = [self._lower_expr(state, arg) for arg in expr.args]
+            args_array = state.new_temp()
+            state.emit(HInstruction(op="array", dest=args_array, args=arg_values, effects=["allocates"]), node=expr)
+            out = state.new_temp()
+            state.emit(
+                HInstruction(
+                    op="intrinsic_call",
+                    dest=out,
+                    type_name="map",
+                    args=[target, args_array],
+                    attrs={"name": "syscall_invoke", "signature_id": "syscall_invoke", "pure_for_kernel": False},
+                    effects=["reads_memory", "writes_memory", "dynamic_dispatch", "may_throw"],
                 ),
                 node=expr,
             )
@@ -482,4 +543,5 @@ class HLIRLowerer:
 
 def lower_ast_to_hlir(program: ast.Program, source_name: str) -> HModule:
     return HLIRLowerer().lower_program(program, source_name)
+
 

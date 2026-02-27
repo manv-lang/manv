@@ -130,6 +130,10 @@ class Parser:
             stmt = self._parse_raise_stmt()
             self._consume_required_newline("expected newline after raise")
             return stmt
+        if self._match_keyword("syscall"):
+            stmt = self._parse_syscall_stmt()
+            self._consume_required_newline("expected newline after syscall")
+            return stmt
         if self._match_keyword("break"):
             tok = self._prev()
             self._consume_required_newline("expected newline after break")
@@ -231,6 +235,20 @@ class Parser:
             return ast.RaiseStmt(value=None, span=self._span(tok))
         value = self._parse_expression()
         return ast.RaiseStmt(value=value, span=self._span(tok))
+
+    def _parse_syscall_stmt(self) -> ast.SyscallStmt:
+        expr = self._parse_syscall_expr()
+        return ast.SyscallStmt(target=expr.target, args=expr.args, span=expr.span)
+
+    def _parse_syscall_expr(self) -> ast.SyscallExpr:
+        tok = self._prev()
+        self._expect_op("(")
+        target = self._parse_expression()
+        args: list[object] = []
+        while self._match_op(","):
+            args.append(self._parse_expression())
+        self._expect_op(")")
+        return ast.SyscallExpr(target=target, args=args, span=self._span(tok))
 
     def _parse_try_stmt(self) -> ast.TryStmt:
         try_tok = self._prev()
@@ -477,6 +495,8 @@ class Parser:
             return ast.LiteralExpr(value=False, literal_type="bool", span=self._span(tok))
         if self._match_keyword("none"):
             return ast.LiteralExpr(value=None, literal_type="none", span=self._span(tok))
+        if self._match_keyword("syscall"):
+            return self._parse_syscall_expr()
         if self._match("IDENT"):
             return ast.IdentifierExpr(name=tok.lexeme, span=self._span(tok))
         if self._match_op("("):

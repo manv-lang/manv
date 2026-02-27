@@ -3,7 +3,7 @@ command = "init"
 target = "project"
 expect_exit = 0
 expect_files = [
-  "project/manv.toml",
+  "project/project.toml",
   "project/src/main.mv",
 ]
 

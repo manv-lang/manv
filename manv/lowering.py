@@ -4,6 +4,7 @@ from typing import Any
 
 from . import ast
 from .hir import HIRFunction, HIRModule, HIRStatement
+from .intrinsics import resolve_call_alias_name, resolve_intrinsic_name_from_callee
 
 
 def lower_ast_to_hir(program: ast.Program, source_name: str) -> HIRModule:
@@ -96,6 +97,11 @@ def _stmt_to_hir(stmt: object) -> HIRStatement:
         return HIRStatement(kind="return", attrs={"value": _expr_to_hir(stmt.value)})
     if isinstance(stmt, ast.RaiseStmt):
         return HIRStatement(kind="raise", attrs={"value": _expr_to_hir(stmt.value)})
+    if isinstance(stmt, ast.SyscallStmt):
+        return HIRStatement(
+            kind="syscall",
+            attrs={"target": _expr_to_hir(stmt.target), "args": [_expr_to_hir(a) for a in stmt.args]},
+        )
     if isinstance(stmt, ast.TryStmt):
         return HIRStatement(
             kind="try",
@@ -158,6 +164,13 @@ def _expr_to_hir(expr: object | None) -> Any:
             "right": _expr_to_hir(expr.right),
         }
     if isinstance(expr, ast.CallExpr):
+        intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or resolve_call_alias_name(expr.callee)
+        if intrinsic_name is not None:
+            return {
+                "kind": "intrinsic_call",
+                "name": intrinsic_name,
+                "args": [_expr_to_hir(a) for a in expr.args],
+            }
         return {"kind": "call", "callee": _expr_to_hir(expr.callee), "args": [_expr_to_hir(a) for a in expr.args]}
     if isinstance(expr, ast.AttributeExpr):
         return {"kind": "attr", "value": _expr_to_hir(expr.value), "attr": expr.attr}
@@ -165,6 +178,8 @@ def _expr_to_hir(expr: object | None) -> Any:
         return {"kind": "index", "value": _expr_to_hir(expr.value), "index": _expr_to_hir(expr.index)}
     if isinstance(expr, ast.ArrayExpr):
         return {"kind": "array", "elements": [_expr_to_hir(e) for e in expr.elements]}
+    if isinstance(expr, ast.SyscallExpr):
+        return {"kind": "syscall", "target": _expr_to_hir(expr.target), "args": [_expr_to_hir(a) for a in expr.args]}
     if isinstance(expr, ast.MapExpr):
         return {"kind": "map", "entries": [[_expr_to_hir(k), _expr_to_hir(v)] for k, v in expr.entries]}
     return {"kind": "unknown", "node": type(expr).__name__}
