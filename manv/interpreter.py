@@ -1,19 +1,34 @@
+"""Reference AST interpreter for ManV semantics.
+
+Why this file exists:
+- It is the semantic authority for language behavior (classes, exceptions,
+  imports, intrinsics, and control flow).
+- Compiled mode is required to match this observable behavior.
+- It also serves as the reference implementation for new runtime features
+  before lower-level execution paths are optimized.
+"""
+
 from __future__ import annotations
 
 import io
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TextIO
 
 from . import ast
 from .diagnostics import ManvError, diag
+from .lexer import Lexer
 from .object_runtime import (
     BoundMethodObject,
     ExceptionObject,
     Heap,
     InstanceObject,
+    ModuleObject,
     OutOfMemoryError,
     TypeObject,
 )
+from .parser import Parser
 from .intrinsics import (
     IntrinsicCallable,
     IntrinsicNamespace,
@@ -24,6 +39,7 @@ from .intrinsics import (
     std_namespace_attr,
 )
 from .runtime import unsupported_feature
+from .semantics import SemanticAnalyzer
 from .semantics_core import eval_binary, eval_unary
 
 
@@ -49,6 +65,7 @@ class RaiseSignal(Exception):
 class FunctionValue:
     decl: ast.FnDecl
     owner_type: TypeObject | None = None
+    globals_env: "Environment | None" = None
 
 
 class Environment:
@@ -97,6 +114,18 @@ class Interpreter:
         self.call_stack: list[dict[str, Any]] = []
         self.active_exceptions: list[ExceptionObject] = []
         self.stable_debug_format = stable_debug_format
+        self.module_cache: dict[str, ModuleObject] = {}
+        self._loading_modules: set[str] = set()
+        # Tracks active module execution chain for relative import resolution.
+        self._module_exec_stack: list[str] = []
+        # Tracks canonical modules loaded from package `__init__.mv`.
+        self._package_modules: set[str] = set()
+        self.source_root = Path(file).resolve().parent
+        # Deterministic module search order:
+        # 1) current project source root
+        # 2) MANV_PATH roots
+        # 3) bundled compiler-shipped ManV std source
+        self.module_search_roots: list[Path] = self._build_module_search_roots()
 
         self.heap = Heap(deterministic_gc=deterministic_gc, gc_stress=gc_stress, max_objects=heap_max_objects)
         self.heap.register_root_provider(self._gc_roots)
@@ -112,14 +141,20 @@ class Interpreter:
         self.types["object"] = object_t
         self.types["type"] = type_t
 
+        for primitive in ("int", "float", "bool", "str", "array", "map", "none"):
+            self._define_type(primitive, "object")
+
         exc_base = self._define_type("BaseException", "object")
         exc = self._define_type("Exception", "BaseException")
+        self._define_type("StopIteration", "Exception")
+        self._define_type("ImportError", "Exception")
         self._define_type("TypeError", "Exception")
         self._define_type("AttributeError", "Exception")
         self._define_type("KeyError", "Exception")
         self._define_type("IndexError", "Exception")
         self._define_type("ValueError", "Exception")
         self._define_type("RuntimeError", "Exception")
+        self._define_type("OSError", "Exception")
         self._define_type("OutOfMemoryError", "RuntimeError")
 
         # expose runtime types as globals so programs can raise/catch them by name
@@ -137,7 +172,7 @@ class Interpreter:
         return obj
 
     def _gc_roots(self) -> list[Any]:
-        roots: list[Any] = [self.global_env.values, self.types, self.active_exceptions]
+        roots: list[Any] = [self.global_env.values, self.types, self.active_exceptions, self.module_cache]
         for frame in self.call_stack:
             roots.append(frame.get("env"))
         return roots
@@ -152,20 +187,30 @@ class Interpreter:
 
         for decl in program.declarations:
             if isinstance(decl, ast.FnDecl):
-                self.functions[decl.name] = FunctionValue(decl=decl)
+                fn_val = FunctionValue(decl=decl, globals_env=self.global_env)
+                self.functions[decl.name] = fn_val
+                self.global_env.define(decl.name, fn_val)
             elif isinstance(decl, ast.TypeDecl):
                 type_obj = self.types[decl.name]
                 if decl.base_name and decl.base_name in self.types:
                     type_obj.base = self.types[decl.base_name]
                     type_obj.mro = [type_obj.name, *type_obj.base.mro]
                 for method in decl.methods:
-                    type_obj.methods[method.name] = FunctionValue(decl=method, owner_type=type_obj)
+                    key = "__init__" if method.name == "init" else method.name
+                    fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=self.global_env)
+                    type_obj.methods[key] = fn_val
+                    if method.name == "init":
+                        type_obj.methods["init"] = fn_val
             elif isinstance(decl, ast.ImplDecl):
                 type_obj = self.types.get(decl.target)
                 if type_obj is None:
                     self._raise_runtime("TypeError", f"impl target '{decl.target}' is undefined", decl.span)
                 for method in decl.methods:
-                    type_obj.methods[method.name] = FunctionValue(decl=method, owner_type=type_obj)
+                    key = "__init__" if method.name == "init" else method.name
+                    fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=self.global_env)
+                    type_obj.methods[key] = fn_val
+                    if method.name == "init":
+                        type_obj.methods["init"] = fn_val
             elif isinstance(decl, ast.MacroDeclStub):
                 continue
             else:
@@ -208,6 +253,22 @@ class Interpreter:
             else:
                 value = self.eval_expr(stmt.value, env) if stmt.value is not None else None
             env.define(stmt.name, value)
+            return None
+
+        if isinstance(stmt, ast.ImportStmt):
+            # Import statement binds module object under alias or leaf name.
+            module = self._import_module(stmt.module, stmt.span, level=stmt.level)
+            bind = stmt.alias if stmt.alias else stmt.module.split(".")[-1]
+            env.define(bind, module)
+            return None
+
+        if isinstance(stmt, ast.FromImportStmt):
+            # From-import binds the requested symbol directly.
+            module = self._import_module(stmt.module, stmt.span, level=stmt.level)
+            if stmt.name not in module.exports:
+                self._raise_runtime("ImportError", f"cannot import '{stmt.name}' from '{stmt.module}'", stmt.span)
+            bind = stmt.alias if stmt.alias else stmt.name
+            env.define(bind, module.exports[stmt.name])
             return None
 
         if isinstance(stmt, ast.AssignStmt):
@@ -367,13 +428,13 @@ class Interpreter:
                 return StdNamespace()
             if expr.name == "__intrin":
                 return IntrinsicNamespace()
-            if expr.name in self.functions:
-                return self.functions[expr.name]
-            if expr.name in self.types:
-                return self.types[expr.name]
             try:
                 return env.lookup(expr.name)
             except KeyError:
+                if expr.name in self.functions:
+                    return self.functions[expr.name]
+                if expr.name in self.types:
+                    return self.types[expr.name]
                 self._raise_runtime("RuntimeError", f"undefined variable '{expr.name}'", expr.span)
 
         if isinstance(expr, ast.UnaryExpr):
@@ -386,6 +447,9 @@ class Interpreter:
         if isinstance(expr, ast.BinaryExpr):
             left = self.eval_expr(expr.left, env)
             right = self.eval_expr(expr.right, env)
+            if expr.op in {"==", "!="}:
+                eq = self._equals(left, right, expr.span)
+                return eq if expr.op == "==" else (not eq)
             try:
                 return eval_binary(expr.op, left, right)
             except Exception:
@@ -428,6 +492,38 @@ class Interpreter:
             return self._lookup_attr(base, expr.attr, expr.span)
 
         if isinstance(expr, ast.CallExpr):
+            if isinstance(expr.callee, ast.IdentifierExpr):
+                name = expr.callee.name
+                if name == "type":
+                    if len(expr.args) != 1:
+                        self._raise_runtime("TypeError", "type() expects exactly 1 argument", expr.span)
+                    value = self.eval_expr(expr.args[0], env)
+                    return self._runtime_type(value)
+                if name == "isinstance":
+                    if len(expr.args) != 2:
+                        self._raise_runtime("TypeError", "isinstance() expects exactly 2 arguments", expr.span)
+                    value = self.eval_expr(expr.args[0], env)
+                    maybe_type = self.eval_expr(expr.args[1], env)
+                    if not isinstance(maybe_type, TypeObject):
+                        self._raise_runtime("TypeError", "isinstance() second arg must be a type", expr.span)
+                    if isinstance(value, InstanceObject):
+                        return self._is_type_or_subtype(value.type_obj, maybe_type)
+                    return self._is_type_or_subtype(self._runtime_type(value), maybe_type)
+                if name == "issubclass":
+                    if len(expr.args) != 2:
+                        self._raise_runtime("TypeError", "issubclass() expects exactly 2 arguments", expr.span)
+                    child = self.eval_expr(expr.args[0], env)
+                    parent = self.eval_expr(expr.args[1], env)
+                    if not isinstance(child, TypeObject) or not isinstance(parent, TypeObject):
+                        self._raise_runtime("TypeError", "issubclass() args must be types", expr.span)
+                    return self._is_type_or_subtype(child, parent)
+                if name == "id":
+                    if len(expr.args) != 1:
+                        self._raise_runtime("TypeError", "id() expects exactly 1 argument", expr.span)
+                    value = self.eval_expr(expr.args[0], env)
+                    heap_id = getattr(value, "_heap_id", None)
+                    return int(heap_id) if isinstance(heap_id, int) else int(id(value))
+
             args = [self.eval_expr(arg, env) for arg in expr.args]
 
             if isinstance(expr.callee, ast.IdentifierExpr):
@@ -460,7 +556,9 @@ class Interpreter:
             instance = self.heap.allocate(type_obj.name, InstanceObject(type_obj=type_obj))
         except OutOfMemoryError as exc:
             self._raise_runtime("OutOfMemoryError", str(exc), span)
-        init_fn = self._lookup_method(type_obj, "init")
+        init_fn = self._lookup_method(type_obj, "__init__")
+        if init_fn is None:
+            init_fn = self._lookup_method(type_obj, "init")
         
         if init_fn is not None:
             self._call_function(init_fn, [instance, *args])
@@ -483,7 +581,16 @@ class Interpreter:
     def _lookup_attr(self, base: Any, attr: str, span: Any) -> Any:
         if isinstance(base, InstanceObject):
             if attr in base.attrs:
-                return base.attrs[attr]
+                value = base.attrs[attr]
+                if isinstance(value, FunctionValue):
+                    try:
+                        return self.heap.allocate("BoundMethod", BoundMethodObject(receiver=base, function=value))
+                    except OutOfMemoryError as exc:
+                        self._raise_runtime("OutOfMemoryError", str(exc), span)
+                return value
+            class_attr = self._lookup_class_attr(base.type_obj, attr)
+            if class_attr is not None:
+                return class_attr
             method = self._lookup_method(base.type_obj, attr)
             if method is not None:
                 try:
@@ -492,17 +599,42 @@ class Interpreter:
                     self._raise_runtime("OutOfMemoryError", str(exc), span)
             self._raise_runtime("AttributeError", f"'{base.type_obj.name}' has no attribute '{attr}'", span)
         if isinstance(base, TypeObject):
-            if attr in base.attrs:
-                return base.attrs[attr]
+            if hasattr(base, attr) and not attr.startswith("_"):
+                return getattr(base, attr)
+            class_attr = self._lookup_class_attr(base, attr)
+            if class_attr is not None:
+                return class_attr
             method = self._lookup_method(base, attr)
             if method is not None:
                 return method
             self._raise_runtime("AttributeError", f"type '{base.name}' has no attribute '{attr}'", span)
+        if isinstance(base, ModuleObject):
+            if attr in base.exports:
+                return base.exports[attr]
+            self._raise_runtime("AttributeError", f"module '{base.name}' has no attribute '{attr}'", span)
+        if isinstance(base, dict):
+            if attr in base:
+                return base[attr]
+            self._raise_runtime("AttributeError", f"map has no attribute '{attr}'", span)
         self._raise_runtime("AttributeError", f"attribute access not supported for '{attr}'", span)
+
+    def _lookup_class_attr(self, type_obj: TypeObject, attr: str) -> Any | None:
+        cur: TypeObject | None = type_obj
+        while cur is not None:
+            if attr in cur.attrs:
+                return cur.attrs[attr]
+            cur = cur.base
+        return None
 
     def _store_attr(self, target: Any, attr: str, value: Any, span: Any) -> None:
         if isinstance(target, InstanceObject):
             target.attrs[attr] = value
+            return
+        if isinstance(target, TypeObject):
+            target.attrs[attr] = value
+            return
+        if isinstance(target, ModuleObject):
+            target.exports[attr] = value
             return
         self._raise_runtime("TypeError", "attribute assignment target must be an object instance", span)
 
@@ -526,7 +658,7 @@ class Interpreter:
         if len(args) != len(fn.decl.params):
             self._raise_runtime("TypeError", f"function '{fn.decl.name}' expects {len(fn.decl.params)} args, got {len(args)}", fn.decl.span)
 
-        env = Environment(parent=self.global_env)
+        env = Environment(parent=fn.globals_env or self.global_env)
         for param, value in zip(fn.decl.params, args, strict=True):
             env.define(param.name, value)
 
@@ -567,11 +699,12 @@ class Interpreter:
         except ValueError as exc:
             self._raise_runtime("ValueError", f"intrinsic {name}: {exc}", span)
         except FileNotFoundError as exc:
-            self._raise_runtime("RuntimeError", f"intrinsic {name}: {exc}", span)
+            self._raise_runtime("OSError", f"intrinsic {name}: {exc}", span, payload={"op": name}, code=getattr(exc, "errno", None))
         except OSError as exc:
-            self._raise_runtime("RuntimeError", f"intrinsic {name}: {exc}", span)
+            self._raise_runtime("OSError", f"intrinsic {name}: {exc}", span, payload={"op": name}, code=getattr(exc, "errno", None))
         except Exception as exc:
             self._raise_runtime("RuntimeError", f"intrinsic {name}: {exc}", span)
+
     def _raise_value(self, value: Any, span: Any) -> None:
         if isinstance(value, ExceptionObject):
             raise RaiseSignal(value)
@@ -584,20 +717,26 @@ class Interpreter:
         message = value.attrs.get("message", "")
         if not isinstance(message, str):
             message = str(message)
+        code = value.attrs.get("code")
+        if code is not None and not isinstance(code, int):
+            try:
+                code = int(code)
+            except Exception:
+                code = None
         stack = self._capture_stacktrace()
         try:
             return self.heap.allocate(
                 "Exception",
-                ExceptionObject(type_obj=value.type_obj, message=message, payload=value, stacktrace=stack),
+                ExceptionObject(type_obj=value.type_obj, message=message, payload=value, code=code, stacktrace=stack),
             )
         except OutOfMemoryError as exc:
             self._raise_runtime("OutOfMemoryError", str(exc), self._span_of(value))
 
-    def _raise_runtime(self, type_name: str, message: str, span: Any, payload: Any = None) -> None:
+    def _raise_runtime(self, type_name: str, message: str, span: Any, payload: Any = None, code: int | None = None) -> None:
         t = self.types.get(type_name) or self.types["RuntimeError"]
         stack = self._capture_stacktrace()
         try:
-            exc = self.heap.allocate("Exception", ExceptionObject(type_obj=t, message=message, payload=payload, stacktrace=stack))
+            exc = self.heap.allocate("Exception", ExceptionObject(type_obj=t, message=message, payload=payload, code=code, stacktrace=stack))
         except OutOfMemoryError as alloc_err:
             t2 = self.types["RuntimeError"]
             exc = ExceptionObject(type_obj=t2, message=str(alloc_err), payload=None, stacktrace=stack)
@@ -613,6 +752,8 @@ class Interpreter:
                     "file": getattr(span, "file", self.file),
                     "line": getattr(span, "line", 1),
                     "column": getattr(span, "column", 1),
+                    "callsite_id": frame.get("callsite_id"),
+                    "hlir_id": frame.get("hlir_id"),
                 }
             )
         return out
@@ -631,6 +772,206 @@ class Interpreter:
             cur = cur.base
         return False
 
+    def _runtime_type(self, value: Any) -> Any:
+        if isinstance(value, InstanceObject):
+            return value.type_obj
+        if isinstance(value, TypeObject):
+            return self.types.get("type", value)
+        if isinstance(value, ExceptionObject):
+            return value.type_obj
+        if value is None:
+            return self.types["none"]
+        if isinstance(value, bool):
+            return self.types["bool"]
+        if isinstance(value, int):
+            return self.types["int"]
+        if isinstance(value, float):
+            return self.types["float"]
+        if isinstance(value, str):
+            return self.types["str"]
+        if isinstance(value, list):
+            return self.types["array"]
+        if isinstance(value, dict):
+            return self.types["map"]
+        return self.types["object"]
+
+    def _equals(self, left: Any, right: Any, span: Any) -> bool:
+        if isinstance(left, InstanceObject):
+            eq_method = self._lookup_method(left.type_obj, "__eq__") or self._lookup_method(left.type_obj, "eq")
+            if eq_method is None:
+                return left is right
+            result = self._call_function(eq_method, [left, right])
+            return bool(result)
+        if isinstance(right, InstanceObject):
+            return right is left
+        try:
+            return bool(left == right)
+        except Exception:
+            self._raise_runtime("TypeError", "equality comparison failed", span)
+
+    def _import_module(self, module_name: str, span: Any, *, level: int = 0) -> ModuleObject:
+        # Convert relative forms into a stable canonical module key.
+        canonical_name = self._canonicalize_module_name(module_name, level, span)
+
+        existing = self.module_cache.get(canonical_name)
+        if existing is not None:
+            # Import caching guarantees single initialization semantics.
+            return existing
+
+        if canonical_name in self._loading_modules:
+            cached = self.module_cache.get(canonical_name)
+            if cached is not None:
+                # Cycle handling: expose partially initialized module object.
+                return cached
+            self._raise_runtime("ImportError", f"cyclic import failed for '{canonical_name}'", span)
+
+        try:
+            module_obj = self.heap.allocate("Module", ModuleObject(name=canonical_name, exports={}))
+        except OutOfMemoryError as exc:
+            self._raise_runtime("OutOfMemoryError", str(exc), span)
+        self.module_cache[canonical_name] = module_obj
+        self._loading_modules.add(canonical_name)
+        try:
+            module_path = self._resolve_module_path(canonical_name)
+            if module_path is None:
+                self._raise_runtime("ImportError", f"module not found: '{canonical_name}'", span)
+            # Package marker is needed so `from . import x` inside __init__.mv
+            # uses the package itself as the import base.
+            if module_path.name == "__init__.mv":
+                self._package_modules.add(canonical_name)
+            source = module_path.read_text(encoding="utf-8")
+            lexer = Lexer(source=source, file=str(module_path))
+            tokens = lexer.tokenize()
+            parser = Parser(tokens=tokens, file=str(module_path), source_lines=source.splitlines())
+            program = parser.parse()
+
+            analyzer = SemanticAnalyzer(file=str(module_path))
+            result = analyzer.analyze(program)
+            analyzer.assert_valid(result)
+
+            module_env = Environment(parent=self.global_env)
+            module_env.define(canonical_name.split(".")[-1], module_obj)
+
+            for decl in program.declarations:
+                if isinstance(decl, ast.FnDecl):
+                    # Functions capture module environment for global lookup parity.
+                    fn_val = FunctionValue(decl=decl, globals_env=module_env)
+                    module_env.define(decl.name, fn_val)
+                    self.functions[f"{canonical_name}.{decl.name}"] = fn_val
+                elif isinstance(decl, ast.TypeDecl):
+                    # Type declarations are attached to runtime type registry.
+                    base_name = decl.base_name or "object"
+                    if decl.name not in self.types:
+                        self._define_type(decl.name, base_name)
+                    type_obj = self.types[decl.name]
+                    if decl.base_name and decl.base_name in self.types:
+                        type_obj.base = self.types[decl.base_name]
+                        type_obj.mro = [type_obj.name, *type_obj.base.mro]
+                    module_env.define(decl.name, type_obj)
+                    for method in decl.methods:
+                        key = "__init__" if method.name == "init" else method.name
+                        fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=module_env)
+                        type_obj.methods[key] = fn_val
+                        if method.name == "init":
+                            type_obj.methods["init"] = fn_val
+                elif isinstance(decl, ast.ImplDecl):
+                    # Impl declarations patch method table on existing type.
+                    type_obj = self.types.get(decl.target)
+                    if type_obj is None:
+                        self._raise_runtime("TypeError", f"impl target '{decl.target}' is undefined", decl.span)
+                    for method in decl.methods:
+                        key = "__init__" if method.name == "init" else method.name
+                        fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=module_env)
+                        type_obj.methods[key] = fn_val
+                        if method.name == "init":
+                            type_obj.methods["init"] = fn_val
+
+            self._module_exec_stack.append(canonical_name)
+            try:
+                for stmt in program.statements:
+                    self.execute_stmt(stmt, module_env)
+            finally:
+                self._module_exec_stack.pop()
+
+            for name, value in module_env.values.items():
+                if not name.startswith("_"):
+                    # Export policy: underscore-prefixed names remain private.
+                    module_obj.exports[name] = value
+            return module_obj
+        finally:
+            self._loading_modules.discard(canonical_name)
+
+    def _canonicalize_module_name(self, module_name: str, level: int, span: Any) -> str:
+        if level <= 0:
+            return module_name
+
+        # Relative imports are only valid while executing a module body.
+        if not self._module_exec_stack:
+            self._raise_runtime("ImportError", "relative import requires package context", span)
+
+        current = self._module_exec_stack[-1]
+        # Package module (`pkg.__init__`) anchors at `pkg`, regular module
+        # (`pkg.mod`) anchors at package path `pkg`.
+        if current in self._package_modules:
+            package_parts = current.split(".")
+        else:
+            package_parts = current.split(".")[:-1]
+        up = level - 1
+        if up > len(package_parts):
+            self._raise_runtime("ImportError", f"relative import beyond top-level package: '{'.' * level}{module_name}'", span)
+
+        base_parts = package_parts[: len(package_parts) - up]
+        if module_name:
+            base_parts.extend(module_name.split("."))
+        if not base_parts:
+            self._raise_runtime("ImportError", "relative import target is empty", span)
+        return ".".join(base_parts)
+
+    def _resolve_module_path(self, module_name: str) -> Path | None:
+        rel = Path(*module_name.split("."))
+        for root in self.module_search_roots:
+            candidates = [
+                root / f"{rel}.mv",
+                root / rel / "__init__.mv",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate.resolve()
+        return None
+
+    def _build_module_search_roots(self) -> list[Path]:
+        roots: list[Path] = [self.source_root]
+
+        # Additional roots may be supplied by the runtime environment.
+        raw_path = os.getenv("MANV_PATH", "")
+        if raw_path.strip():
+            for item in raw_path.split(os.pathsep):
+                entry = item.strip()
+                if not entry:
+                    continue
+                try:
+                    candidate = Path(entry).resolve()
+                except Exception:
+                    continue
+                if candidate.exists() and candidate.is_dir():
+                    roots.append(candidate)
+
+        # Bundled std fallback enables bootstrapping without per-project copies.
+        bundled_std = (Path(__file__).resolve().parents[1] / "std" / "src").resolve()
+        if bundled_std.exists() and bundled_std.is_dir():
+            roots.append(bundled_std)
+
+        # Keep first-seen order while de-duplicating resolved directories.
+        out: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(root)
+        return out
+
     def _stringify(self, value: Any) -> str:
         if isinstance(value, InstanceObject):
             attrs = value.attrs
@@ -643,6 +984,8 @@ class Interpreter:
             return f"<{value.type_obj.name} {preview}{suffix}>"
         if isinstance(value, ExceptionObject):
             return f"{value.type_obj.name}({value.message})"
+        if isinstance(value, ModuleObject):
+            return f"<module {value.name}>"
         if isinstance(value, dict) and self.stable_debug_format:
             items = sorted(value.items(), key=lambda kv: repr(kv[0]))
             return "{" + ", ".join(f"{self._stringify(k)}: {self._stringify(v)}" for k, v in items) + "}"

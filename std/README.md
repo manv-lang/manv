@@ -9,6 +9,26 @@ This project is the compiler-shipped, ManV-authored standard library source.
 
 ## Added functionality
 
+## Purity policy
+
+This std source is the purity target for ManV:
+
+- std logic must be written in ManV source.
+- No wrapping/importing host-language stdlib subsystems.
+- Intrinsics are limited to narrow primitive capabilities and are versioned/tested.
+
+### Bootstrap modules
+
+The bundled std source now includes importable bootstrap modules at `src/` root
+(flat layout, no nested `std/std` package), for example:
+
+- `builtins` for ManV-authored wrappers of core builtin operations
+- `str` for string conversion/inspection bootstrap helpers
+- additional protocol modules can be added in the same flat style as phases progress
+
+These modules are resolved by interpreter module search order:
+project source root, then `MANV_PATH`, then bundled std source.
+
 ### Syscall support
 
 ManV now supports:
@@ -37,7 +57,7 @@ fn main() -> int:
     let win = std_syscall_windows("getpid", [])
     print(posix["ok"])
     print(win["ok"])
-    return 0
+    return 0 
 ```
 
 ### Expanded intrinsic boundary

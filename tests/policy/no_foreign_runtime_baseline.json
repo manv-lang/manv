@@ -1,0 +1,42 @@
+{
+  "stdlib_import_violations": [
+    "manv/stdlib/async_runtime/future.py::asyncio",
+    "manv/stdlib/async_runtime/loop.py::asyncio",
+    "manv/stdlib/async_runtime/streams.py::asyncio",
+    "manv/stdlib/async_runtime/task.py::asyncio",
+    "manv/stdlib/compression/__init__.py::gzip",
+    "manv/stdlib/compression/gzip.py::gzip",
+    "manv/stdlib/compression/zip.py::zipfile",
+    "manv/stdlib/config/ini.py::configparser",
+    "manv/stdlib/config/toml.py::tomllib",
+    "manv/stdlib/csv.py::csv",
+    "manv/stdlib/decimal.py::decimal",
+    "manv/stdlib/importlib.py::importlib",
+    "manv/stdlib/inspect.py::inspect",
+    "manv/stdlib/ipc.py::multiprocessing",
+    "manv/stdlib/json.py::json",
+    "manv/stdlib/math.py::math",
+    "manv/stdlib/module_index.py::importlib",
+    "manv/stdlib/multiprocessing.py::multiprocessing",
+    "manv/stdlib/net/http/client.py::urllib",
+    "manv/stdlib/net/http/server.py::http",
+    "manv/stdlib/net/url.py::urllib",
+    "manv/stdlib/process.py::subprocess",
+    "manv/stdlib/re.py::re",
+    "manv/stdlib/serialization/__init__.py::pickle",
+    "manv/stdlib/serialization/pickle.py::pickle",
+    "manv/stdlib/socket.py::socket",
+    "manv/stdlib/statistics.py::statistics",
+    "manv/stdlib/threading/__init__.py::threading",
+    "manv/stdlib/threading/local.py::threading",
+    "manv/stdlib/threading/sync.py::threading",
+    "manv/stdlib/types.py::decimal",
+    "manv/stdlib/types.py::socket"
+  ],
+  "forbidden_intrinsics": [
+    "http_request",
+    "json_parse",
+    "json_stringify",
+    "url_parse"
+  ]
+}

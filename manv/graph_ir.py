@@ -1,3 +1,13 @@
+"""HIR -> Graph IR lowering.
+
+Why this file exists:
+- Converts structured HIR statements into a dependency graph suitable for
+  optimization and kernelization analysis.
+- Preserves effect metadata so side-effect ordering and eligibility checks
+  remain explicit.
+- Keeps import/EH-adjacent side effects visible to later passes.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,6 +36,8 @@ def lower_hir_to_graph(hir: HIRModule) -> dict[str, Any]:
         regions: list[dict[str, Any]] = []
 
         for stmt in fn.body:
+            # Lower each statement as a graph node sequence while preserving
+            # variable bindings and effect ordering edges.
             _lower_stmt(stmt.__dict__, builder, nodes, edges, env_outputs, regions)
 
         out_functions.append(
@@ -75,6 +87,49 @@ def _lower_stmt(
         if value_ref:
             edges.append({"from": value_ref, "to": node_id})
         env_outputs[attrs["name"]] = node_id
+        return
+
+    if kind == "import":
+        node_id = builder.next_id()
+        bind = str(attrs.get("alias") or str(attrs.get("module", "")).split(".")[-1])
+        nodes.append(
+            {
+                "id": node_id,
+                "op": "import",
+                "inputs": [],
+                "outputs": [bind],
+                "dtype": "module",
+                "shape": None,
+                # `level` carries relative import depth metadata from parser/AST.
+                "attrs": {"module": attrs.get("module"), "alias": attrs.get("alias"), "level": attrs.get("level", 0)},
+                "effects": ["reads_memory", "writes_memory", "may_throw"],
+            }
+        )
+        env_outputs[bind] = node_id
+        return
+
+    if kind == "from_import":
+        node_id = builder.next_id()
+        bind = str(attrs.get("alias") or attrs.get("name"))
+        nodes.append(
+            {
+                "id": node_id,
+                "op": "from_import",
+                "inputs": [],
+                "outputs": [bind],
+                "dtype": "dynamic",
+                "shape": None,
+                "attrs": {
+                    "module": attrs.get("module"),
+                    "name": attrs.get("name"),
+                    "alias": attrs.get("alias"),
+                    # Preserve relative depth semantics for downstream tools.
+                    "level": attrs.get("level", 0),
+                },
+                "effects": ["reads_memory", "writes_memory", "may_throw"],
+            }
+        )
+        env_outputs[bind] = node_id
         return
 
     if kind == "assign":

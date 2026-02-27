@@ -1,3 +1,12 @@
+"""AST -> HIR lowering.
+
+Why this file exists:
+- Produces a compact, structured representation for graph/HLIR stages.
+- Preserves language intent (including import metadata and EH constructs)
+  without executing user code.
+- Keeps lowering deterministic so interpreter and compiled paths can be diffed.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -46,6 +55,8 @@ def lower_ast_to_hir(program: ast.Program, source_name: str) -> HIRModule:
             stubs.append({"kind": "macro", "name": decl.name, "params": decl.params, "body": decl.body})
 
     for stmt in program.statements:
+        # Top-level statements are preserved as explicit HIR so import/module
+        # side effects remain visible to downstream passes.
         top_level.append(_stmt_to_hir(stmt))
 
     return HIRModule(
@@ -76,6 +87,14 @@ def _stmt_to_hir(stmt: object) -> HIRStatement:
                 "value": _expr_to_hir(stmt.value),
                 "array_size": _expr_to_hir(stmt.array_size),
             },
+        )
+    if isinstance(stmt, ast.ImportStmt):
+        # Keep `level` so relative-import semantics survive lowering.
+        return HIRStatement(kind="import", attrs={"module": stmt.module, "alias": stmt.alias, "level": stmt.level})
+    if isinstance(stmt, ast.FromImportStmt):
+        return HIRStatement(
+            kind="from_import",
+            attrs={"module": stmt.module, "name": stmt.name, "alias": stmt.alias, "level": stmt.level},
         )
     if isinstance(stmt, ast.AssignStmt):
         return HIRStatement(kind="assign", attrs={"name": stmt.name, "value": _expr_to_hir(stmt.value)})

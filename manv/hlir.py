@@ -72,6 +72,7 @@ class HInstruction:
 class HTerminator:
     op: str
     args: list[str] = field(default_factory=list)
+    attrs: dict[str, Any] = field(default_factory=dict)
     term_id: str | None = None
     provenance: Provenance | None = None
 
@@ -80,6 +81,7 @@ class HTerminator:
             "id": self.term_id,
             "op": self.op,
             "args": self.args,
+            "attrs": self.attrs,
             "provenance": self.provenance.to_dict() if self.provenance else None,
         }
 

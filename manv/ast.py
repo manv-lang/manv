@@ -1,3 +1,14 @@
+"""ManV AST node model.
+
+Why this file exists:
+- It defines the canonical in-memory syntax tree shared by parser, semantic
+  analysis, interpreter, and all lowering stages.
+- It is intentionally "dumb data" (dataclasses only) so every execution mode
+  can consume the same structure without hidden behavior.
+- New language features (for example relative imports and class syntax aliases)
+  are represented here first so downstream passes stay synchronized.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
@@ -6,6 +17,7 @@ from typing import Any
 from .diagnostics import Span
 
 
+# Function/type declaration surface.
 @dataclass
 class Param:
     name: str
@@ -18,6 +30,29 @@ class Program:
     declarations: list[Any]
     statements: list[Any]
     span: Span
+
+
+# Import surface.
+#
+# `level` follows Python-style semantics:
+# - 0 => absolute import
+# - 1 => current package (`from .x import y`)
+# - 2+ => parent package traversal (`from ..x import y`)
+@dataclass
+class ImportStmt:
+    module: str
+    alias: str | None
+    span: Span
+    level: int = 0
+
+
+@dataclass
+class FromImportStmt:
+    module: str
+    name: str
+    alias: str | None
+    span: Span
+    level: int = 0
 
 
 @dataclass

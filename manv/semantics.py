@@ -16,18 +16,22 @@ from .intrinsics import (
 
 
 BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
+BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id"})
 PRIMITIVE_TYPES = {"int", "float", "bool", "str", "u8", "usize", "array", "map", "none"}
 BUILTIN_TYPES = {
     "object",
     "type",
     "BaseException",
     "Exception",
+    "StopIteration",
+    "ImportError",
     "TypeError",
     "AttributeError",
     "KeyError",
     "IndexError",
     "ValueError",
     "RuntimeError",
+    "OSError",
     "OutOfMemoryError",
 }
 STUB_FEATURE_DECLS = (ast.MacroDeclStub,)
@@ -145,6 +149,16 @@ class SemanticAnalyzer:
             scope.define(stmt.name, stmt.type_name or value_type)
             if stmt.type_name and value_type and not self._type_compatible(stmt.type_name, value_type):
                 self._add_error("E2002", f"type mismatch for '{stmt.name}': expected {stmt.type_name}, got {value_type}", stmt.span.line, stmt.span.column)
+            return
+
+        if isinstance(stmt, ast.ImportStmt):
+            bind = stmt.alias if stmt.alias else stmt.module.split(".")[-1]
+            scope.define(bind, "module")
+            return
+
+        if isinstance(stmt, ast.FromImportStmt):
+            bind = stmt.alias if stmt.alias else stmt.name
+            scope.define(bind, None)
             return
 
         if isinstance(stmt, ast.AssignStmt):
@@ -312,10 +326,17 @@ class SemanticAnalyzer:
                 self._add_error("E2023", "invalid '__intrin' usage; only '__intrin.<name>(...)' is allowed", expr.span.line, expr.span.column)
                 return "namespace"
             if as_callee:
-                if expr.name in self.functions or expr.name in BUILTIN_FUNCTIONS or expr.name in self.types:
+                if (
+                    expr.name in self.functions
+                    or expr.name in BUILTIN_FUNCTIONS
+                    or expr.name in self.types
+                    or scope.contains(expr.name)
+                ):
                     return "fn"
                 self._add_error("E2011", f"undefined function or type '{expr.name}'", expr.span.line, expr.span.column)
                 return None
+            if expr.name in self.types:
+                return expr.name
             symbol_type = scope.lookup(expr.name)
             if not scope.contains(expr.name):
                 self._add_error("E2010", f"undefined variable '{expr.name}'", expr.span.line, expr.span.column)

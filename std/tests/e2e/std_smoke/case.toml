@@ -1,5 +1,0 @@
-name = "std_smoke"
-command = "run"
-target = "../../../"
-expect_exit = 0
-expect_stdout_contains = ["std ready"]

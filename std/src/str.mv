@@ -1,0 +1,16 @@
+# Bundled ManV `str` module.
+#
+# Why this file exists:
+# - Provides a flat, importable `str` module (not `string`) for std bootstrap.
+# - Exposes essential string conversion/inspection helpers in ManV source.
+# - Establishes naming and module identity for future richer string utilities.
+
+fn from_value(x) -> str:
+    return __intrin.core_str(x)
+
+fn repr_value(x) -> str:
+    return __intrin.core_repr(x)
+
+fn length(s: str) -> int:
+    return __intrin.core_len(s)
+

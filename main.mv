@@ -1,6 +1,22 @@
+fn add(a: int, b: int) -> int:
+    return a + b
 
-fn main() -> int:
-    int x = 10
-    x = x + 10
-    print(x)
-    return x
+
+class User:
+    fn __init__(self, name: str, age: int) -> none:
+        self.name = name
+        self.age = age
+    
+    fn repr(self) -> none:
+        print(self.name)
+
+fn main() -> none:
+    let user = User("Mohamed", 20)
+    user.repr()
+
+    map m = {"k": 1}
+    array nums[3] = [1, 2]
+    nums[2] = add(nums[0], nums[1])
+    m["k2"] = nums[2]
+    print(m)
+

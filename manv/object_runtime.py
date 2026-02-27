@@ -30,13 +30,30 @@ class TypeObject:
     methods: dict[str, Any] = field(default_factory=dict)
     attrs: dict[str, Any] = field(default_factory=dict)
     mro: list[str] = field(default_factory=list)
+    type_id: int | None = None
     _heap_id: int | None = None
+
+    @property
+    def dict(self) -> dict[str, Any]:
+        return self.attrs
+
+    @property
+    def method_table(self) -> dict[str, Any]:
+        return self.methods
 
 
 @dataclass
 class InstanceObject:
     type_obj: TypeObject
     attrs: dict[str, Any] = field(default_factory=dict)
+    object_id: int | None = None
+    _heap_id: int | None = None
+
+
+@dataclass
+class ModuleObject:
+    name: str
+    exports: dict[str, Any] = field(default_factory=dict)
     _heap_id: int | None = None
 
 
@@ -52,6 +69,7 @@ class ExceptionObject:
     type_obj: TypeObject
     message: str
     payload: Any = None
+    code: int | None = None
     stacktrace: list[dict[str, Any]] = field(default_factory=list)
     _heap_id: int | None = None
 
@@ -93,6 +111,10 @@ class Heap:
         self._next_id += 1
         header = HeapHeader(type_ptr=type_ptr)
         setattr(payload, "_heap_id", obj_id)
+        if hasattr(payload, "type_id") and getattr(payload, "type_id") is None:
+            setattr(payload, "type_id", obj_id)
+        if hasattr(payload, "object_id") and getattr(payload, "object_id") is None:
+            setattr(payload, "object_id", obj_id)
         self._records[obj_id] = HeapRecord(obj_id=obj_id, header=header, payload=payload)
         self._alloc_count += 1
         return payload
@@ -157,10 +179,16 @@ class Heap:
                 self._mark(value.base)
             for child in value.attrs.values():
                 self._mark(child)
+            for child in value.methods.values():
+                self._mark(child)
             return
         if isinstance(value, BoundMethodObject):
             self._mark(value.receiver)
             self._mark(value.function)
+            return
+        if isinstance(value, ModuleObject):
+            for child in value.exports.values():
+                self._mark(child)
             return
         if isinstance(value, ExceptionObject):
             self._mark(value.type_obj)

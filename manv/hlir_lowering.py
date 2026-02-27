@@ -1,3 +1,13 @@
+"""AST -> HLIR lowering with explicit control flow and EH edges.
+
+Why this file exists:
+- Encodes execution semantics in a CFG-friendly form that can be interpreted
+  directly and later compiled.
+- Makes potentially throwing behavior explicit (`invoke`/`raise`) so exception
+  handling is testable and backend-independent.
+- Preserves stable callsite/attrsite identifiers for future inline caches.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -23,8 +33,11 @@ class _LowerState:
     instr_counter: int = 0
     term_counter: int = 0
     ast_counter: int = 0
+    callsite_counter: int = 0
+    attrsite_counter: int = 0
     ast_ids: dict[int, str] = field(default_factory=dict)
     loop_targets: list[tuple[str, str]] = field(default_factory=list)
+    unwind_targets: list[str] = field(default_factory=list)
     declared_vars: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
@@ -58,6 +71,16 @@ class _LowerState:
     def _next_term_id(self) -> str:
         self.term_counter += 1
         return f"{self.fn_name}.t{self.term_counter}"
+
+    def next_callsite_id(self) -> str:
+        # Stable within one lowering run; intended IC hook.
+        self.callsite_counter += 1
+        return f"{self.fn_name}.cs{self.callsite_counter}"
+
+    def next_attrsite_id(self) -> str:
+        # Stable within one lowering run; intended IC hook.
+        self.attrsite_counter += 1
+        return f"{self.fn_name}.as{self.attrsite_counter}"
 
     def _span_to_source(self, span: Span | None) -> SourceSpan | None:
         if span is None:
@@ -100,11 +123,20 @@ class _LowerState:
         self.block().instructions.append(instr)
         return instr.dest
 
-    def terminate(self, op: str, args: list[str] | None = None, node: Any | None = None, span: Span | None = None) -> None:
+    def terminate(
+        self,
+        op: str,
+        args: list[str] | None = None,
+        *,
+        attrs: dict[str, Any] | None = None,
+        node: Any | None = None,
+        span: Span | None = None,
+    ) -> None:
         term_id = self._next_term_id()
         self.block().terminator = HTerminator(
             op=op,
             args=args or [],
+            attrs=attrs or {},
             term_id=term_id,
             provenance=self._provenance(term_id, node=node, span=span),
         )
@@ -223,6 +255,52 @@ class HLIRLowerer:
             self._lower_let(state, stmt)
             return
 
+        if isinstance(stmt, ast.ImportStmt):
+            out = state.new_temp()
+            state.emit(
+                HInstruction(
+                    op="import",
+                    dest=out,
+                    type_name="module",
+                    # Preserve level metadata so runtime can resolve
+                    # absolute vs package-relative imports.
+                    attrs={"module": stmt.module, "alias": stmt.alias, "level": stmt.level},
+                    effects=["reads_memory", "writes_memory", "may_throw"],
+                ),
+                node=stmt,
+            )
+            bind = stmt.alias or stmt.module.split(".")[-1]
+            if bind not in state.declared_vars:
+                state.emit(
+                    HInstruction(op="declare_var", attrs={"name": bind, "type": "module"}, effects=["writes_memory"]),
+                    node=stmt,
+                )
+                state.declared_vars.add(bind)
+            state.emit(HInstruction(op="store_var", args=[bind, out], effects=["writes_memory"]), node=stmt)
+            return
+
+        if isinstance(stmt, ast.FromImportStmt):
+            out = state.new_temp()
+            state.emit(
+                HInstruction(
+                    op="from_import",
+                    dest=out,
+                    # `level` is the relative import depth (`.`, `..`, ...).
+                    attrs={"module": stmt.module, "name": stmt.name, "alias": stmt.alias, "level": stmt.level},
+                    effects=["reads_memory", "writes_memory", "may_throw"],
+                ),
+                node=stmt,
+            )
+            bind = stmt.alias or stmt.name
+            if bind not in state.declared_vars:
+                state.emit(
+                    HInstruction(op="declare_var", attrs={"name": bind, "type": None}, effects=["writes_memory"]),
+                    node=stmt,
+                )
+                state.declared_vars.add(bind)
+            state.emit(HInstruction(op="store_var", args=[bind, out], effects=["writes_memory"]), node=stmt)
+            return
+
         if isinstance(stmt, ast.AssignStmt):
             value = self._lower_expr(state, stmt.value)
             state.emit(HInstruction(op="store_var", args=[stmt.name, value], effects=["writes_memory"]), node=stmt)
@@ -262,18 +340,27 @@ class HLIRLowerer:
             return
 
         if isinstance(stmt, ast.RaiseStmt):
-            if stmt.value is None:
-                state.emit(HInstruction(op="raise", effects=["may_throw"], attrs={"reraise": True}), node=stmt)
+            if state.unwind_targets:
+                if stmt.value is None:
+                    current_exc = state.new_temp()
+                    state.emit(HInstruction(op="load_exception", dest=current_exc, effects=["reads_memory"]), node=stmt)
+                    state.emit(HInstruction(op="set_exception", args=[current_exc], effects=["writes_memory"]), node=stmt)
+                else:
+                    value = self._lower_expr(state, stmt.value)
+                    state.emit(HInstruction(op="set_exception", args=[value], effects=["writes_memory"]), node=stmt)
+                state.terminate("br", [state.unwind_targets[-1]], node=stmt)
             else:
-                value = self._lower_expr(state, stmt.value)
-                state.emit(HInstruction(op="raise", args=[value], effects=["may_throw"]), node=stmt)
-            state.terminate("unreachable", [], node=stmt)
+                if stmt.value is None:
+                    state.terminate("raise", ["__reraise__"], node=stmt)
+                else:
+                    value = self._lower_expr(state, stmt.value)
+                    state.terminate("raise", [value], node=stmt)
             return
 
         if isinstance(stmt, ast.SyscallStmt):
             target = self._lower_expr(state, stmt.target)
             arg_values = [self._lower_expr(state, arg) for arg in stmt.args]
-            arg_array = state.tmp()
+            arg_array = state.new_temp()
             state.emit(HInstruction(op="array", dest=arg_array, args=arg_values, effects=["allocates"]), node=stmt)
             state.emit(
                 HInstruction(
@@ -287,36 +374,7 @@ class HLIRLowerer:
             return
 
         if isinstance(stmt, ast.TryStmt):
-            # v1 lowering keeps explicit marker + flattened bodies for artifact visibility.
-            state.emit(
-                HInstruction(
-                    op="try_region",
-                    attrs={
-                        "except": [{"type": c.type_name, "bind": c.bind_name} for c in stmt.except_clauses],
-                        "else_count": len(stmt.else_body),
-                        "finally_count": len(stmt.finally_body),
-                    },
-                    effects=["may_throw", "writes_memory"],
-                ),
-                node=stmt,
-            )
-            for inner in stmt.try_body:
-                if state.has_terminator():
-                    break
-                self._lower_stmt(state, inner)
-            for clause in stmt.except_clauses:
-                for inner in clause.body:
-                    if state.has_terminator():
-                        break
-                    self._lower_stmt(state, inner)
-            for inner in stmt.else_body:
-                if state.has_terminator():
-                    break
-                self._lower_stmt(state, inner)
-            for inner in stmt.finally_body:
-                if state.has_terminator():
-                    break
-                self._lower_stmt(state, inner)
+            self._lower_try(state, stmt)
             return
 
         if isinstance(stmt, ast.IfStmt):
@@ -413,6 +471,130 @@ class HLIRLowerer:
 
         state.set_block(exit_label)
 
+    def _lower_try(self, state: _LowerState, stmt: ast.TryStmt) -> None:
+        # Canonical EH lowering strategy:
+        # - Execute try body with explicit unwind target.
+        # - Dispatch handlers in source order.
+        # - Funnel all exits through finally when present.
+        # - Preserve pending exception across finally for rethrow semantics.
+        try_body_label = state.new_label("try_body")
+        except_dispatch_label = state.new_label("except_dispatch")
+        else_label = state.new_label("try_else") if stmt.else_body else ""
+        finally_label = state.new_label("try_finally") if stmt.finally_body else ""
+        exit_label = state.new_label("try_exit")
+
+        pending_var = ""
+        if stmt.finally_body:
+            pending_var = f"__eh_pending_{state.new_label('slot')}"
+            if pending_var not in state.declared_vars:
+                state.emit(
+                    HInstruction(op="declare_var", attrs={"name": pending_var, "type": "dynamic"}, effects=["writes_memory"]),
+                    node=stmt,
+                )
+                state.declared_vars.add(pending_var)
+            none_temp = state.new_temp()
+            state.emit(HInstruction(op="const", dest=none_temp, type_name="none", attrs={"value": None}), node=stmt)
+            state.emit(HInstruction(op="store_var", args=[pending_var, none_temp], effects=["writes_memory"]), node=stmt)
+
+        state.terminate("br", [try_body_label], node=stmt)
+
+        state.set_block(try_body_label)
+        state.unwind_targets.append(except_dispatch_label)
+        self._lower_statements(state, stmt.try_body)
+        state.unwind_targets.pop()
+        if not state.has_terminator():
+            if stmt.else_body:
+                state.terminate("br", [else_label], node=stmt)
+            elif stmt.finally_body:
+                state.terminate("br", [finally_label], node=stmt)
+            else:
+                state.terminate("br", [exit_label], node=stmt)
+
+        state.set_block(except_dispatch_label)
+        exc_temp = state.new_temp()
+        state.emit(HInstruction(op="load_exception", dest=exc_temp, effects=["reads_memory"]), node=stmt)
+
+        if not stmt.except_clauses:
+            if stmt.finally_body:
+                state.emit(HInstruction(op="store_var", args=[pending_var, exc_temp], effects=["writes_memory"]), node=stmt)
+                state.terminate("br", [finally_label], node=stmt)
+            else:
+                state.terminate("raise", [exc_temp], node=stmt)
+        else:
+            no_match_label = state.new_label("except_no_match")
+            check_label = state.current_label
+            for index, clause in enumerate(stmt.except_clauses):
+                clause_label = state.new_label(f"except_{index}")
+                next_label = no_match_label if index == len(stmt.except_clauses) - 1 else state.new_label(f"except_next_{index}")
+
+                state.set_block(check_label)
+                match_temp = state.new_temp()
+                state.emit(
+                    HInstruction(op="exc_match", dest=match_temp, args=[exc_temp], attrs={"type": clause.type_name}, effects=["pure"]),
+                    node=clause,
+                )
+                state.terminate("cbr", [match_temp, clause_label, next_label], node=clause)
+
+                state.set_block(clause_label)
+                if clause.bind_name:
+                    if clause.bind_name not in state.declared_vars:
+                        state.emit(
+                            HInstruction(op="declare_var", attrs={"name": clause.bind_name, "type": clause.type_name}, effects=["writes_memory"]),
+                            node=clause,
+                        )
+                        state.declared_vars.add(clause.bind_name)
+                    state.emit(HInstruction(op="store_var", args=[clause.bind_name, exc_temp], effects=["writes_memory"]), node=clause)
+                self._lower_statements(state, clause.body)
+                if not state.has_terminator():
+                    if stmt.finally_body:
+                        none_temp = state.new_temp()
+                        state.emit(HInstruction(op="const", dest=none_temp, type_name="none", attrs={"value": None}), node=clause)
+                        state.emit(HInstruction(op="store_var", args=[pending_var, none_temp], effects=["writes_memory"]), node=clause)
+                        state.terminate("br", [finally_label], node=clause)
+                    else:
+                        state.terminate("br", [exit_label], node=clause)
+                check_label = next_label
+
+            state.set_block(no_match_label)
+            if stmt.finally_body:
+                state.emit(HInstruction(op="store_var", args=[pending_var, exc_temp], effects=["writes_memory"]), node=stmt)
+                state.terminate("br", [finally_label], node=stmt)
+            else:
+                state.terminate("raise", [exc_temp], node=stmt)
+
+        if stmt.else_body:
+            state.set_block(else_label)
+            self._lower_statements(state, stmt.else_body)
+            if not state.has_terminator():
+                if stmt.finally_body:
+                    state.terminate("br", [finally_label], node=stmt)
+                else:
+                    state.terminate("br", [exit_label], node=stmt)
+
+        if stmt.finally_body:
+            state.set_block(finally_label)
+            state.emit(HInstruction(op="finally_enter", effects=["writes_memory"]), node=stmt)
+            self._lower_statements(state, stmt.finally_body)
+            if not state.has_terminator():
+                state.emit(HInstruction(op="finally_exit", effects=["reads_memory"]), node=stmt)
+                pending_temp = state.new_temp()
+                state.emit(HInstruction(op="load_var", dest=pending_temp, args=[pending_var], effects=["reads_memory"]), node=stmt)
+                none_temp = state.new_temp()
+                state.emit(HInstruction(op="const", dest=none_temp, type_name="none", attrs={"value": None}), node=stmt)
+                has_pending = state.new_temp()
+                state.emit(HInstruction(op="binop", dest=has_pending, args=[pending_temp, none_temp], attrs={"op": "!="}), node=stmt)
+                finally_raise_label = state.new_label("finally_raise")
+                finally_continue_label = state.new_label("finally_continue")
+                state.terminate("cbr", [has_pending, finally_raise_label, finally_continue_label], node=stmt)
+
+                state.set_block(finally_raise_label)
+                state.terminate("raise", [pending_temp], node=stmt)
+
+                state.set_block(finally_continue_label)
+                state.terminate("br", [exit_label], node=stmt)
+
+        state.set_block(exit_label)
+
     def _lower_expr(self, state: _LowerState, expr: Any) -> str:
         if isinstance(expr, ast.LiteralExpr):
             out = state.new_temp()
@@ -439,6 +621,7 @@ class HLIRLowerer:
 
         if isinstance(expr, ast.CallExpr):
             arg_values = [self._lower_expr(state, arg) for arg in expr.args]
+            callsite_id = state.next_callsite_id()
             intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or resolve_call_alias_name(expr.callee)
             if intrinsic_name is not None:
                 spec = resolve_intrinsic(intrinsic_name)
@@ -447,6 +630,24 @@ class HLIRLowerer:
                 if spec is not None and isinstance(spec.return_type, str):
                     ret_type = spec.return_type
                 out = state.new_temp()
+                intrinsic_may_throw = True if spec is None else bool(spec.may_throw)
+                if state.unwind_targets and intrinsic_may_throw:
+                    normal_label = state.new_label("invoke_ok")
+                    state.terminate(
+                        "invoke",
+                        [*arg_values, normal_label, state.unwind_targets[-1]],
+                        attrs={
+                            "kind": "intrinsic",
+                            "name": intrinsic_name,
+                            "signature_id": intrinsic_name,
+                            "callsite_id": callsite_id,
+                            "dest": out,
+                            "type": ret_type,
+                        },
+                        node=expr,
+                    )
+                    state.set_block(normal_label)
+                    return out
                 state.emit(
                     HInstruction(
                         op="intrinsic_call",
@@ -456,6 +657,7 @@ class HLIRLowerer:
                         attrs={
                             "name": intrinsic_name,
                             "signature_id": intrinsic_name,
+                            "callsite_id": callsite_id,
                             "pure_for_kernel": bool(spec.pure_for_kernel) if spec is not None else False,
                         },
                         effects=effects,
@@ -468,12 +670,22 @@ class HLIRLowerer:
             if isinstance(expr.callee, ast.IdentifierExpr):
                 callee_name = expr.callee.name
             out = state.new_temp()
+            if state.unwind_targets:
+                normal_label = state.new_label("invoke_ok")
+                state.terminate(
+                    "invoke",
+                    [*arg_values, normal_label, state.unwind_targets[-1]],
+                    attrs={"kind": "call", "callee": callee_name, "callsite_id": callsite_id, "dest": out},
+                    node=expr,
+                )
+                state.set_block(normal_label)
+                return out
             state.emit(
                 HInstruction(
                     op="call",
                     dest=out,
                     args=arg_values,
-                    attrs={"callee": callee_name},
+                    attrs={"callee": callee_name, "callsite_id": callsite_id},
                     effects=["dynamic_dispatch", "may_throw"],
                 ),
                 node=expr,
@@ -486,6 +698,16 @@ class HLIRLowerer:
             args_array = state.new_temp()
             state.emit(HInstruction(op="array", dest=args_array, args=arg_values, effects=["allocates"]), node=expr)
             out = state.new_temp()
+            if state.unwind_targets:
+                normal_label = state.new_label("invoke_ok")
+                state.terminate(
+                    "invoke",
+                    [target, args_array, normal_label, state.unwind_targets[-1]],
+                    attrs={"kind": "intrinsic", "name": "syscall_invoke", "signature_id": "syscall_invoke", "dest": out, "type": "map"},
+                    node=expr,
+                )
+                state.set_block(normal_label)
+                return out
             state.emit(
                 HInstruction(
                     op="intrinsic_call",
@@ -529,7 +751,7 @@ class HLIRLowerer:
                     op="attr",
                     dest=out,
                     args=[base],
-                    attrs={"attr": expr.attr},
+                    attrs={"attr": expr.attr, "attrsite_id": state.next_attrsite_id()},
                     effects=["dynamic_dispatch", "may_throw"],
                 ),
                 node=expr,

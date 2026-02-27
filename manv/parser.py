@@ -1,3 +1,13 @@
+"""Recursive-descent parser for ManV source.
+
+Why this file exists:
+- Converts token streams into the AST consumed by semantics/interpreter/lowering.
+- Centralizes grammar decisions so interpreter and compiled pipelines observe
+  identical front-end syntax.
+- Encodes migration compatibility (for example `class` alias for `type`) while
+  preserving deterministic diagnostics.
+"""
+
 from __future__ import annotations
 
 from . import ast
@@ -5,6 +15,7 @@ from .diagnostics import ManvError, Span, diag
 from .tokens import Token
 
 C_DECL_TYPES = {"int", "str", "array", "map", "u8", "usize", "float", "bool"}
+MODULE_SEGMENT_KEYWORDS = {"str", "int", "float", "bool", "type", "array", "map"}
 
 
 class Parser:
@@ -23,7 +34,7 @@ class Parser:
                 break
             if self._match_keyword("fn"):
                 declarations.append(self._parse_fn_decl())
-            elif self._match_keyword("type"):
+            elif self._match_keyword("type") or self._match_keyword("class"):
                 declarations.append(self._parse_type_decl())
             elif self._match_keyword("impl"):
                 declarations.append(self._parse_impl_decl())
@@ -114,6 +125,14 @@ class Parser:
         return ast.MacroDeclStub(name=name_tok.lexeme, params=params, body=body, span=self._span(macro_tok))
 
     def _parse_statement(self) -> object:
+        if self._match_keyword("import"):
+            stmt = self._parse_import_stmt()
+            self._consume_required_newline("expected newline after import")
+            return stmt
+        if self._match_keyword("from"):
+            stmt = self._parse_from_import_stmt()
+            self._consume_required_newline("expected newline after from-import")
+            return stmt
         if self._is_c_declaration_start():
             stmt = self._parse_c_decl_stmt()
             self._consume_required_newline("expected newline after declaration")
@@ -290,6 +309,55 @@ class Parser:
             finally_body=finally_body,
             span=self._span(try_tok),
         )
+
+    def _parse_import_stmt(self) -> ast.ImportStmt:
+        tok = self._prev()
+        # Absolute imports must always include at least one module segment.
+        module, level = self._parse_module_path(allow_empty=False)
+        # Python-like rule: relative imports must use `from ... import ...`.
+        if level > 0:
+            self._error("E1004", "relative import requires 'from ... import ...' form", tok)
+        alias: str | None = None
+        if self._match_keyword("as"):
+            alias_tok = self._expect("IDENT", message="expected alias after 'as'")
+            alias = alias_tok.lexeme
+        return ast.ImportStmt(module=module, alias=alias, span=self._span(tok), level=level)
+
+    def _parse_from_import_stmt(self) -> ast.FromImportStmt:
+        tok = self._prev()
+        # `from . import x` is valid, so this path allows an empty module suffix.
+        module, level = self._parse_module_path(allow_empty=True)
+        if not self._match_keyword("import"):
+            self._error("E1004", "expected 'import' in from-import statement", self._current())
+        name_tok = self._expect("IDENT", message="expected imported symbol name")
+        alias: str | None = None
+        if self._match_keyword("as"):
+            alias_tok = self._expect("IDENT", message="expected alias after 'as'")
+            alias = alias_tok.lexeme
+        return ast.FromImportStmt(module=module, name=name_tok.lexeme, alias=alias, span=self._span(tok), level=level)
+
+    def _parse_module_path(self, *, allow_empty: bool) -> tuple[str, int]:
+        # Leading dots encode relative depth.
+        level = 0
+        while self._match_op("."):
+            level += 1
+
+        # Remaining identifier chain is the explicit module tail.
+        parts: list[str] = []
+        if self._is_module_segment_token(self._current()):
+            parts.append(self._advance().lexeme)
+            while self._match_op("."):
+                if not self._is_module_segment_token(self._current()):
+                    self._error("E1004", "expected module path segment", self._current())
+                parts.append(self._advance().lexeme)
+        elif level == 0 or not allow_empty:
+            self._error("E1004", "expected module path", self._current())
+        return ".".join(parts), level
+
+    def _is_module_segment_token(self, tok: Token) -> bool:
+        if tok.kind == "IDENT":
+            return True
+        return tok.kind == "KEYWORD" and tok.lexeme in MODULE_SEGMENT_KEYWORDS
 
     def _parse_if_stmt(self) -> ast.IfStmt:
         if_tok = self._prev()
@@ -497,6 +565,9 @@ class Parser:
             return ast.LiteralExpr(value=None, literal_type="none", span=self._span(tok))
         if self._match_keyword("syscall"):
             return self._parse_syscall_expr()
+        if tok.kind == "KEYWORD" and tok.lexeme in {"type", "int", "float", "bool", "str"}:
+            self._advance()
+            return ast.IdentifierExpr(name=tok.lexeme, span=self._span(tok))
         if self._match("IDENT"):
             return ast.IdentifierExpr(name=tok.lexeme, span=self._span(tok))
         if self._match_op("("):

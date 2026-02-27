@@ -737,7 +737,7 @@ def _syscall_invoke(args: list[Any], **_: Any) -> dict[str, Any]:
             if hasattr(os, "syscall"):
                 result = os.syscall(int(target), *argv)
                 return {"ok": True, "result": result, "platform": platform_name}
-            raise RuntimeError("numeric syscall is not available on this platform")
+            raise OSError("numeric syscall is not available on this platform")
 
         if not isinstance(target, str):
             raise TypeError("syscall target must be int or str")
@@ -757,16 +757,18 @@ def _syscall_invoke(args: list[Any], **_: Any) -> dict[str, Any]:
                 return {"ok": True, "result": os.getpid(), "platform": platform_name}
             if name in {"GetCurrentDirectory", "getcwd"}:
                 return {"ok": True, "result": os.getcwd(), "platform": platform_name}
-            raise RuntimeError(f"unsupported Windows syscall alias: {name}")
+            raise OSError(f"unsupported Windows syscall alias: {name}")
 
         # POSIX aliases for common operations.
         if name == "getpid":
             return {"ok": True, "result": os.getpid(), "platform": platform_name}
         if name == "getcwd":
             return {"ok": True, "result": os.getcwd(), "platform": platform_name}
-        raise RuntimeError(f"unsupported syscall alias: {name}")
+        raise OSError(f"unsupported syscall alias: {name}")
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "platform": platform_name}
+        if isinstance(exc, OSError):
+            raise
+        raise OSError(str(exc)) from exc
 
 
 def _mem_collect(args: list[Any], *, gc_hooks: dict[str, Callable[..., Any]] | None = None, **_: Any) -> None:

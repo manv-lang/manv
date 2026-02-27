@@ -10,3 +10,4 @@ authors = [{ name = "ManV Developer" }]
 entry = "src/main.mv"
 target-dir = ".manv/target"
 dist-dir = "dist"
+bins-dir = ".manv/bins"

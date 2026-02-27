@@ -45,7 +45,8 @@ CLI surface:
 - `manv build [file|project]`
 - `manv repl`
 - `manv test [path]`
-- `manv dap --transport stdio|tcp [--host 127.0.0.1 --port 4711]`\r\n- `manv lsp --transport stdio|tcp [--host 127.0.0.1 --port 2087]`
+- `manv dap --transport stdio|tcp [--host 127.0.0.1 --port 4711]`
+- `manv lsp --transport stdio|tcp [--host 127.0.0.1 --port 2087]`
 
 Package and registry operations:
 
@@ -64,9 +65,19 @@ ManV is moving to a pure language-authored standard library model.
 - `__intrin.*` provides the internal compiler/runtime bridge.
 - Intrinsics are validated by semantic analysis and lowered through HLIR.
 - Runtime behavior stays consistent between interpreter and compiled execution.
+- Module imports support absolute and package-relative forms (`import a.b`, `from .x import y`, `from ..pkg import z`).
+- Module resolution order is deterministic: project source root, then `MANV_PATH`, then bundled std source.
 - `manv init <path> --std` scaffolds the compiler-shipped ManV `std` source.
 - `syscall(...)` is available as both statement and expression form.
 - `std` includes typed syscall wrappers: `std_syscall_posix(...)` and `std_syscall_windows(...)`.
+
+## No-Foreign-Runtime Policy
+
+ManV enforces a strict migration policy for standard library purity:
+
+- No new stdlib modules may delegate subsystem behavior to host-language stdlib packages.
+- No new broad subsystem intrinsics are allowed (for example: JSON/HTTP/regex parsers as intrinsics).
+- CI includes monotonic policy gates that block newly introduced violations while existing baseline debt is removed incrementally.
 
 Example:
 

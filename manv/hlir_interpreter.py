@@ -1,3 +1,12 @@
+"""Reference executor for HLIR modules.
+
+Why this file exists:
+- Provides an executable semantic oracle for lowered HLIR functions.
+- Enables parity checks between AST semantics, HLIR lowering, and compiled
+  artifact generation.
+- Supplies tracing hooks used by graph capture and debugging workflows.
+"""
+
 from __future__ import annotations
 
 import io
@@ -77,6 +86,43 @@ class HLIRInterpreter:
         if self.tracer is not None:
             self.tracer.on_call(name, args, depth)
 
+        if name == "type":
+            if len(args) != 1:
+                raise RuntimeError("type() expects exactly 1 argument")
+            out = type(args[0]).__name__
+            if self.tracer is not None:
+                self.tracer.on_return(name, out, depth)
+            return out
+        if name == "isinstance":
+            if len(args) != 2:
+                raise RuntimeError("isinstance() expects exactly 2 arguments")
+            rhs = args[1]
+            if isinstance(rhs, str):
+                out = type(args[0]).__name__ == rhs
+            else:
+                out = isinstance(args[0], rhs)
+            if self.tracer is not None:
+                self.tracer.on_return(name, out, depth)
+            return out
+        if name == "issubclass":
+            if len(args) != 2:
+                raise RuntimeError("issubclass() expects exactly 2 arguments")
+            lhs = args[0]
+            rhs = args[1]
+            if not isinstance(lhs, type) or not isinstance(rhs, type):
+                raise RuntimeError("issubclass() args must be class objects in HLIR")
+            out = issubclass(lhs, rhs)
+            if self.tracer is not None:
+                self.tracer.on_return(name, out, depth)
+            return out
+        if name == "id":
+            if len(args) != 1:
+                raise RuntimeError("id() expects exactly 1 argument")
+            out = int(id(args[0]))
+            if self.tracer is not None:
+                self.tracer.on_return(name, out, depth)
+            return out
+
         alias = BUILTIN_ALIASES.get(name)
         if alias is not None:
             payload = [args] if alias == "io_print" else list(args)
@@ -137,6 +183,39 @@ class HLIRInterpreter:
                     cond_value = self._resolve_value(term.args[0], frame.values, frame.vars_mem)
                     current = term.args[1] if bool(cond_value) else term.args[2]
                     continue
+                if term.op == "invoke":
+                    if len(term.args) < 2:
+                        raise RuntimeError("invalid invoke terminator")
+                    normal_label = term.args[-2]
+                    unwind_label = term.args[-1]
+                    call_arg_tokens = term.args[:-2]
+                    call_arg_values = [self._resolve_value(tok, frame.values, frame.vars_mem) for tok in call_arg_tokens]
+                    attrs = term.attrs or {}
+                    kind = str(attrs.get("kind", "call"))
+                    try:
+                        if kind == "intrinsic":
+                            name = str(attrs.get("name", ""))
+                            result = self._invoke_intrinsic(name, call_arg_values)
+                        else:
+                            callee = str(attrs.get("callee", ""))
+                            result = self._call(callee, call_arg_values)
+                        dest = attrs.get("dest")
+                        if isinstance(dest, str) and dest:
+                            frame.values[dest] = result
+                        current = normal_label
+                    except Exception as exc:
+                        frame.vars_mem["__eh_exception__"] = exc
+                        current = unwind_label
+                    continue
+                if term.op == "raise":
+                    if not term.args or term.args[0] == "__reraise__":
+                        exc = frame.vars_mem.get("__eh_exception__")
+                        if exc is None:
+                            raise RuntimeError("bare raise outside exception handler")
+                    else:
+                        value = self._resolve_value(term.args[0], frame.values, frame.vars_mem)
+                        exc = value if isinstance(value, Exception) else RuntimeError(str(value))
+                    raise exc
                 if term.op == "ret":
                     if not term.args:
                         return None
@@ -148,16 +227,13 @@ class HLIRInterpreter:
             self.call_stack.pop()
 
     def _invoke_intrinsic(self, name: str, args: list[Any]) -> Any:
-        try:
-            return invoke_intrinsic(
-                name,
-                args,
-                stdout_write=self.stdout.write,
-                stdin_readline=lambda: "",
-                gc_hooks={},
-            )
-        except Exception as exc:
-            raise RuntimeError(f"intrinsic {name}: {exc}") from exc
+        return invoke_intrinsic(
+            name,
+            args,
+            stdout_write=self.stdout.write,
+            stdin_readline=lambda: "",
+            gc_hooks={},
+        )
 
     def _resolve_value(self, token: str, values: dict[str, Any], vars_mem: dict[str, Any]) -> Any:
         if token.startswith("%"):
@@ -199,6 +275,17 @@ class HLIRInterpreter:
             if name not in vars_mem:
                 raise RuntimeError(f"undefined variable: {name}")
             return vars_mem[name]
+        if op == "set_exception":
+            vars_mem["__eh_exception__"] = resolved_args[0] if resolved_args else None
+            return None
+        if op == "load_exception":
+            return vars_mem.get("__eh_exception__")
+        if op == "exc_match":
+            err = resolved_args[0] if resolved_args else None
+            type_name = str(instr.attrs.get("type", "Exception"))
+            return self._exc_match(err, type_name)
+        if op in {"finally_enter", "finally_exit"}:
+            return None
         if op == "alloc_array":
             n = int(resolved_args[0])
             return [None] * n
@@ -234,7 +321,20 @@ class HLIRInterpreter:
             namespaced = std_namespace_attr(base, attr)
             if namespaced is not None:
                 return namespaced
+            if isinstance(base, dict):
+                if attr in base:
+                    return base[attr]
+                raise RuntimeError(f"missing attribute '{attr}'")
             raise RuntimeError(f"unsupported attribute: {attr}")
+        if op == "import":
+            # HLIR execution currently models import values symbolically.
+            # Full module loading remains AST-interpreter-authoritative in v1.
+            return {"__module__": str(instr.attrs.get("module", "")), "__level__": int(instr.attrs.get("level", 0) or 0)}
+        if op == "from_import":
+            module = str(instr.attrs.get("module", ""))
+            name = str(instr.attrs.get("name", ""))
+            # Preserve imported symbol metadata for traceability/testing.
+            return {"__from__": module, "__name__": name, "__level__": int(instr.attrs.get("level", 0) or 0)}
         if op == "intrinsic_call":
             name = str(instr.attrs.get("name", ""))
             return self._invoke_intrinsic(name, list(resolved_args))
@@ -246,3 +346,23 @@ class HLIRInterpreter:
         if op == "unsupported_stmt":
             raise RuntimeError(f"unsupported statement in HLIR: {instr.attrs.get('kind')}")
         raise RuntimeError(f"unsupported instruction: {op}")
+
+    def _exc_match(self, err: Any, type_name: str) -> bool:
+        if err is None:
+            return False
+        if type_name in {"BaseException", "Exception"}:
+            return isinstance(err, Exception)
+        mapping: dict[str, type[Exception]] = {
+            "TypeError": TypeError,
+            "ValueError": ValueError,
+            "KeyError": KeyError,
+            "IndexError": IndexError,
+            "AttributeError": AttributeError,
+            "RuntimeError": RuntimeError,
+            "OSError": OSError,
+        }
+        exc_cls = mapping.get(type_name)
+        if exc_cls is None:
+            # Unknown language-level type in HLIR path: match by class name conservatively.
+            return err.__class__.__name__ == type_name
+        return isinstance(err, exc_cls)

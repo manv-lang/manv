@@ -1,0 +1,73 @@
+# Bundled ManV builtins module.
+#
+# Why this file exists:
+# - Provides a ManV-authored bootstrap surface for core builtins APIs.
+# - Avoids host-runtime delegation at module layer while remaining minimal.
+# - Gives importable names that higher-level std modules can build on.
+
+fn len(x) -> int:
+    return __intrin.core_len(x)
+
+fn repr(x) -> str:
+    return __intrin.core_repr(x)
+
+fn hash(x) -> int:
+    return __intrin.core_hash(x)
+
+fn min(items: array):
+    return __intrin.core_min(items)
+
+fn max(items: array):
+    return __intrin.core_max(items)
+
+fn sum(items: array):
+    return __intrin.core_sum(items)
+
+fn any(items: array) -> bool:
+    return __intrin.core_any(items)
+
+fn all(items: array) -> bool:
+    return __intrin.core_all(items)
+
+fn sorted(items: array) -> array:
+    return __intrin.core_sorted(items)
+
+fn range(stop: int) -> array:
+    return __intrin.core_range(stop)
+
+fn enumerate(items: array) -> array:
+    return __intrin.core_enumerate(items)
+
+fn zip(items: array) -> array:
+    # Current runtime zip primitive expects an array of arrays.
+    return __intrin.core_zip(items)
+
+fn as_int(x) -> int:
+    return __intrin.core_int(x)
+
+fn as_float(x) -> float:
+    return __intrin.core_float(x)
+
+fn as_bool(x) -> bool:
+    return __intrin.core_bool(x)
+
+fn as_str(x) -> str:
+    return __intrin.core_str(x)
+
+fn iter(x):
+    return __intrin.core_iter(x)
+
+fn next(it):
+    return __intrin.core_next(it)
+
+fn object_type(x):
+    return type(x)
+
+fn is_instance(x, t) -> bool:
+    return isinstance(x, t)
+
+fn is_subclass(a, b) -> bool:
+    return issubclass(a, b)
+
+fn identity(x) -> int:
+    return id(x)

@@ -3,7 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 
-SIDE_EFFECT_OPS = {"return", "call", "assign", "set_attr", "set_index", "raise", "break", "continue", "if_region", "while_region", "try_region"}
+SIDE_EFFECT_OPS = {
+    "return",
+    "call",
+    "assign",
+    "set_attr",
+    "set_index",
+    "raise",
+    "break",
+    "continue",
+    "if_region",
+    "while_region",
+    "try_region",
+    "import",
+    "from_import",
+}
 
 
 def optimize_graph_ir(graph_ir: dict[str, Any]) -> dict[str, Any]:
