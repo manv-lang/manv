@@ -16,7 +16,7 @@ from .dap import DAPServer
 from .diagnostics import ManvError, diag
 from .gpu_dispatch import backend_selection_report
 from .host import HostSelectionRequest, render_joint_backend_report, resolve_host_selection
-from .project import discover_target, init_project
+from .project import discover_compile_target, discover_target, init_project
 from .registry import (
     DEFAULT_REGISTRY_URL,
     add_dependency_entry,
@@ -199,7 +199,7 @@ def run(
 
 @app.command("compile")
 def compile_cmd(
-    target: Annotated[str, typer.Argument(help="project directory or .mv file")] = ".",
+    target: Annotated[str, typer.Argument(help="single .mv file or directory containing main.mv")] = ".",
     emit: Annotated[
         str,
         typer.Option(
@@ -230,7 +230,7 @@ def compile_cmd(
 ) -> None:
     del cuda_jit, cuda_aot
     try:
-        ctx = discover_target(target)
+        ctx = discover_compile_target(target)
         out_dir = Path(out).resolve() if out else ctx.target_dir
         reports = _requested_reports(report)
         if "backend" in reports:

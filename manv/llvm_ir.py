@@ -17,6 +17,12 @@ from dataclasses import dataclass
 class LlvmValue:
     type_name: str
     ref: str
+    runtime_class: str | None = None
+    container_kind: str | None = None
+    element_type: str | None = None
+    key_type: str | None = None
+    value_type: str | None = None
+    literal_value: object | None = None
 
 
 def sanitize_symbol(name: str) -> str:
@@ -45,11 +51,16 @@ def llvm_type(type_name: str | None) -> str:
         return "double"
     if normalized in {"str", "string"}:
         return "ptr"
+    if normalized in {"array", "map", "module", "type", "dynamic"}:
+        return "ptr"
     if normalized.startswith("array[") or normalized.startswith("ptr[") or normalized.startswith("ptr<"):
         return "ptr"
     if normalized.startswith("ptr"):
         return "ptr"
-    return "i64"
+    # Unknown nominal types are treated as opaque pointers so user-defined
+    # classes and future runtime objects lower through the native path instead
+    # of being miscompiled as integers.
+    return "ptr"
 
 
 def llvm_zero(type_name: str) -> str:

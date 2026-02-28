@@ -26,7 +26,6 @@ from .lexer import Lexer
 from .lowering import lower_ast_to_hir
 from .llvm_codegen import LlvmLoweringError, emit_llvm_module
 from .llvm_toolchain import build_llvm_artifacts
-from .native_toolchain import build_native_artifacts
 from .parser import Parser
 from .semantics import SemanticAnalyzer
 from .targets import get_target
@@ -233,41 +232,25 @@ def compile_target(
         if llvm_text is None and emit_llvm_ir:
             raise ManvError(diag("E5207", f"LLVM lowering failed: {lowering_error}", str(source_path), 1, 1))
 
-        try:
-            if llvm_text is not None:
-                native_paths.update(
-                    build_llvm_artifacts(
-                        llvm_ir=llvm_text,
-                        out_dir=out_dir,
-                        stem=stem,
-                        target=target,
-                        emit_ir=emit_llvm_ir,
-                        emit_object=emit_native_obj,
-                        emit_executable=emit_native_exe,
-                        emit_asm="asm" in emit_set,
-                        link_libs=tuple(link_libs),
-                        link_paths=tuple(link_paths),
-                        link_args=tuple(link_args),
-                        allow_asm_fallback=True,
-                        fallback_asm_text=str(artifacts["asm"]),
-                    )
-                )
-            elif emit_native_obj or emit_native_exe:
-                native = build_native_artifacts(
-                    asm_text=str(artifacts["asm"]),
+        if llvm_text is None and (emit_native_obj or emit_native_exe or "asm" in emit_set):
+            raise ManvError(diag("E5207", f"LLVM lowering failed: {lowering_error}", str(source_path), 1, 1))
+
+        if llvm_text is not None:
+            native_paths.update(
+                build_llvm_artifacts(
+                    llvm_ir=llvm_text,
                     out_dir=out_dir,
                     stem=stem,
                     target=target,
+                    emit_ir=emit_llvm_ir,
                     emit_object=emit_native_obj,
                     emit_executable=emit_native_exe,
+                    emit_asm="asm" in emit_set,
+                    link_libs=tuple(link_libs),
+                    link_paths=tuple(link_paths),
+                    link_args=tuple(link_args),
                 )
-                if native.object_path is not None:
-                    native_paths["native_obj"] = native.object_path
-                if native.executable_path is not None:
-                    native_paths["native_exe"] = native.executable_path
-        except ManvError as err:
-            if host_backend != "auto" or err.diagnostic.code not in {"E5101", "E5102", "E5201", "E5203", "E5204", "E5205"}:
-                raise
+            )
 
     written: dict[str, Path] = {}
     for kind in sorted(emit_set):

@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from manv.builder import host_target_name
 from manv.cli import app
 from manv.native_toolchain import detect_toolchain
+from manv.llvm_toolchain import detect_llvm_toolchain
 
 
 try:
@@ -189,12 +190,12 @@ def test_run_backend_report(tmp_path: Path) -> None:
 
 def test_compile_outputs_all_ir(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project), "--emit", "ast,hir,graph,kernel"])
+    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv"), "--emit", "ast,hir,graph,kernel"])
     assert result.exit_code == 0
     assert "[Compile]" in result.stdout
     for name in ["main.ast.json", "main.hir.json", "main.graph.json", "main.kernel.json"]:
-        assert (project / ".manv" / "target" / name).exists()
-    graph_payload = json.loads((project / ".manv" / "target" / "main.graph.json").read_text(encoding="utf-8"))
+        assert (project / "src" / ".manv" / "target" / name).exists()
+    graph_payload = json.loads((project / "src" / ".manv" / "target" / "main.graph.json").read_text(encoding="utf-8"))
     assert graph_payload["kind"] == "tensor_dag"
     assert graph_payload["optimization"]["constant_folding"] >= 1
     assert graph_payload["optimization"]["dead_nodes_removed"] >= 1
@@ -202,9 +203,9 @@ def test_compile_outputs_all_ir(tmp_path: Path) -> None:
 
 def test_compile_cuda_ptx_backend(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project), "--backend", "cuda-ptx"])
+    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv"), "--backend", "cuda-ptx"])
     assert result.exit_code == 0
-    ptx = project / ".manv" / "target" / "main.cuda.ptx"
+    ptx = project / "src" / ".manv" / "target" / "main.cuda.ptx"
     assert ptx.exists()
     ptx_source = ptx.read_text(encoding="utf-8")
     assert ptx_source.strip()
@@ -213,21 +214,21 @@ def test_compile_cuda_ptx_backend(tmp_path: Path) -> None:
 
 def test_compile_parse_failure(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_parse_error")
-    result = runner.invoke(app, ["compile", str(project)])
+    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
     assert result.exit_code == 1
     assert "expected ':'" in result.stderr
 
 
 def test_compile_semantic_failure(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_semantic_error")
-    result = runner.invoke(app, ["compile", str(project)])
+    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
     assert result.exit_code == 1
     assert "undefined variable 'y'" in result.stderr
 
 
 def test_compile_break_outside_loop_failure(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_break_outside")
-    result = runner.invoke(app, ["compile", str(project)])
+    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
     assert result.exit_code == 1
     assert "'break' is only valid inside loops" in result.stderr
 
@@ -235,16 +236,17 @@ def test_compile_break_outside_loop_failure(tmp_path: Path) -> None:
 def test_build_command_and_bundle_run(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "build_ok")
     build = runner.invoke(app, ["build", str(project)])
+    if detect_llvm_toolchain() is None:
+        assert build.exit_code == 1
+        assert "no LLVM toolchain found (clang)" in build.stderr
+        return
+
     assert build.exit_code == 0
     assert "[Build]" in build.stdout
     shutil.rmtree(project / "src")
     native_exe = project / ".manv" / "target" / host_target_name() / ("build_ok.exe" if sys.platform == "win32" else "build_ok")
-    bundle_file = project / ".manv" / "target" / host_target_name() / "build_ok.mvz"
-    if native_exe.exists():
-        proc = subprocess.run([str(native_exe)], capture_output=True, text=True, check=False)
-    else:
-        assert bundle_file.exists()
-        proc = subprocess.run([sys.executable, str(bundle_file)], capture_output=True, text=True, check=False)
+    assert native_exe.exists()
+    proc = subprocess.run([str(native_exe)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0
     assert "Build Hello" in proc.stdout
 
@@ -259,12 +261,39 @@ def test_build_host_interp_keeps_mvz(tmp_path: Path) -> None:
 
 def test_compile_host_report_and_native_fallback(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project), "--report", "backend"])
-    assert result.exit_code == 0
+    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv"), "--report", "backend"])
     assert '"resolved_host_backend"' in result.stdout
-    native_exe = project / ".manv" / "target" / host_target_name() / ("compile_ok.exe" if sys.platform == "win32" else "compile_ok")
+    if detect_llvm_toolchain() is None:
+        assert result.exit_code == 1
+        assert "no LLVM toolchain found (clang)" in result.stderr
+        return
+
+    assert result.exit_code == 0
+    native_exe = project / "src" / ".manv" / "target" / host_target_name() / ("main.exe" if sys.platform == "win32" else "main")
     if detect_toolchain() is not None:
         assert native_exe.exists()
+
+
+def test_compile_accepts_directory_with_root_main_file(tmp_path: Path) -> None:
+    root = tmp_path / "single"
+    root.mkdir()
+    (root / "main.mv").write_text(
+        "fn main() -> int:\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["compile", str(root)])
+    assert result.exit_code == 0
+    assert "[Compile]" in result.stdout
+    assert (root / ".manv" / "target" / "main.ast.json").exists()
+
+
+def test_compile_rejects_project_root_and_points_to_build(tmp_path: Path) -> None:
+    project = _copy_fixture(tmp_path, "compile_ok")
+    result = runner.invoke(app, ["compile", str(project)])
+    assert result.exit_code == 1
+    assert "use 'manv build' for projects or pass src/main.mv explicitly" in result.stderr
 
 
 def test_repl_command() -> None:

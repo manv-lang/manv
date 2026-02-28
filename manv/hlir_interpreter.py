@@ -87,10 +87,12 @@ class HLIRInterpreter:
         self.functions: dict[str, HFunction] = {}
         self.call_stack: list[HLIRFrame] = []
         self.gpu_engine: GpuExecutionEngine | None = None
+        self.module_attrs: dict[str, Any] = {}
 
     def run_module(self, module: HModule, entry: str = "main") -> HLIRExecutionResult:
         self.functions = {fn.name: fn for fn in module.functions}
         self.call_stack = []
+        self.module_attrs = dict(module.attrs or {})
         self.gpu_engine = GpuExecutionEngine(
             module,
             cpu_fallback=lambda name, args: self._call(name, args, force_cpu=True),
@@ -146,6 +148,20 @@ class HLIRInterpreter:
             if self.tracer is not None:
                 self.tracer.on_return(name, out, depth)
             return out
+        if name == "help":
+            if len(args) != 1:
+                raise RuntimeError("help() expects exactly 1 argument")
+            self.stdout.write(self._help_text(args[0]) + "\n")
+            if self.tracer is not None:
+                self.tracer.on_return(name, None, depth)
+            return None
+
+        if name in self.functions:
+            fn = self.functions[name]
+            out = self._execute_function(fn, args, force_cpu=force_cpu)
+            if self.tracer is not None:
+                self.tracer.on_return(name, out, depth)
+            return out
 
         alias = BUILTIN_ALIASES.get(name)
         if alias is not None:
@@ -157,12 +173,7 @@ class HLIRInterpreter:
 
         if name not in self.functions:
             raise RuntimeError(f"undefined function: {name}")
-
-        fn = self.functions[name]
-        out = self._execute_function(fn, args, force_cpu=force_cpu)
-        if self.tracer is not None:
-            self.tracer.on_return(name, out, depth)
-        return out
+        raise RuntimeError(f"undefined function: {name}")
 
     def _execute_function(self, fn: HFunction, args: list[Any], *, force_cpu: bool = False) -> Any:
         blocks = {b.label: b for b in fn.blocks}
@@ -306,6 +317,10 @@ class HLIRInterpreter:
                 return StdNamespace()
             if name == "__intrin":
                 return IntrinsicNamespace()
+            if name in self.functions:
+                return {"__manv_help_kind__": "function", "name": name}
+            if name in dict(self.module_attrs.get("types", {})):
+                return {"__manv_help_kind__": "type", "name": name}
             if name not in vars_mem:
                 raise RuntimeError(f"undefined variable: {name}")
             return vars_mem[name]
@@ -355,6 +370,10 @@ class HLIRInterpreter:
             namespaced = std_namespace_attr(base, attr)
             if namespaced is not None:
                 return namespaced
+            if isinstance(base, dict) and base.get("__manv_help_kind__") == "type":
+                qualified = f"{base.get('name')}.{attr}"
+                if qualified in dict(self.module_attrs.get("functions", {})):
+                    return {"__manv_help_kind__": "function", "name": qualified}
             if isinstance(base, dict):
                 if attr in base:
                     return base[attr]
@@ -413,3 +432,21 @@ class HLIRInterpreter:
             # Unknown language-level type in HLIR path: match by class name conservatively.
             return err.__class__.__name__ == type_name
         return isinstance(err, exc_cls)
+
+    def _help_text(self, value: Any) -> str:
+        if isinstance(value, dict):
+            kind = str(value.get("__manv_help_kind__", ""))
+            name = str(value.get("name", ""))
+            if kind == "function":
+                payload = dict(self.module_attrs.get("functions", {})).get(name, {})
+                signature = str(payload.get("signature", f"fn {name}(...) -> any"))
+                docstring = str(payload.get("docstring") or "No docstring available.")
+                return "\n".join([signature, docstring])
+            if kind == "type":
+                payload = dict(self.module_attrs.get("types", {})).get(name, {})
+                docstring = str(payload.get("docstring") or "No docstring available.")
+                return "\n".join([f"class {name}", docstring])
+            if "__module__" in value:
+                return "\n".join([f"module {value.get('__module__')}", "No docstring available."])
+
+        return "\n".join([f"value of type {type(value).__name__}", "No docstring available."])

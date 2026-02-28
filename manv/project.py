@@ -24,6 +24,69 @@ class ProjectContext:
     config_path: Path | None
 
 
+def discover_compile_target(path: str | Path | None) -> ProjectContext:
+    """Resolve the input for `manv compile`.
+
+    Why this exists:
+    - `compile` is the single-file developer-facing command, while `build`
+      owns project resolution and packaging.
+    - Users still reasonably expect `manv compile` inside a directory that
+      contains `main.mv` to compile that file without needing to spell it out.
+    - When the caller points at a project root, the diagnostic should explain
+      the intended split rather than surfacing the generic project loader error.
+    """
+
+    candidate = Path(path or ".").resolve()
+    if candidate.is_file():
+        if candidate.suffix != ".mv":
+            raise ManvError(diag("E4001", "source file must use .mv extension", str(candidate), 1, 1))
+        root = candidate.parent
+        return ProjectContext(
+            root=root,
+            name=candidate.stem,
+            entry=candidate,
+            target_dir=root / DEFAULT_TARGET_DIR,
+            dist_dir=root / DEFAULT_DIST_DIR,
+            config_path=None,
+        )
+
+    if not candidate.exists():
+        raise ManvError(diag("E4002", f"path does not exist: {candidate}", str(candidate), 1, 1))
+
+    direct_entry = candidate / "main.mv"
+    if direct_entry.exists():
+        return ProjectContext(
+            root=candidate,
+            name=direct_entry.stem,
+            entry=direct_entry,
+            target_dir=candidate / DEFAULT_TARGET_DIR,
+            dist_dir=candidate / DEFAULT_DIST_DIR,
+            config_path=None,
+        )
+
+    project_entry = candidate / DEFAULT_ENTRY
+    if _discover_config(candidate) is not None or project_entry.exists():
+        raise ManvError(
+            diag(
+                "E4005",
+                "compile expects a single .mv file or a directory containing main.mv; use 'manv build' for projects or pass src/main.mv explicitly",
+                str(candidate),
+                1,
+                1,
+            )
+        )
+
+    raise ManvError(
+        diag(
+            "E4005",
+            "compile expects a single .mv file or a directory containing main.mv",
+            str(candidate),
+            1,
+            1,
+        )
+    )
+
+
 def discover_target(path: str | Path | None) -> ProjectContext:
     candidate = Path(path or ".").resolve()
     if candidate.is_file():

@@ -52,7 +52,8 @@ class Parser:
                     self._error("E1012", "decorators must appear immediately before a function declaration", self._current())
                 statements.append(self._parse_statement())
         span = Span(self.file, 1, 1)
-        return ast.Program(declarations=declarations, statements=statements, span=span)
+        docstring, statements = self._extract_leading_docstring(statements)
+        return ast.Program(declarations=declarations, statements=statements, span=span, docstring=docstring)
 
     def _parse_fn_decl(self, *, decorators: list[ast.Decorator] | None = None) -> ast.FnDecl:
         fn_tok = self._prev()
@@ -79,6 +80,7 @@ class Parser:
     
         self._expect_op(":")
         body = self._parse_block()
+        docstring, body = self._extract_leading_docstring(body)
     
         return ast.FnDecl(
             name=name_tok.lexeme,
@@ -87,6 +89,7 @@ class Parser:
             body=body,
             span=self._span(fn_tok),
             decorators=list(decorators or []),
+            docstring=docstring,
         )
 
     def _parse_type_decl(self) -> ast.TypeDecl:
@@ -98,8 +101,8 @@ class Parser:
             base_name = base_tok.lexeme
             self._expect_op(")")
         self._expect_op(":")
-        methods = self._parse_method_block("type")
-        return ast.TypeDecl(name=name_tok.lexeme, base_name=base_name, methods=methods, span=self._span(type_tok))
+        docstring, attrs, methods = self._parse_type_block("type")
+        return ast.TypeDecl(name=name_tok.lexeme, base_name=base_name, attrs=attrs, methods=methods, span=self._span(type_tok), docstring=docstring)
 
     def _parse_impl_decl(self) -> ast.ImplDecl:
         impl_tok = self._prev()
@@ -122,6 +125,42 @@ class Parser:
             methods.append(self._parse_fn_decl(decorators=decorators))
         self._expect("DEDENT", message="expected dedent")
         return methods
+
+    def _parse_type_block(self, owner: str) -> tuple[str | None, list[ast.TypeAttrDecl], list[ast.FnDecl]]:
+        """Parse a type body with optional docstring, immutable attrs, and methods."""
+
+        self._consume_required_newline("expected newline after ':'")
+        self._expect("INDENT", message="expected indented block")
+        docstring: str | None = None
+        attrs: list[ast.TypeAttrDecl] = []
+        methods: list[ast.FnDecl] = []
+        first_item = True
+        while not self._is("DEDENT") and not self._is("EOF"):
+            self._consume_newlines()
+            if self._is("DEDENT") or self._is("EOF"):
+                break
+            if first_item and self._is("STRING"):
+                doc_tok = self._advance()
+                docstring = doc_tok.raw_lexeme if doc_tok.raw_lexeme is not None else doc_tok.lexeme
+                self._consume_required_newline("expected newline after docstring")
+                first_item = False
+                continue
+
+            decorators = self._parse_decorators()
+            if self._match_keyword("fn"):
+                methods.append(self._parse_fn_decl(decorators=decorators))
+                first_item = False
+                continue
+            if decorators:
+                self._error("E1012", "decorators are only supported on functions", self._current())
+            if self._match_keyword("let"):
+                attrs.append(self._parse_type_attr_decl())
+                self._consume_required_newline("expected newline after type attribute")
+                first_item = False
+                continue
+            self._error("E1006", f"expected 'fn' or 'let' inside {owner} block", self._current())
+        self._expect("DEDENT", message="expected dedent")
+        return docstring, attrs, methods
 
     def _parse_macro_decl_stub(self) -> ast.MacroDeclStub:
         macro_tok = self._prev()
@@ -265,6 +304,16 @@ class Parser:
             span=self._span(let_tok),
         )
 
+    def _parse_type_attr_decl(self) -> ast.TypeAttrDecl:
+        let_tok = self._prev()
+        name_tok = self._expect("IDENT", message="expected attribute name")
+        type_name = None
+        if self._match_op(":"):
+            type_name = self._parse_type(stop_ops={"="})
+        self._expect_op("=")
+        value = self._parse_expression()
+        return ast.TypeAttrDecl(name=name_tok.lexeme, type_name=type_name, value=value, span=self._span(let_tok))
+
     def _parse_c_decl_stmt(self) -> ast.LetStmt:
         type_tok = self._advance()
         type_name = type_tok.lexeme
@@ -387,8 +436,17 @@ class Parser:
     def _parse_module_path(self, *, allow_empty: bool) -> tuple[str, int]:
         # Leading dots encode relative depth.
         level = 0
-        while self._match_op("."):
-            level += 1
+        while True:
+            if self._match_op(".."):
+                # The lexer tokenizes `..` as one operator for range syntax.
+                # Relative imports reuse the same token stream, so the parser
+                # must count that token as two leading package hops here.
+                level += 2
+                continue
+            if self._match_op("."):
+                level += 1
+                continue
+            break
 
         # Remaining identifier chain is the explicit module tail.
         parts: list[str] = []
@@ -621,7 +679,7 @@ class Parser:
                 return ast.LiteralExpr(value=float(tok.lexeme), literal_type="float", span=self._span(tok))
             return ast.LiteralExpr(value=int(tok.lexeme), literal_type="int", span=self._span(tok))
         if self._match("STRING"):
-            return ast.LiteralExpr(value=tok.lexeme, literal_type="str", span=self._span(tok))
+            return ast.LiteralExpr(value=tok.lexeme, literal_type="str", span=self._span(tok), raw_value=tok.raw_lexeme)
         if self._match_keyword("true") or self._match_keyword("True"):
             return ast.LiteralExpr(value=True, literal_type="bool", span=self._span(tok))
         if self._match_keyword("false") or self._match_keyword("False"):
@@ -687,14 +745,27 @@ class Parser:
         raise ManvError(diag(code, message, self.file, token.line, token.column, line_text))
 
     def _span(self, token: Token) -> Span:
-        return Span(self.file, token.line, token.column)
+        return Span(self.file, token.line, token.column, token.end_line, token.end_column)
 
     def _span_from_expr(self, expr: object) -> Span:
         expr_span = getattr(expr, "span", None)
         if isinstance(expr_span, Span):
             return expr_span
         tok = self._current()
-        return Span(self.file, tok.line, tok.column)
+        return Span(self.file, tok.line, tok.column, tok.end_line, tok.end_column)
+
+    def _extract_leading_docstring(self, statements: list[object]) -> tuple[str | None, list[object]]:
+        if not statements:
+            return None, statements
+        first = statements[0]
+        if not isinstance(first, ast.ExprStmt):
+            return None, statements
+        if not isinstance(first.expr, ast.LiteralExpr) or first.expr.literal_type != "str":
+            return None, statements
+        docstring = getattr(first.expr, "raw_value", None)
+        if docstring is None:
+            docstring = first.expr.value
+        return str(docstring), statements[1:]
 
     def _current(self) -> Token:
         return self.tokens[self.pos]

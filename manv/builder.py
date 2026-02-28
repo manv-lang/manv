@@ -143,16 +143,10 @@ def _build_native_executable(
             host_backend=host_backend,
             stem_override=context.name,
         )
-    except Exception as err:
-        if isinstance(err, BaseException) and getattr(err, "diagnostic", None) is not None:
-            diag_code = err.diagnostic.code
-            if host_backend == "auto" and diag_code in {"E5101", "E5102", "E5201", "E5203", "E5204", "E5205"}:
-                return _build_interpreter_bundle(context, out_dir=out_dir, portable_cache=False)
+    except Exception:
         raise
 
     if "native_exe" not in written:
-        if host_backend == "auto":
-            return _build_interpreter_bundle(context, out_dir=out_dir, portable_cache=False)
         raise RuntimeError("native build requested but no executable artifact was produced")
     executable = written["native_exe"]
 

@@ -6,14 +6,16 @@ from typing import TextIO
 from . import ast
 from .compiler import parse_program
 from .diagnostics import ManvError
-from .interpreter import FunctionValue, Interpreter
+from .interpreter import Interpreter
 from .intrinsics import all_intrinsics
 from .tokens import DOUBLE_CHAR_OPS, KEYWORDS, SINGLE_CHAR_OPS
 
 
 INTRINSIC_NAMES = sorted(spec.name for spec in all_intrinsics())
-BUILTIN_WORDS = {"print", "len", "std", "__intrin"}
-REPL_TOKEN_RE = re.compile(r"(\s+|#.*$|\"(?:\\.|[^\"])*\"?|\'(?:\\.|[^\'])*\'?|[A-Za-z_][A-Za-z0-9_]*|\d+\.\d+|\d+|==|!=|<=|>=|->|&&|\|\||.)")
+BUILTIN_WORDS = {"print", "len", "help", "type", "isinstance", "issubclass", "id", "std", "__intrin"}
+REPL_TOKEN_RE = re.compile(
+    r"(\s+|#.*$|\"(?:\\.|[^\"])*\"?|\'(?:\\.|[^\'])*\'?|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*|\d+\.\d+|\d+|==|!=|<=|>=|->|&&|\|\||.)"
+)
 
 
 class ReplSession:
@@ -23,11 +25,27 @@ class ReplSession:
 
     def execute_source(self, source: str) -> None:
         program = parse_program(source, "<repl>")
+        # The REPL should mirror the real language surface, including modern
+        # class/type declarations and docstring-carrying definitions. We load
+        # declarations through the interpreter's normal registration path so
+        # runtime type state, method tables, and globals stay consistent with
+        # file execution instead of maintaining a separate REPL-only model.
+        if program.declarations:
+            declarations_only = ast.Program(
+                declarations=program.declarations,
+                statements=[],
+                span=program.span,
+                docstring=program.docstring,
+            )
+            self.interpreter.load_program(declarations_only)
         for decl in program.declarations:
             if isinstance(decl, ast.FnDecl):
-                self.interpreter.functions[decl.name] = FunctionValue(decl=decl)
                 self.out.write(f"registered fn {decl.name}\n")
-            elif isinstance(decl, (ast.TypeDeclStub, ast.ImplDeclStub, ast.MacroDeclStub)):
+            elif isinstance(decl, ast.TypeDecl):
+                self.out.write(f"registered type {decl.name}\n")
+            elif isinstance(decl, ast.ImplDecl):
+                self.out.write(f"registered impl {decl.target}\n")
+            elif isinstance(decl, ast.MacroDeclStub):
                 self.out.write(f"stub accepted: {type(decl).__name__}\n")
 
         for stmt in program.statements:
@@ -83,6 +101,17 @@ def _run_interactive_repl(session: ReplSession, out_stream: TextIO) -> int:
 
         def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def]
             before = document.current_line_before_cursor
+            cuda_ctx = re.search(r"__intrin\.cuda\.([A-Za-z_0-9]*)$", before)
+            if cuda_ctx is not None:
+                prefix = cuda_ctx.group(1)
+                for name in INTRINSIC_NAMES:
+                    if not name.startswith("cuda_"):
+                        continue
+                    public = name[len("cuda_") :]
+                    if public.startswith(prefix):
+                        yield Completion(public, start_position=-len(prefix), display=f"__intrin.cuda.{public}")
+                return
+
             intrinsic_ctx = re.search(r"__intrin\.([A-Za-z_0-9]*)$", before)
             if intrinsic_ctx is not None:
                 prefix = intrinsic_ctx.group(1)
@@ -158,11 +187,17 @@ def _style_line(line: str, known_words: set[str]) -> list[tuple[str, str]]:
             style = "class:comment"
         elif part.startswith('"') or part.startswith("'"):
             style = "class:string"
+        elif part.startswith("__intrin.cuda."):
+            style = "class:intrinsic"
+        elif part.startswith("__intrin."):
+            style = "class:intrinsic"
+        elif part.startswith("std."):
+            style = "class:builtin"
         elif part in KEYWORDS:
             style = "class:keyword"
         elif part == "__intrin":
             style = "class:intrinsic"
-        elif part in {"print", "len", "std"}:
+        elif part in {"print", "len", "help", "type", "isinstance", "issubclass", "id", "std"}:
             style = "class:builtin"
         elif part and part[0].isdigit():
             style = "class:number"

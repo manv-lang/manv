@@ -1,0 +1,633 @@
+"""Pure-source math facilities for ManV.
+
+This module keeps the public math surface in ManV source so interpreter,
+compiled host, and future GPU lowering share one language-level meaning.
+
+The public API is intentionally small:
+- module-level scalar constants and scalar math helpers
+- `TensorMath` as a wrapper-style 1D tensor API for eager elementwise and
+  reduction operations.
+
+Determinism notes:
+- Float transcendentals are total and IEEE-754-like where possible.
+- `abs(INT_MIN)` raises `OverflowError`.
+- Empty reductions raise `ValueError`.
+- Use `approx_eq` for float comparisons in backend-agnostic tests.
+"""
+
+
+fn _require_numeric_scalar(x):
+    if _is_int(x):
+        return x
+    if _is_float(x):
+        return x
+    raise TypeError("expected int or float")
+
+
+fn _require_int_scalar(x) -> int:
+    if _is_int(x):
+        return x
+    raise TypeError("expected int")
+
+
+fn _is_int(x) -> bool:
+    return type(x) == type(0)
+
+
+fn _is_float(x) -> bool:
+    return type(x) == type(0.0)
+
+
+fn _is_array(x) -> bool:
+    return type(x) == type([])
+
+
+fn _require_array(xs) -> array:
+    if not _is_array(xs):
+        raise TypeError("expected array")
+    return xs
+
+
+fn _tensor_kind(xs) -> str:
+    let values = _require_array(xs)
+    
+    if len(values) == 0:
+        return "empty"
+    
+    let i = 0
+    let saw_float = false
+    let saw_int = false
+    while i < len(values):
+        let item = values[i]
+        if _is_float(item):
+            saw_float = true
+        else:
+            if _is_int(item):
+                saw_int = true
+            else:
+                raise TypeError("tensor elements must be int or float")
+        i = i + 1
+    
+    if saw_float:
+        return "float"
+    if saw_int:
+        return "int"
+    
+    raise TypeError("tensor elements must be int or float")
+
+
+fn _tensor_values(rhs) -> array:
+    if type(rhs) == TensorMath:
+        return rhs.to_array()
+    
+    if _is_array(rhs):
+        return rhs
+    
+    raise TypeError("expected TensorMath or array")
+
+
+fn _tensor_broadcast(rhs, n: int) -> array:
+    if type(rhs) == TensorMath:
+        return _tensor_broadcast(rhs.to_array(), n)
+    
+    if _is_array(rhs):
+        if len(rhs) != n:
+            raise ValueError("tensor operand length mismatch")
+        return rhs
+    
+    if _is_int(rhs):
+        array out[n]
+        let i = 0
+        while i < n:
+            out[i] = rhs
+            i = i + 1
+        return out
+    
+    if _is_float(rhs):
+        array out[n]
+        let i = 0
+        while i < n:
+            out[i] = rhs
+            i = i + 1
+        return out
+    
+    raise TypeError("expected scalar, TensorMath, or array")
+
+
+fn _tensor_non_empty(xs, opname: str) -> array:
+    let values = _require_array(xs)
+    
+    if len(values) == 0:
+        raise ValueError(opname)
+    
+    return values
+
+
+fn _tensor_map_abs(xs: array) -> array:
+    let values = _require_array(xs)
+    array out[len(values)]
+    
+    let i = 0
+    while i < len(values):
+        out[i] = abs(values[i])
+        i = i + 1
+    
+    return out
+
+
+fn _tensor_map_exp(xs: array) -> array:
+    let values = _require_array(xs)
+    if _tensor_kind(values) == "int":
+        raise TypeError("TensorMath.exp requires float elements")
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = exp(values[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_map_log(xs: array) -> array:
+    let values = _require_array(xs)
+    if _tensor_kind(values) == "int":
+        raise TypeError("TensorMath.log requires float elements")
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = log(values[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_map_sqrt(xs: array) -> array:
+    let values = _require_array(xs)
+    if _tensor_kind(values) == "int":
+        raise TypeError("TensorMath.sqrt requires float elements")
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = sqrt(values[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_map_tanh(xs: array) -> array:
+    let values = _require_array(xs)
+    if _tensor_kind(values) == "int":
+        raise TypeError("TensorMath.tanh requires float elements")
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = tanh(values[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_map_sigmoid(xs: array) -> array:
+    let values = _require_array(xs)
+    if _tensor_kind(values) == "int":
+        raise TypeError("TensorMath.sigmoid requires float elements")
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = sigmoid(values[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_map_relu(xs: array) -> array:
+    let values = _require_array(xs)
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = _relu_scalar(values[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_zip_min(xs: array, rhs) -> array:
+    let values = _require_array(xs)
+    let other = _tensor_broadcast(rhs, len(values))
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = min(values[i], other[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_zip_max(xs: array, rhs) -> array:
+    let values = _require_array(xs)
+    let other = _tensor_broadcast(rhs, len(values))
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = max(values[i], other[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_zip_clamp(xs: array, lo, hi) -> array:
+    let values = _require_array(xs)
+    let lower = _tensor_broadcast(lo, len(values))
+    let upper = _tensor_broadcast(hi, len(values))
+    array out[len(values)]
+    let i = 0
+    while i < len(values):
+        out[i] = clamp(values[i], lower[i], upper[i])
+        i = i + 1
+    return out
+
+
+fn _tensor_sum(xs: array):
+    let values = _tensor_non_empty(xs, "TensorMath.sum does not accept empty arrays")
+    let kind = _tensor_kind(values)
+    if kind == "float":
+        let acc = 0.0
+        let i = 0
+        while i < len(values):
+            acc = acc + values[i]
+            i = i + 1
+        return acc
+    let acc = 0
+    let i = 0
+    while i < len(values):
+        acc = acc + values[i]
+        i = i + 1
+    return acc
+
+
+fn _tensor_mean(xs: array) -> float:
+    let values = _tensor_non_empty(xs, "TensorMath.mean does not accept empty arrays")
+    let total = _tensor_sum(values)
+    return float(total) / float(len(values))
+
+
+fn _tensor_min_reduce(xs: array):
+    let values = _tensor_non_empty(xs, "TensorMath.min_reduce does not accept empty arrays")
+    let acc = values[0]
+    let i = 1
+    while i < len(values):
+        acc = min(acc, values[i])
+        i = i + 1
+    return acc
+
+
+fn _tensor_max_reduce(xs: array):
+    let values = _tensor_non_empty(xs, "TensorMath.max_reduce does not accept empty arrays")
+    let acc = values[0]
+    let i = 1
+    while i < len(values):
+        acc = max(acc, values[i])
+        i = i + 1
+    return acc
+
+
+fn _powi_positive(base, n: int):
+    let exp = n
+    let result = 1
+    let factor = base
+    while exp > 0:
+        if (exp % 2) == 1:
+            result = result * factor
+        factor = factor * factor
+        exp = int(exp / 2)
+    return result
+
+
+fn _relu_scalar(x):
+    if _is_float(x):
+        if x > 0.0:
+            return x
+        return 0.0
+    if _is_int(x):
+        if x > 0:
+            return x
+        return 0
+    raise TypeError("relu expects int or float")
+
+
+let pi: f32 = 3.141592653589793
+let tau: f32 = 6.283185307179586
+let e: f32 = 2.718281828459045
+let ln2: f32 = 0.6931471805599453
+let ln10: f32 = 2.302585092994046
+let sqrt2: f32 = 1.4142135623730951
+let inv_sqrt2: f32 = 0.7071067811865475
+let inf: f32 = -__intrin.log_float(0.0)
+let nan: f32 = __intrin.sqrt_float(-1.0)
+
+fn abs(x):
+    "Returns the magnitude of `x`. Raises OverflowError for INT_MIN."
+    if _is_int(x):
+        return __intrin.abs_int(x)
+    if _is_float(x):
+        return __intrin.abs_float(x)
+    raise TypeError("abs expects int or float")
+
+
+fn min(a, b):
+    "Returns the smaller of two scalars. Float NaNs propagate."
+    if _is_int(a) and _is_int(b):
+        return __intrin.min_int(a, b)
+    return __intrin.min_float(_require_numeric_scalar(a), _require_numeric_scalar(b))
+
+
+fn max(a, b):
+    "Returns the larger of two scalars. Float NaNs propagate."
+    if _is_int(a) and _is_int(b):
+        return __intrin.max_int(a, b)
+    return __intrin.max_float(_require_numeric_scalar(a), _require_numeric_scalar(b))
+
+
+fn clamp(x, lo, hi):
+    "Clamps `x` into the closed interval [`lo`, `hi`]."
+    return min(max(x, lo), hi)
+
+
+fn floor(x):
+    "Returns the greatest integer-valued float less than or equal to `x`."
+    if _is_int(x):
+        return x
+    if _is_float(x):
+        return __intrin.floor_float(x)
+    raise TypeError("floor expects int or float")
+
+
+fn ceil(x):
+    "Returns the least integer-valued float greater than or equal to `x`."
+    if _is_int(x):
+        return x
+    if _is_float(x):
+        return __intrin.ceil_float(x)
+    raise TypeError("ceil expects int or float")
+
+
+fn trunc(x):
+    "Truncates `x` toward zero."
+    if _is_int(x):
+        return x
+    if _is_float(x):
+        return __intrin.trunc_float(x)
+    raise TypeError("trunc expects int or float")
+
+
+fn round(x):
+    "Rounds with ties away from zero."
+    if _is_int(x):
+        return x
+    if _is_float(x):
+        return __intrin.round_float(x)
+    raise TypeError("round expects int or float")
+
+
+fn fract(x):
+    "Returns `x - floor(x)`. Integral inputs produce zero."
+    if _is_int(x):
+        return 0
+    if _is_float(x):
+        return x - floor(x)
+    raise TypeError("fract expects int or float")
+
+
+fn sqrt(x):
+    "Returns sqrt(x). For negative inputs returns nan."
+    return __intrin.sqrt_float(_require_numeric_scalar(x))
+
+
+fn rsqrt(x):
+    "Returns 1 / sqrt(x). Zero returns inf and negative inputs return nan."
+    let root = sqrt(x)
+    if is_nan(root):
+        return nan
+    if root == 0.0:
+        return inf
+    return 1.0 / root
+
+
+fn pow(x, y):
+    "Returns x ** y using integer-exponent fast paths and total float behavior."
+    let base = _require_numeric_scalar(x)
+    let exponent = _require_numeric_scalar(y)
+    if _is_int(y):
+        return powi(base, y)
+    let whole = trunc(exponent)
+    if base < 0.0 and exponent != whole:
+        return nan
+    if base < 0.0:
+        return powi(base, int(whole))
+    return exp(exponent * log(base))
+
+
+fn powi(x, n: int):
+    "Raises `x` to an integer power via exponentiation by squaring."
+    let base = _require_numeric_scalar(x)
+    let exp = _require_int_scalar(n)
+    if exp < 0:
+        if _is_int(x):
+            raise ValueError("powi does not accept negative exponents for int bases")
+        if base == 0.0:
+            return inf
+        return 1.0 / powi(base, 0 - exp)
+    return _powi_positive(base, exp)
+
+
+fn exp(x):
+    "Returns e ** x."
+    return __intrin.exp_float(_require_numeric_scalar(x))
+
+
+fn exp2(x):
+    "Returns 2 ** x."
+    return exp(_require_numeric_scalar(x) * ln2)
+
+
+fn expm1(x):
+    "Returns exp(x) - 1 with a small-x stable branch."
+    let value = _require_numeric_scalar(x)
+    if abs(value) < 0.00001:
+        return value + ((value * value) / 2.0)
+    return exp(value) - 1.0
+
+
+fn log(x):
+    "Returns the natural logarithm. Zero maps to -inf and negatives map to nan."
+    return __intrin.log_float(_require_numeric_scalar(x))
+
+
+fn log2(x):
+    "Returns log base 2."
+    return log(x) / ln2
+
+
+fn log10(x):
+    "Returns log base 10."
+    return log(x) / ln10
+
+
+fn log1p(x):
+    "Returns log(1 + x) with a stable small-x branch."
+    let value = _require_numeric_scalar(x)
+    if value == -1.0:
+        return 0.0 - inf
+    if value < -1.0:
+        return nan
+    if abs(value) < 0.00001:
+        return value - ((value * value) / 2.0)
+    return log(1.0 + value)
+
+
+fn sin(x):
+    "Returns sin(x) for a numeric scalar."
+    return __intrin.sin_float(_require_numeric_scalar(x))
+
+
+fn cos(x):
+    "Returns cos(x) for a numeric scalar."
+    return __intrin.cos_float(_require_numeric_scalar(x))
+
+
+fn tan(x):
+    "Returns tan(x) derived from sin(x) / cos(x)."
+    let numer = sin(x)
+    let denom = cos(x)
+    if denom == 0.0:
+        if numer == 0.0:
+            return nan
+        if numer > 0.0:
+            return inf
+        return 0.0 - inf
+    return numer / denom
+
+
+fn atan2(y, x):
+    "Returns the two-argument arctangent. atan2(0, 0) is 0."
+    return __intrin.atan2_float(_require_numeric_scalar(y), _require_numeric_scalar(x))
+
+
+fn is_nan(x) -> bool:
+    "Returns true when `x` is a NaN."
+    if _is_int(x):
+        return false
+    return __intrin.is_nan(_require_numeric_scalar(x))
+
+
+fn is_inf(x) -> bool:
+    "Returns true when `x` is positive or negative infinity."
+    if _is_int(x):
+        return false
+    return __intrin.is_inf(_require_numeric_scalar(x))
+
+
+fn is_finite(x) -> bool:
+    "Returns true when `x` is neither NaN nor infinity."
+    if _is_int(x):
+        return true
+    return __intrin.is_finite(_require_numeric_scalar(x))
+
+
+fn tanh(x):
+    "Returns tanh(x) using a stable exponential formulation."
+    let value = _require_numeric_scalar(x)
+    if value > 20.0:
+        return 1.0
+    if value < -20.0:
+        return -1.0
+    let e2 = exp(2.0 * value)
+    return (e2 - 1.0) / (e2 + 1.0)
+
+
+fn sigmoid(x):
+    "Returns the logistic sigmoid."
+    let value = _require_numeric_scalar(x)
+    if value >= 0.0:
+        return 1.0 / (1.0 + exp(0.0 - value))
+    let ex = exp(value)
+    return ex / (1.0 + ex)
+
+
+fn relu(x):
+    "Returns max(x, 0) while preserving int/float flavor."
+    return _relu_scalar(x)
+
+
+fn approx_eq(a, b, rel_tol, abs_tol) -> bool:
+    "Compares floats using max(abs_tol, rel_tol * max(abs(a), abs(b)))."
+    let lhs = _require_numeric_scalar(a)
+    let rhs = _require_numeric_scalar(b)
+    if is_nan(lhs) or is_nan(rhs):
+        return false
+    if is_inf(lhs) or is_inf(rhs):
+        return lhs == rhs
+    let diff = abs(lhs - rhs)
+    let scale = max(abs(lhs), abs(rhs))
+    let limit = max(_require_numeric_scalar(abs_tol), _require_numeric_scalar(rel_tol) * scale)
+    return diff <= limit
+
+
+class TensorMath:
+    "Wrapper-style 1D tensor API designed for eager semantics and future graph recognition."
+
+    fn init(self, xs: array):
+        "Wraps a 1D numeric array."
+        self.xs = _require_array(xs)
+
+    fn to_array(self) -> array:
+        "Returns the wrapped array."
+        return self.xs
+
+    fn abs(self):
+        "Applies abs elementwise."
+        return TensorMath(_tensor_map_abs(self.xs))
+
+    fn exp(self):
+        "Applies exp elementwise to float tensors."
+        return TensorMath(_tensor_map_exp(self.xs))
+
+    fn log(self):
+        "Applies log elementwise to float tensors."
+        return TensorMath(_tensor_map_log(self.xs))
+
+    fn sqrt(self):
+        "Applies sqrt elementwise to float tensors."
+        return TensorMath(_tensor_map_sqrt(self.xs))
+
+    fn tanh(self):
+        "Applies tanh elementwise to float tensors."
+        return TensorMath(_tensor_map_tanh(self.xs))
+
+    fn sigmoid(self):
+        "Applies sigmoid elementwise to float tensors."
+        return TensorMath(_tensor_map_sigmoid(self.xs))
+
+    fn relu(self):
+        "Applies ReLU elementwise."
+        return TensorMath(_tensor_map_relu(self.xs))
+
+    fn min(self, rhs):
+        "Computes an elementwise minimum against a scalar, array, or TensorMath."
+        return TensorMath(_tensor_zip_min(self.xs, rhs))
+
+    fn max(self, rhs):
+        "Computes an elementwise maximum against a scalar, array, or TensorMath."
+        return TensorMath(_tensor_zip_max(self.xs, rhs))
+
+    fn clamp(self, lo, hi):
+        "Clamps each element against scalar or tensor bounds."
+        return TensorMath(_tensor_zip_clamp(self.xs, lo, hi))
+
+    fn sum(self):
+        "Reduces all elements. Empty tensors raise ValueError."
+        return _tensor_sum(self.xs)
+
+    fn mean(self) -> float:
+        "Returns the arithmetic mean as float. Empty tensors raise ValueError."
+        return _tensor_mean(self.xs)
+
+    fn min_reduce(self):
+        "Returns the minimum element. Empty tensors raise ValueError."
+        return _tensor_min_reduce(self.xs)
+
+    fn max_reduce(self):
+        "Returns the maximum element. Empty tensors raise ValueError."
+        return _tensor_max_reduce(self.xs)

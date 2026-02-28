@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -370,6 +371,54 @@ def _expect_type(name: str, value: Any, kind: str) -> None:
         return
 
 
+def _math_number(name: str, value: Any) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError(f"{name} expects int or float")
+    return float(value)
+
+
+def _math_int(name: str, value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} expects int")
+    return int(value)
+
+
+def _round_ties_away_from_zero(value: float) -> float:
+    if math.isnan(value) or math.isinf(value):
+        return value
+    if value >= 0.0:
+        return math.floor(value + 0.5)
+    return math.ceil(value - 0.5)
+
+
+def _float_binary_nan_propagating(lhs: Any, rhs: Any, *, op: str) -> float:
+    left = _math_number(op, lhs)
+    right = _math_number(op, rhs)
+    if math.isnan(left) or math.isnan(right):
+        return math.nan
+    return min(left, right) if op == "min_float" else max(left, right)
+
+
+def _float_total_sqrt(value: Any) -> float:
+    x = _math_number("sqrt_float", value)
+    if math.isnan(x):
+        return math.nan
+    if x < 0.0:
+        return math.nan
+    return math.sqrt(x)
+
+
+def _float_total_log(value: Any) -> float:
+    x = _math_number("log_float", value)
+    if math.isnan(x):
+        return math.nan
+    if x == 0.0:
+        return -math.inf
+    if x < 0.0:
+        return math.nan
+    return math.log(x)
+
+
 def _fs_exists(args: list[Any], **_: Any) -> bool:
     _ensure_arity("fs_exists", args, min_n=1, max_n=1)
     _expect_type("fs_exists", args[0], "str")
@@ -558,6 +607,108 @@ def _core_next(args: list[Any], **_: Any) -> Any:
     if len(args) == 1:
         return next(it)
     return next(it, args[1])
+
+
+def _abs_int(args: list[Any], **_: Any) -> int:
+    _ensure_arity("abs_int", args, min_n=1, max_n=1)
+    value = _math_int("abs_int", args[0])
+    if value == -(2**31):
+        raise OverflowError("abs_int overflows for INT_MIN")
+    return abs(value)
+
+
+def _abs_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("abs_float", args, min_n=1, max_n=1)
+    return abs(_math_number("abs_float", args[0]))
+
+
+def _min_int(args: list[Any], **_: Any) -> int:
+    _ensure_arity("min_int", args, min_n=2, max_n=2)
+    return min(_math_int("min_int", args[0]), _math_int("min_int", args[1]))
+
+
+def _min_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("min_float", args, min_n=2, max_n=2)
+    return _float_binary_nan_propagating(args[0], args[1], op="min_float")
+
+
+def _max_int(args: list[Any], **_: Any) -> int:
+    _ensure_arity("max_int", args, min_n=2, max_n=2)
+    return max(_math_int("max_int", args[0]), _math_int("max_int", args[1]))
+
+
+def _max_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("max_float", args, min_n=2, max_n=2)
+    return _float_binary_nan_propagating(args[0], args[1], op="max_float")
+
+
+def _floor_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("floor_float", args, min_n=1, max_n=1)
+    return float(math.floor(_math_number("floor_float", args[0])))
+
+
+def _ceil_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("ceil_float", args, min_n=1, max_n=1)
+    return float(math.ceil(_math_number("ceil_float", args[0])))
+
+
+def _trunc_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("trunc_float", args, min_n=1, max_n=1)
+    return float(math.trunc(_math_number("trunc_float", args[0])))
+
+
+def _round_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("round_float", args, min_n=1, max_n=1)
+    return float(_round_ties_away_from_zero(_math_number("round_float", args[0])))
+
+
+def _sqrt_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("sqrt_float", args, min_n=1, max_n=1)
+    return _float_total_sqrt(args[0])
+
+
+def _exp_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("exp_float", args, min_n=1, max_n=1)
+    value = _math_number("exp_float", args[0])
+    try:
+        return math.exp(value)
+    except OverflowError:
+        return math.inf
+
+
+def _log_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("log_float", args, min_n=1, max_n=1)
+    return _float_total_log(args[0])
+
+
+def _sin_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("sin_float", args, min_n=1, max_n=1)
+    return math.sin(_math_number("sin_float", args[0]))
+
+
+def _cos_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("cos_float", args, min_n=1, max_n=1)
+    return math.cos(_math_number("cos_float", args[0]))
+
+
+def _atan2_float(args: list[Any], **_: Any) -> float:
+    _ensure_arity("atan2_float", args, min_n=2, max_n=2)
+    return math.atan2(_math_number("atan2_float", args[0]), _math_number("atan2_float", args[1]))
+
+
+def _is_nan(args: list[Any], **_: Any) -> bool:
+    _ensure_arity("is_nan", args, min_n=1, max_n=1)
+    return math.isnan(_math_number("is_nan", args[0]))
+
+
+def _is_inf(args: list[Any], **_: Any) -> bool:
+    _ensure_arity("is_inf", args, min_n=1, max_n=1)
+    return math.isinf(_math_number("is_inf", args[0]))
+
+
+def _is_finite(args: list[Any], **_: Any) -> bool:
+    _ensure_arity("is_finite", args, min_n=1, max_n=1)
+    return math.isfinite(_math_number("is_finite", args[0]))
 
 
 def _io_print(args: list[Any], *, stdout_write: Callable[[str], None] | None = None, **_: Any) -> None:
@@ -966,6 +1117,26 @@ def _register_defaults() -> None:
     register_intrinsic(IntrinsicSpec("core_str", [ANY_T], "str", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_iter", [ANY_T], ANY_T, {Effect.READS_MEMORY}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_next", [ANY_T], ANY_T, {Effect.READS_MEMORY}, may_throw=True))
+    mathfx = {Effect.PURE}
+    register_intrinsic(IntrinsicSpec("abs_int", ["int"], "int", mathfx, may_throw=True, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("abs_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("min_int", ["int", "int"], "int", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("min_float", ["float", "float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("max_int", ["int", "int"], "int", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("max_float", ["float", "float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("floor_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("ceil_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("trunc_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("round_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("sqrt_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("exp_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("log_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("sin_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("cos_float", ["float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("atan2_float", ["float", "float"], "float", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("is_nan", ["float"], "bool", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("is_inf", ["float"], "bool", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
+    register_intrinsic(IntrinsicSpec("is_finite", ["float"], "bool", mathfx, may_throw=False, std_only=False, pure_for_kernel=True))
     register_intrinsic(
         IntrinsicSpec("io_print", [ANY_T], "none", {Effect.IO, Effect.WRITES_MEMORY}, may_throw=True, deterministic=True)
     )
@@ -1053,6 +1224,25 @@ def _register_defaults() -> None:
     register_intrinsic_handler("core_str", _core_str)
     register_intrinsic_handler("core_iter", _core_iter)
     register_intrinsic_handler("core_next", _core_next)
+    register_intrinsic_handler("abs_int", _abs_int)
+    register_intrinsic_handler("abs_float", _abs_float)
+    register_intrinsic_handler("min_int", _min_int)
+    register_intrinsic_handler("min_float", _min_float)
+    register_intrinsic_handler("max_int", _max_int)
+    register_intrinsic_handler("max_float", _max_float)
+    register_intrinsic_handler("floor_float", _floor_float)
+    register_intrinsic_handler("ceil_float", _ceil_float)
+    register_intrinsic_handler("trunc_float", _trunc_float)
+    register_intrinsic_handler("round_float", _round_float)
+    register_intrinsic_handler("sqrt_float", _sqrt_float)
+    register_intrinsic_handler("exp_float", _exp_float)
+    register_intrinsic_handler("log_float", _log_float)
+    register_intrinsic_handler("sin_float", _sin_float)
+    register_intrinsic_handler("cos_float", _cos_float)
+    register_intrinsic_handler("atan2_float", _atan2_float)
+    register_intrinsic_handler("is_nan", _is_nan)
+    register_intrinsic_handler("is_inf", _is_inf)
+    register_intrinsic_handler("is_finite", _is_finite)
     register_intrinsic_handler("io_print", _io_print)
     register_intrinsic_handler("io_read_line", _io_read_line)
     register_intrinsic_handler("fs_exists", _fs_exists)

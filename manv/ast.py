@@ -46,6 +46,7 @@ class Program:
     declarations: list[Any]
     statements: list[Any]
     span: Span
+    docstring: str | None = None
 
 
 # Import surface.
@@ -79,14 +80,35 @@ class FnDecl:
     body: list[Any]
     span: Span
     decorators: list[Decorator] = field(default_factory=list)
+    docstring: str | None = None
+
+
+@dataclass
+class TypeAttrDecl:
+    """Immutable attribute declaration inside a type/class body.
+
+    Why this exists:
+    - `Math.pi`-style constants need a source-level declaration form that lives
+      on the type object rather than executing as an ordinary local statement.
+    - The interpreter already supports type attrs at runtime; this node makes
+      that surface explicit in the AST so semantics, LSP, and lowering can
+      reason about them deterministically.
+    """
+
+    name: str
+    type_name: str | None
+    value: Any
+    span: Span
 
 
 @dataclass
 class TypeDecl:
     name: str
     base_name: str | None
+    attrs: list[TypeAttrDecl]
     methods: list[FnDecl]
     span: Span
+    docstring: str | None = None
 
 
 @dataclass
@@ -243,6 +265,7 @@ class LiteralExpr:
     value: Any
     literal_type: str
     span: Span
+    raw_value: str | None = None
 
 
 @dataclass

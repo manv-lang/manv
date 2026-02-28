@@ -125,10 +125,12 @@ class HModule:
     version: str
     source: str
     functions: list[HFunction]
+    attrs: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "source": self.source,
             "functions": [f.to_dict() for f in self.functions],
+            "attrs": self.attrs,
         }

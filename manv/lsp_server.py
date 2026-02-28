@@ -56,7 +56,14 @@ from .diagnostics import Diagnostic as ManvDiagnostic
 from .diagnostics import ManvError
 from .intrinsics import BUILTIN_ALIASES, all_intrinsics, resolve_intrinsic
 from .lexer import Lexer
-from .semantics import SemanticAnalyzer, normalize_gpu_decorator, normalize_type_name
+from .semantics import (
+    SemanticAnalyzer,
+    accessor_kind,
+    accessor_property_name,
+    has_static_method_decorator,
+    normalize_gpu_decorator,
+    normalize_type_name,
+)
 from .tokens import KEYWORDS
 
 
@@ -89,7 +96,8 @@ TOKEN_INDEX = {name: i for i, name in enumerate(TOKEN_TYPES)}
 
 
 BUILTIN_NAMESPACE_COMPLETIONS = ["std", "__intrin"]
-BUILTIN_COMPLETIONS = sorted([*BUILTIN_NAMESPACE_COMPLETIONS, *BUILTIN_ALIASES.keys()])
+BUILTIN_SPECIAL_COMPLETIONS = ["type", "isinstance", "issubclass", "id", "help"]
+BUILTIN_COMPLETIONS = sorted([*BUILTIN_NAMESPACE_COMPLETIONS, *BUILTIN_ALIASES.keys(), *BUILTIN_SPECIAL_COMPLETIONS])
 INTRINSIC_NAMES = [spec.name for spec in all_intrinsics()]
 CUDA_INTRINSIC_PREFIX = "cuda_"
 
@@ -103,6 +111,7 @@ class SymbolEntry:
     selection_range: Range
     detail: str = ""
     container: str | None = None
+    docstring: str | None = None
 
 
 @dataclass
@@ -262,6 +271,15 @@ def create_server() -> ManvLanguageServer:
         if decorator_name == "gpu":
             value = "**decorator** `@gpu`\n\nMarks a function as GPU-eligible while preserving HLIR-authoritative fallback semantics."
             return Hover(contents=MarkupContent(kind=MarkupKind.Markdown, value=value))
+        if decorator_name == "static_method":
+            value = "**decorator** `@static_method`\n\nMarks a type or impl method as callable on the type object without an instance receiver."
+            return Hover(contents=MarkupContent(kind=MarkupKind.Markdown, value=value))
+        if decorator_name == "getter":
+            value = "**decorator** `@getter`\n\nMarks an instance method as the property getter used by `obj.name`."
+            return Hover(contents=MarkupContent(kind=MarkupKind.Markdown, value=value))
+        if decorator_name == "setter":
+            value = "**decorator** `@setter`\n\nMarks an instance method as the property setter used by `obj.name = value`."
+            return Hover(contents=MarkupContent(kind=MarkupKind.Markdown, value=value))
 
         name = _word_at_position(analyzed.text, params.position)
         if name is None:
@@ -276,7 +294,7 @@ def create_server() -> ManvLanguageServer:
                 value = f"**intrinsic** `{_intrinsic_public_name(intrinsic_name)}`\n\n`({args}) -> {ret}`"
                 return Hover(contents=MarkupContent(kind=MarkupKind.Markdown, value=value))
 
-        if name in BUILTIN_ALIASES:
+        if name in BUILTIN_ALIASES or name in BUILTIN_SPECIAL_COMPLETIONS:
             builtin_sig = _signature_for_builtin(name)
             if builtin_sig is not None:
                 label, _ = builtin_sig
@@ -296,11 +314,15 @@ def create_server() -> ManvLanguageServer:
 
         matches = [s for s in analyzed.symbols if s.name == name]
         if not matches:
+            matches = _workspace_symbols(ls, name)
+        if not matches:
             return None
-        sym = _pick_best_symbol(matches, params.position)
+        sym = _pick_best_symbol(matches, params.position, prefer_uri=uri)
         value = f"**{sym.kind}** `{sym.name}`"
         if sym.detail:
             value += f"\n\n`{sym.detail}`"
+        if sym.docstring:
+            value += f"\n\n{sym.docstring}"
         return Hover(contents=MarkupContent(kind=MarkupKind.Markdown, value=value), range=sym.selection_range)
 
     @server.feature("textDocument/definition")
@@ -543,17 +565,25 @@ def _symbols_from_program(uri: str, program: ast.Program) -> list[SymbolEntry]:
                     selection_range=type_range,
                     detail=f"type {decl.name}",
                     container=None,
+                    docstring=decl.docstring,
                 )
             )
-            for method in decl.methods:
-                out.append(_fn_symbol(uri, method, container=decl.name, kind="method"))
-                out.extend(_param_symbols(uri, method, container=method.name))
-                out.extend(_stmt_symbols(uri, method.body, container=method.name))
+            for attr in decl.attrs:
+                rng = _name_range(attr.span, attr.name)
+                out.append(
+                    SymbolEntry(
+                        name=attr.name,
+                        kind="field",
+                        uri=uri,
+                        range=rng,
+                        selection_range=rng,
+                        detail=f"const {attr.name}: {normalize_type_name(attr.type_name) or 'any'}",
+                        container=decl.name,
+                    )
+                )
+            out.extend(_type_member_symbols(uri, decl.name, decl.methods))
         elif isinstance(decl, ast.ImplDecl):
-            for method in decl.methods:
-                out.append(_fn_symbol(uri, method, container=decl.target, kind="method"))
-                out.extend(_param_symbols(uri, method, container=method.name))
-                out.extend(_stmt_symbols(uri, method.body, container=method.name))
+            out.extend(_type_member_symbols(uri, decl.target, decl.methods))
 
     out.extend(_stmt_symbols(uri, program.statements, container=None))
     return out
@@ -570,7 +600,52 @@ def _fn_symbol(uri: str, fn: ast.FnDecl, *, container: str | None, kind: str = "
         selection_range=rng,
         detail=sig,
         container=container,
+        docstring=fn.docstring,
     )
+
+
+def _type_member_symbols(uri: str, owner: str, methods: list[ast.FnDecl]) -> list[SymbolEntry]:
+    """Render ordinary methods and accessor-backed properties for one type."""
+
+    out: list[SymbolEntry] = []
+    properties: dict[str, dict[str, ast.FnDecl]] = {}
+
+    for method in methods:
+        accessor = accessor_kind(method)
+        if accessor in {"getter", "setter"}:
+            try:
+                property_name = accessor_property_name(method) or method.name
+            except Exception:
+                property_name = method.name
+            properties.setdefault(property_name, {})[accessor] = method
+            continue
+        out.append(_fn_symbol(uri, method, container=owner, kind="method"))
+        out.extend(_param_symbols(uri, method, container=method.name))
+        out.extend(_stmt_symbols(uri, method.body, container=method.name))
+
+    for property_name, accessors in sorted(properties.items()):
+        representative = accessors.get("getter") or accessors.get("setter")
+        if representative is None:
+            continue
+        available = []
+        if "getter" in accessors:
+            available.append("get")
+        if "setter" in accessors:
+            available.append("set")
+        rng = _name_range(representative.span, representative.name)
+        out.append(
+            SymbolEntry(
+                name=property_name,
+                kind="field",
+                uri=uri,
+                range=rng,
+                selection_range=rng,
+                detail=f"property {property_name} ({', '.join(available)})",
+                container=owner,
+                docstring=representative.docstring,
+            )
+        )
+    return out
 
 
 def _param_symbols(uri: str, fn: ast.FnDecl, *, container: str) -> list[SymbolEntry]:
@@ -659,10 +734,28 @@ def _fn_signature(fn: ast.FnDecl) -> str:
     except Exception:
         gpu = None
 
-    prefix = ""
+    prefixes: list[str] = []
+    if has_static_method_decorator(fn):
+        prefixes.append("@static_method")
+    accessor = accessor_kind(fn)
+    if accessor == "getter":
+        try:
+            property_name = accessor_property_name(fn) or fn.name
+        except Exception:
+            property_name = fn.name
+        prefixes.append(f"@getter(name=\"{property_name}\")" if property_name != fn.name else "@getter")
+    elif accessor == "setter":
+        try:
+            property_name = accessor_property_name(fn) or fn.name
+        except Exception:
+            property_name = fn.name
+        prefixes.append(f"@setter(name=\"{property_name}\")" if property_name != fn.name else "@setter")
     if gpu is not None:
         required = "true" if gpu.required else "false"
-        prefix = f'@gpu(required={required}, mode="{gpu.mode}") '
+        prefixes.append(f'@gpu(required={required}, mode="{gpu.mode}")')
+    prefix = ""
+    if prefixes:
+        prefix = " ".join(prefixes) + " "
     return f"{prefix}fn {fn.name}({args}) -> {ret}"
 
 
@@ -681,6 +774,8 @@ def _completion_kind(kind: str) -> CompletionItemKind:
         return CompletionItemKind.Function
     if kind == "type":
         return CompletionItemKind.Class
+    if kind == "field":
+        return CompletionItemKind.Property
     if kind == "parameter":
         return CompletionItemKind.Variable
     return CompletionItemKind.Variable
@@ -693,6 +788,8 @@ def _symbol_kind(kind: str) -> SymbolKind:
         return SymbolKind.Method
     if kind == "type":
         return SymbolKind.Class
+    if kind == "field":
+        return SymbolKind.Property
     if kind == "parameter":
         return SymbolKind.Variable
     return SymbolKind.Variable
@@ -972,6 +1069,16 @@ def _builtin_completion_detail(name: str) -> str:
 
 
 def _signature_for_builtin(name: str) -> tuple[str, list[str]] | None:
+    if name == "type":
+        return "type(value) -> type", ["value"]
+    if name == "isinstance":
+        return "isinstance(value, cls) -> bool", ["value", "cls"]
+    if name == "issubclass":
+        return "issubclass(child, parent) -> bool", ["child", "parent"]
+    if name == "id":
+        return "id(value) -> int", ["value"]
+    if name == "help":
+        return "help(value) -> none", ["value"]
     intrinsic_name = BUILTIN_ALIASES.get(name)
     if intrinsic_name is None:
         return None
@@ -983,6 +1090,18 @@ def _signature_for_builtin(name: str) -> tuple[str, list[str]] | None:
 
 
 def _decorator_completion_items(prefix: str) -> list[CompletionItem] | None:
+    accessor_name_match = re.search(r"@(getter|setter)\(([^)]*)\bname\s*=\s*\"([A-Za-z_]*)$", prefix)
+    if accessor_name_match is not None:
+        return []
+
+    accessor_kw_scope = re.search(r"@(getter|setter)\(([^)]*)$", prefix)
+    if accessor_kw_scope is not None:
+        inner = accessor_kw_scope.group(2).rsplit(",", 1)[-1].rsplit("(", 1)[-1].strip()
+        if inner and "=" not in inner and '"' not in inner and "'" not in inner:
+            return [
+                CompletionItem(label="name", kind=CompletionItemKind.Property, detail="string literal property name")
+            ]
+
     mode_unquoted = re.search(r"@gpu\([^)]*\bmode\s*=\s*([A-Za-z_]*)$", prefix)
     if mode_unquoted is not None:
         partial = mode_unquoted.group(1)
@@ -1026,9 +1145,16 @@ def _decorator_completion_items(prefix: str) -> list[CompletionItem] | None:
     decorator_match = re.search(r"@([A-Za-z_]*)$", prefix)
     if decorator_match is not None:
         partial = decorator_match.group(1)
+        items: list[CompletionItem] = []
         if "gpu".startswith(partial):
-            return [CompletionItem(label="gpu", kind=CompletionItemKind.Function, detail="GPU-eligible function decorator")]
-        return []
+            items.append(CompletionItem(label="gpu", kind=CompletionItemKind.Function, detail="GPU-eligible function decorator"))
+        if "static_method".startswith(partial):
+            items.append(CompletionItem(label="static_method", kind=CompletionItemKind.Function, detail="Type-callable method decorator"))
+        if "getter".startswith(partial):
+            items.append(CompletionItem(label="getter", kind=CompletionItemKind.Function, detail="Instance property getter decorator"))
+        if "setter".startswith(partial):
+            items.append(CompletionItem(label="setter", kind=CompletionItemKind.Function, detail="Instance property setter decorator"))
+        return items
     return None
 
 

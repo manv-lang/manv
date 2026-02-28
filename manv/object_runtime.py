@@ -28,7 +28,10 @@ class TypeObject:
     name: str
     base: "TypeObject | None" = None
     methods: dict[str, Any] = field(default_factory=dict)
+    getters: dict[str, Any] = field(default_factory=dict)
+    setters: dict[str, Any] = field(default_factory=dict)
     attrs: dict[str, Any] = field(default_factory=dict)
+    docstring: str | None = None
     mro: list[str] = field(default_factory=list)
     type_id: int | None = None
     _heap_id: int | None = None
@@ -54,6 +57,7 @@ class InstanceObject:
 class ModuleObject:
     name: str
     exports: dict[str, Any] = field(default_factory=dict)
+    docstring: str | None = None
     _heap_id: int | None = None
 
 
@@ -180,6 +184,10 @@ class Heap:
             for child in value.attrs.values():
                 self._mark(child)
             for child in value.methods.values():
+                self._mark(child)
+            for child in value.getters.values():
+                self._mark(child)
+            for child in value.setters.values():
                 self._mark(child)
             return
         if isinstance(value, BoundMethodObject):

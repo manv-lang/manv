@@ -17,7 +17,7 @@ from . import ast
 from .diagnostics import Span
 from .hlir import HBasicBlock, HFunction, HInstruction, HModule, HTerminator, Provenance, SourceSpan
 from .intrinsics import intrinsic_effect_names, resolve_call_alias_name, resolve_intrinsic, resolve_intrinsic_name_from_callee
-from .semantics import GpuDecoratorConfig, normalize_gpu_decorator, normalize_type_name
+from .semantics import GpuDecoratorConfig, has_static_method_decorator, normalize_gpu_decorator, normalize_type_name
 
 
 @dataclass
@@ -41,6 +41,8 @@ class _LowerState:
     unwind_targets: list[str] = field(default_factory=list)
     declared_vars: set[str] = field(default_factory=set)
     gpu_functions: dict[str, GpuDecoratorConfig] = field(default_factory=dict)
+    static_methods: set[str] = field(default_factory=set)
+    known_callables: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self._ensure_block("entry")
@@ -151,6 +153,8 @@ class HLIRLowerer:
     def lower_program(self, program: ast.Program, source_name: str) -> HModule:
         functions: list[HFunction] = []
         gpu_functions = self._collect_gpu_functions(program)
+        static_methods = self._collect_static_methods(program)
+        known_callables = self._collect_known_callables(program)
 
         if program.statements:
             top_fn = self._lower_function_decl(
@@ -160,6 +164,7 @@ class HLIRLowerer:
                 return_type=None,
                 body=program.statements,
                 gpu_functions=gpu_functions,
+                static_methods=static_methods,
             )
             functions.append(top_fn)
 
@@ -174,6 +179,8 @@ class HLIRLowerer:
                         body=decl.body,
                         attrs=_function_attrs(decl),
                         gpu_functions=gpu_functions,
+                        static_methods=static_methods,
+                        known_callables=known_callables,
                     )
                 )
                 continue
@@ -189,6 +196,8 @@ class HLIRLowerer:
                             body=method.body,
                             attrs=_function_attrs(method),
                             gpu_functions=gpu_functions,
+                            static_methods=static_methods,
+                            known_callables=known_callables,
                         )
                     )
                 continue
@@ -204,10 +213,17 @@ class HLIRLowerer:
                             body=method.body,
                             attrs=_function_attrs(method),
                             gpu_functions=gpu_functions,
+                            static_methods=static_methods,
+                            known_callables=known_callables,
                         )
                     )
 
-        return HModule(version="0.1", source=source_name, functions=functions)
+        return HModule(
+            version="0.1",
+            source=source_name,
+            functions=functions,
+            attrs=self._module_attrs(program),
+        )
 
     def _collect_gpu_functions(self, program: ast.Program) -> dict[str, GpuDecoratorConfig]:
         gpu_functions: dict[str, GpuDecoratorConfig] = {}
@@ -228,6 +244,83 @@ class HLIRLowerer:
                         gpu_functions[f"{decl.target}.{method.name}"] = config
         return gpu_functions
 
+    def _collect_static_methods(self, program: ast.Program) -> set[str]:
+        """Collect explicit type-callable methods.
+
+        This set is what lets lowering turn `Math.abs(x)` into a direct call to
+        `Math.abs` instead of an instance-style method call that expects a
+        receiver. The source language keeps methods instance-oriented by
+        default, so only explicit `@static_method` opt-ins land here.
+        """
+
+        static_methods: set[str] = set()
+        for decl in program.declarations:
+            if isinstance(decl, ast.TypeDecl):
+                for method in decl.methods:
+                    if has_static_method_decorator(method):
+                        static_methods.add(f"{decl.name}.{method.name}")
+            elif isinstance(decl, ast.ImplDecl):
+                for method in decl.methods:
+                    if has_static_method_decorator(method):
+                        static_methods.add(f"{decl.target}.{method.name}")
+        return static_methods
+
+    def _collect_known_callables(self, program: ast.Program) -> set[str]:
+        """Collect user-defined callable/type names that outrank builtin aliases.
+
+        Lowering only uses builtin alias lowering as a last resort. This set is
+        the static half of that rule: top-level functions and type constructors
+        should lower as ordinary named calls even when they reuse builtin names
+        like `min`, `max`, or `sum`.
+        """
+
+        names: set[str] = set()
+        for decl in program.declarations:
+            if isinstance(decl, ast.FnDecl):
+                names.add(decl.name)
+            elif isinstance(decl, ast.TypeDecl):
+                names.add(decl.name)
+                for method in decl.methods:
+                    names.add(f"{decl.name}.{method.name}")
+            elif isinstance(decl, ast.ImplDecl):
+                for method in decl.methods:
+                    names.add(f"{decl.target}.{method.name}")
+        return names
+
+    def _module_attrs(self, program: ast.Program) -> dict[str, Any]:
+        """Preserve non-executable symbol metadata needed by runtime tooling.
+
+        Why this exists:
+        - Docstrings are metadata and must not appear as executable HLIR.
+        - Some runtime tooling, such as `help(...)`, still needs access to that
+          metadata even when execution happens through HLIR.
+        - Keeping this on the module object avoids smuggling documentation
+          through fake instructions that would pollute semantic IR.
+        """
+
+        function_docs: dict[str, dict[str, Any]] = {}
+        type_docs: dict[str, dict[str, Any]] = {}
+
+        for decl in program.declarations:
+            if isinstance(decl, ast.FnDecl):
+                function_docs[decl.name] = _function_doc_attrs(decl.name, decl)
+            elif isinstance(decl, ast.TypeDecl):
+                type_docs[decl.name] = {
+                    "docstring": decl.docstring,
+                    "kind": "class",
+                }
+                for method in decl.methods:
+                    function_docs[f"{decl.name}.{method.name}"] = _function_doc_attrs(f"{decl.name}.{method.name}", method)
+            elif isinstance(decl, ast.ImplDecl):
+                for method in decl.methods:
+                    function_docs[f"{decl.target}.{method.name}"] = _function_doc_attrs(f"{decl.target}.{method.name}", method)
+
+        return {
+            "docstring": program.docstring,
+            "functions": function_docs,
+            "types": type_docs,
+        }
+
     def _lower_function_decl(
         self,
         fn_name: str,
@@ -238,6 +331,8 @@ class HLIRLowerer:
         *,
         attrs: dict[str, Any] | None = None,
         gpu_functions: dict[str, GpuDecoratorConfig] | None = None,
+        static_methods: set[str] | None = None,
+        known_callables: set[str] | None = None,
     ) -> HFunction:
         state = _LowerState(
             fn_name=fn_name,
@@ -245,6 +340,8 @@ class HLIRLowerer:
             return_type=return_type,
             params=params,
             gpu_functions=dict(gpu_functions or {}),
+            static_methods=set(static_methods or set()),
+            known_callables=set(known_callables or set()),
         )
 
         for index, param in enumerate(params):
@@ -729,7 +826,10 @@ class HLIRLowerer:
         if isinstance(expr, ast.CallExpr):
             arg_values = [self._lower_expr(state, arg) for arg in expr.args]
             callsite_id = state.next_callsite_id()
-            intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or resolve_call_alias_name(expr.callee)
+            intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or self._resolve_unshadowed_call_alias(
+                state,
+                expr.callee,
+            )
             if intrinsic_name is not None:
                 spec = resolve_intrinsic(intrinsic_name)
                 effects = ["may_throw"] if spec is None else intrinsic_effect_names(spec)
@@ -773,69 +873,40 @@ class HLIRLowerer:
                 )
                 return out
 
-            callee_name = "<dynamic>"
-            if isinstance(expr.callee, ast.IdentifierExpr):
-                callee_name = expr.callee.name
-            gpu_config = state.gpu_functions.get(callee_name)
-            out = state.new_temp()
-            if gpu_config is not None:
-                # HLIR is the semantic authority for GPU dispatch decisions.
-                # Downstream passes must consult this explicit op instead of
-                # inferring GPU intent from backend or naming conventions.
+            if isinstance(expr.callee, ast.AttributeExpr):
+                method_name = expr.callee.attr
+                static_callee = self._qualified_static_callee(expr.callee, state.static_methods)
+                if static_callee is not None:
+                    return self._lower_named_call(state, expr, static_callee, arg_values, callsite_id)
+
+                receiver = self._lower_expr(state, expr.callee.value)
+                out = state.new_temp()
                 if state.unwind_targets:
                     normal_label = state.new_label("invoke_ok")
                     state.terminate(
                         "invoke",
-                        [*arg_values, normal_label, state.unwind_targets[-1]],
-                        attrs={
-                            "kind": "gpu_call",
-                            "callee": callee_name,
-                            "callsite_id": callsite_id,
-                            "dest": out,
-                            "policy": "required" if gpu_config.required else "best_effort",
-                            "mode": gpu_config.mode,
-                        },
+                        [receiver, *arg_values, normal_label, state.unwind_targets[-1]],
+                        attrs={"kind": "method_call", "method": method_name, "callsite_id": callsite_id, "dest": out},
                         node=expr,
                     )
                     state.set_block(normal_label)
                     return out
                 state.emit(
                     HInstruction(
-                        op="gpu_call",
+                        op="method_call",
                         dest=out,
-                        args=arg_values,
-                        attrs={
-                            "callee": callee_name,
-                            "callsite_id": callsite_id,
-                            "policy": "required" if gpu_config.required else "best_effort",
-                            "mode": gpu_config.mode,
-                        },
-                        effects=["reads_memory", "writes_memory", "may_throw"],
+                        args=[receiver, *arg_values],
+                        attrs={"method": method_name, "callsite_id": callsite_id},
+                        effects=["dynamic_dispatch", "may_throw"],
                     ),
                     node=expr,
                 )
                 return out
-            if state.unwind_targets:
-                normal_label = state.new_label("invoke_ok")
-                state.terminate(
-                    "invoke",
-                    [*arg_values, normal_label, state.unwind_targets[-1]],
-                    attrs={"kind": "call", "callee": callee_name, "callsite_id": callsite_id, "dest": out},
-                    node=expr,
-                )
-                state.set_block(normal_label)
-                return out
-            state.emit(
-                HInstruction(
-                    op="call",
-                    dest=out,
-                    args=arg_values,
-                    attrs={"callee": callee_name, "callsite_id": callsite_id},
-                    effects=["dynamic_dispatch", "may_throw"],
-                ),
-                node=expr,
-            )
-            return out
+
+            callee_name = "<dynamic>"
+            if isinstance(expr.callee, ast.IdentifierExpr):
+                callee_name = expr.callee.name
+            return self._lower_named_call(state, expr, callee_name, arg_values, callsite_id)
 
         if isinstance(expr, ast.SyscallExpr):
             target = self._lower_expr(state, expr.target)
@@ -907,6 +978,106 @@ class HLIRLowerer:
         state.emit(HInstruction(op="const", dest=out, attrs={"value": None}), node=expr)
         return out
 
+    def _qualified_static_callee(self, attr_expr: ast.AttributeExpr, static_methods: set[str]) -> str | None:
+        owner_name: str | None = None
+        if isinstance(attr_expr.value, ast.IdentifierExpr):
+            owner_name = attr_expr.value.name
+        elif isinstance(attr_expr.value, ast.AttributeExpr):
+            owner_name = attr_expr.value.attr
+
+        if owner_name is None:
+            return None
+
+        candidate = f"{owner_name}.{attr_expr.attr}"
+        if candidate in static_methods:
+            return candidate
+        return None
+
+    def _lower_named_call(
+        self,
+        state: _LowerState,
+        expr: ast.CallExpr,
+        callee_name: str,
+        arg_values: list[str],
+        callsite_id: str,
+    ) -> str:
+        gpu_config = state.gpu_functions.get(callee_name)
+        out = state.new_temp()
+        if gpu_config is not None:
+            # HLIR is the semantic authority for GPU dispatch decisions.
+            # Downstream passes must consult this explicit op instead of
+            # inferring GPU intent from backend or naming conventions.
+            if state.unwind_targets:
+                normal_label = state.new_label("invoke_ok")
+                state.terminate(
+                    "invoke",
+                    [*arg_values, normal_label, state.unwind_targets[-1]],
+                    attrs={
+                        "kind": "gpu_call",
+                        "callee": callee_name,
+                        "callsite_id": callsite_id,
+                        "dest": out,
+                        "policy": "required" if gpu_config.required else "best_effort",
+                        "mode": gpu_config.mode,
+                    },
+                    node=expr,
+                )
+                state.set_block(normal_label)
+                return out
+            state.emit(
+                HInstruction(
+                    op="gpu_call",
+                    dest=out,
+                    args=arg_values,
+                    attrs={
+                        "callee": callee_name,
+                        "callsite_id": callsite_id,
+                        "policy": "required" if gpu_config.required else "best_effort",
+                        "mode": gpu_config.mode,
+                    },
+                    effects=["reads_memory", "writes_memory", "may_throw"],
+                ),
+                node=expr,
+            )
+            return out
+        if state.unwind_targets:
+            normal_label = state.new_label("invoke_ok")
+            state.terminate(
+                "invoke",
+                [*arg_values, normal_label, state.unwind_targets[-1]],
+                attrs={"kind": "call", "callee": callee_name, "callsite_id": callsite_id, "dest": out},
+                node=expr,
+            )
+            state.set_block(normal_label)
+            return out
+        state.emit(
+            HInstruction(
+                op="call",
+                dest=out,
+                args=arg_values,
+                attrs={"callee": callee_name, "callsite_id": callsite_id},
+                effects=["dynamic_dispatch", "may_throw"],
+            ),
+            node=expr,
+        )
+        return out
+
+    def _resolve_unshadowed_call_alias(self, state: _LowerState, callee: Any) -> str | None:
+        """Return a builtin alias only when lowering cannot see a source binding.
+
+        This mirrors semantic and interpreter precedence rules so HLIR remains
+        authoritative: user-defined functions, imports, locals, and known type
+        constructors win before builtin call aliases are considered.
+        """
+
+        if not isinstance(callee, ast.IdentifierExpr):
+            return None
+        if callee.name in state.declared_vars:
+            return None
+        if callee.name in state.known_callables:
+            return None
+        return resolve_call_alias_name(callee)
+
 
 def lower_ast_to_hlir(program: ast.Program, source_name: str) -> HModule:
     return HLIRLowerer().lower_program(program, source_name)
@@ -920,4 +1091,29 @@ def _function_attrs(decl: ast.FnDecl) -> dict[str, Any]:
             "required": gpu.required,
             "mode": gpu.mode,
         }
+    if has_static_method_decorator(decl):
+        attrs["static_method"] = True
     return attrs
+
+
+def _function_doc_attrs(display_name: str, decl: ast.FnDecl) -> dict[str, Any]:
+    return {
+        "docstring": decl.docstring,
+        "signature": _function_signature_text(display_name, decl),
+    }
+
+
+def _function_signature_text(display_name: str, decl: ast.FnDecl) -> str:
+    args = ", ".join(f"{p.name}: {normalize_type_name(p.type_name) or 'any'}" for p in decl.params)
+    ret = normalize_type_name(decl.return_type) or "none"
+    prefixes: list[str] = []
+    if has_static_method_decorator(decl):
+        prefixes.append("@static_method")
+    gpu = normalize_gpu_decorator(decl)
+    if gpu is not None:
+        required = "true" if gpu.required else "false"
+        prefixes.append(f'@gpu(required={required}, mode="{gpu.mode}")')
+    prefix = ""
+    if prefixes:
+        prefix = " ".join(prefixes) + " "
+    return f"{prefix}fn {display_name}({args}) -> {ret}"

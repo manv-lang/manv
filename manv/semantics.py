@@ -16,7 +16,7 @@ from .intrinsics import (
 
 
 BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
-BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id"})
+BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id", "help"})
 PRIMITIVE_TYPES = {"int", "i32", "float", "f32", "bool", "str", "u8", "usize", "array", "map", "none", "range"}
 BUILTIN_TYPES = {
     "object",
@@ -30,6 +30,7 @@ BUILTIN_TYPES = {
     "KeyError",
     "IndexError",
     "ValueError",
+    "OverflowError",
     "RuntimeError",
     "OSError",
     "OutOfMemoryError",
@@ -54,6 +55,100 @@ class GpuDecoratorConfig:
 
     required: bool = False
     mode: str = "kernel"
+
+
+def has_static_method_decorator(decl: ast.FnDecl) -> bool:
+    """Return whether a function is explicitly marked as a type-callable method.
+
+    Why this exists:
+    - ManV methods are instance-oriented by default.
+    - The language still wants an explicit way to say "this method lives on the
+      class/type object and does not consume `self`".
+    - Interpreter, HLIR lowering, and editor tooling all need the same
+      normalized answer instead of ad-hoc decorator string checks.
+    """
+
+    return any(decorator.name == "static_method" for decorator in decl.decorators)
+
+
+def accessor_kind(decl: ast.FnDecl) -> str | None:
+    """Return the accessor role for a method, if any.
+
+    Accessors are semantically different from ordinary methods:
+    - They participate in attribute reads/writes instead of call syntax.
+    - A getter/setter pair should be able to share the same property name.
+    - Downstream passes should not need to re-scan raw decorator lists.
+    """
+
+    has_getter = any(decorator.name == "getter" for decorator in decl.decorators)
+    has_setter = any(decorator.name == "setter" for decorator in decl.decorators)
+    if has_getter and has_setter:
+        return "both"
+    if has_getter:
+        return "getter"
+    if has_setter:
+        return "setter"
+    return None
+
+
+def accessor_property_name(decl: ast.FnDecl) -> str | None:
+    """Return the property name targeted by a getter/setter decorator."""
+
+    kind = accessor_kind(decl)
+    if kind is None or kind == "both":
+        return None
+    decorator = next(decorator for decorator in decl.decorators if decorator.name == kind)
+    property_name = decl.name
+    if decorator.args:
+        raise ValueError(f"@{kind} does not accept positional arguments")
+    for key, value in decorator.kwargs.items():
+        if key != "name":
+            raise KeyError(key)
+        if not isinstance(value, ast.LiteralExpr) or value.literal_type != "str":
+            raise TypeError(f"@{kind}(name=...) expects a string literal")
+        property_name = str(value.value)
+    return property_name
+
+
+def normalize_static_method_decorator(decl: ast.FnDecl) -> bool:
+    """Validate `@static_method` usage and return whether it is present."""
+
+    static_decorators = [decorator for decorator in decl.decorators if decorator.name == "static_method"]
+    if not static_decorators:
+        return False
+
+    decorator = static_decorators[-1]
+    if decorator.args:
+        raise ValueError("@static_method does not accept positional arguments")
+    if decorator.kwargs:
+        raise KeyError(sorted(decorator.kwargs)[0])
+    return True
+
+
+def normalize_getter_decorator(decl: ast.FnDecl) -> str | None:
+    """Validate `@getter` usage and return the property name when present."""
+
+    kind = accessor_kind(decl)
+    if kind is None:
+        return None
+    if kind == "both":
+        raise ValueError("a method cannot be both '@getter' and '@setter'")
+    if kind != "getter":
+        return None
+    return accessor_property_name(decl)
+
+
+def normalize_setter_decorator(decl: ast.FnDecl) -> str | None:
+    """Validate `@setter` usage and return the property name when present."""
+
+    kind = accessor_kind(decl)
+    if kind is None:
+        return None
+    if kind == "both":
+        raise ValueError("a method cannot be both '@getter' and '@setter'")
+    if kind != "setter":
+        return None
+    return accessor_property_name(decl)
 
 
 def normalize_type_name(type_name: str | None) -> str | None:
@@ -151,6 +246,8 @@ class SemanticAnalyzer:
         self.diagnostics: list[Diagnostic] = []
         self.functions: dict[str, ast.FnDecl] = {}
         self.types: set[str] = set(BUILTIN_TYPES)
+        self.type_attrs: dict[str, dict[str, str | None]] = {}
+        self.type_accessors: dict[str, dict[str, dict[str, ast.FnDecl]]] = {}
 
     def analyze(self, program: ast.Program) -> SemanticResult:
         for decl in program.declarations:
@@ -160,12 +257,25 @@ class SemanticAnalyzer:
                 if decl.name in self.types:
                     self._add_error("E2001", f"duplicate type '{decl.name}'", decl.span.line, decl.span.column)
                 self.types.add(decl.name)
+                attr_table: dict[str, str | None] = {}
+                for attr in decl.attrs:
+                    if attr.name in attr_table:
+                        self._add_error("E2001", f"duplicate type attribute '{decl.name}.{attr.name}'", attr.span.line, attr.span.column)
+                    attr_table[attr.name] = normalize_type_name(attr.type_name)
+                self.type_attrs[decl.name] = attr_table
+                self.type_accessors[decl.name] = self._collect_type_accessors(decl.name, decl.methods)
                 for method in decl.methods:
+                    if accessor_kind(method) in {"getter", "setter", "both"}:
+                        continue
                     self._register_function(f"{decl.name}.{method.name}", method)
             elif isinstance(decl, ast.ImplDecl):
                 if decl.target not in self.types:
                     self._add_error("E2014", f"impl target '{decl.target}' is undefined", decl.span.line, decl.span.column)
+                accessor_table = self.type_accessors.setdefault(decl.target, {"getters": {}, "setters": {}})
+                self._merge_impl_accessors(decl.target, decl.methods, accessor_table)
                 for method in decl.methods:
+                    if accessor_kind(method) in {"getter", "setter", "both"}:
+                        continue
                     self._register_function(f"{decl.target}.{method.name}", method)
 
         global_scope = Scope()
@@ -176,13 +286,20 @@ class SemanticAnalyzer:
             if isinstance(decl, STUB_FEATURE_DECLS):
                 continue
             if isinstance(decl, ast.FnDecl):
-                self._analyze_function_decl(decl, global_scope)
+                self._analyze_function_decl(decl, global_scope, is_method=False)
             if isinstance(decl, ast.TypeDecl):
+                type_scope = Scope(parent=global_scope)
+                for attr in decl.attrs:
+                    if attr.value is not None:
+                        value_type = self._analyze_expr(attr.value, type_scope, as_callee=False)
+                        if attr.type_name and value_type and not self._type_compatible(attr.type_name, value_type):
+                            self._add_error("E2002", f"type mismatch for '{decl.name}.{attr.name}': expected {attr.type_name}, got {value_type}", attr.span.line, attr.span.column)
+                    type_scope.define(attr.name, normalize_type_name(attr.type_name))
                 for method in decl.methods:
-                    self._analyze_function_decl(method, global_scope)
+                    self._analyze_function_decl(method, type_scope, is_method=True)
             if isinstance(decl, ast.ImplDecl):
                 for method in decl.methods:
-                    self._analyze_function_decl(method, global_scope)
+                    self._analyze_function_decl(method, global_scope, is_method=True)
 
         return SemanticResult(diagnostics=self.diagnostics)
 
@@ -191,34 +308,154 @@ class SemanticAnalyzer:
             self._add_error("E2001", f"duplicate function '{name}'", decl.span.line, decl.span.column)
         self.functions[name] = decl
 
-    def _analyze_function_decl(self, decl: ast.FnDecl, parent: Scope) -> None:
-        self._validate_function_decorators(decl)
+    def _collect_type_accessors(self, owner: str, methods: list[ast.FnDecl]) -> dict[str, dict[str, ast.FnDecl]]:
+        """Build deterministic accessor tables for one type body.
+
+        Accessors are stored separately from ordinary methods because property
+        syntax (`obj.name`) should not collide with method call syntax and
+        getter/setter pairs need to share one public property name cleanly.
+        """
+
+        table: dict[str, dict[str, ast.FnDecl]] = {"getters": {}, "setters": {}}
+        self._merge_impl_accessors(owner, methods, table)
+        return table
+
+    def _merge_impl_accessors(
+        self,
+        owner: str,
+        methods: list[ast.FnDecl],
+        table: dict[str, dict[str, ast.FnDecl]],
+    ) -> None:
+        for method in methods:
+            kind = accessor_kind(method)
+            if kind not in {"getter", "setter"}:
+                continue
+            try:
+                property_name = accessor_property_name(method)
+            except ValueError as err:
+                self._add_error("E2043", str(err), method.span.line, method.span.column)
+                continue
+            except TypeError as err:
+                self._add_error("E2044", str(err), method.span.line, method.span.column)
+                continue
+            except KeyError as err:
+                self._add_error("E2045", f"unknown @{kind} option '{err.args[0]}'", method.span.line, method.span.column)
+                continue
+            if property_name is None:
+                continue
+            bucket = "getters" if kind == "getter" else "setters"
+            if property_name in table[bucket]:
+                self._add_error(
+                    "E2046" if kind == "getter" else "E2047",
+                    f"duplicate {kind} for property '{owner}.{property_name}'",
+                    method.span.line,
+                    method.span.column,
+                )
+                continue
+            table[bucket][property_name] = method
+
+    def _analyze_function_decl(self, decl: ast.FnDecl, parent: Scope, *, is_method: bool) -> None:
+        self._validate_function_decorators(decl, is_method=is_method)
         fn_scope = Scope(parent=parent)
         for param in decl.params:
             fn_scope.define(param.name, normalize_type_name(param.type_name))
         for stmt in decl.body:
             self._analyze_stmt(stmt, fn_scope, decl, loop_depth=0, except_depth=0)
 
-    def _validate_function_decorators(self, decl: ast.FnDecl) -> None:
+    def _validate_function_decorators(self, decl: ast.FnDecl, *, is_method: bool) -> None:
         gpu_count = 0
+        static_count = 0
+        getter_count = 0
+        setter_count = 0
         for decorator in decl.decorators:
+            if decorator.name == "gpu":
+                gpu_count += 1
+                if gpu_count > 1:
+                    self._add_error("E2031", "duplicate '@gpu' decorator", decorator.span.line, decorator.span.column)
+                    continue
+
+                try:
+                    normalize_gpu_decorator(ast.FnDecl(name=decl.name, params=decl.params, return_type=decl.return_type, body=decl.body, span=decl.span, decorators=[decorator]))
+                except ValueError as err:
+                    self._add_error("E2032", str(err), decorator.span.line, decorator.span.column)
+                except TypeError as err:
+                    self._add_error("E2033", str(err), decorator.span.line, decorator.span.column)
+                except KeyError as err:
+                    self._add_error("E2034", f"unknown @gpu option '{err.args[0]}'", decorator.span.line, decorator.span.column)
+                continue
+
+            if decorator.name == "static_method":
+                static_count += 1
+                if static_count > 1:
+                    self._add_error("E2039", "duplicate '@static_method' decorator", decorator.span.line, decorator.span.column)
+                    continue
+                if not is_method:
+                    self._add_error("E2040", "'@static_method' is only valid on type or impl methods", decorator.span.line, decorator.span.column)
+                    continue
+
+                try:
+                    normalize_static_method_decorator(ast.FnDecl(name=decl.name, params=decl.params, return_type=decl.return_type, body=decl.body, span=decl.span, decorators=[decorator]))
+                except ValueError as err:
+                    self._add_error("E2041", str(err), decorator.span.line, decorator.span.column)
+                except KeyError as err:
+                    self._add_error("E2042", f"unknown @static_method option '{err.args[0]}'", decorator.span.line, decorator.span.column)
+                continue
+
+            if decorator.name == "getter":
+                getter_count += 1
+                if getter_count > 1:
+                    self._add_error("E2048", "duplicate '@getter' decorator", decorator.span.line, decorator.span.column)
+                    continue
+                if not is_method:
+                    self._add_error("E2049", "'@getter' is only valid on type or impl methods", decorator.span.line, decorator.span.column)
+                    continue
+                try:
+                    normalize_getter_decorator(ast.FnDecl(name=decl.name, params=decl.params, return_type=decl.return_type, body=decl.body, span=decl.span, decorators=[decorator]))
+                except ValueError as err:
+                    self._add_error("E2050", str(err), decorator.span.line, decorator.span.column)
+                except TypeError as err:
+                    self._add_error("E2051", str(err), decorator.span.line, decorator.span.column)
+                except KeyError as err:
+                    self._add_error("E2052", f"unknown @getter option '{err.args[0]}'", decorator.span.line, decorator.span.column)
+                continue
+
+            if decorator.name == "setter":
+                setter_count += 1
+                if setter_count > 1:
+                    self._add_error("E2053", "duplicate '@setter' decorator", decorator.span.line, decorator.span.column)
+                    continue
+                if not is_method:
+                    self._add_error("E2054", "'@setter' is only valid on type or impl methods", decorator.span.line, decorator.span.column)
+                    continue
+                try:
+                    normalize_setter_decorator(ast.FnDecl(name=decl.name, params=decl.params, return_type=decl.return_type, body=decl.body, span=decl.span, decorators=[decorator]))
+                except ValueError as err:
+                    self._add_error("E2055", str(err), decorator.span.line, decorator.span.column)
+                except TypeError as err:
+                    self._add_error("E2056", str(err), decorator.span.line, decorator.span.column)
+                except KeyError as err:
+                    self._add_error("E2057", f"unknown @setter option '{err.args[0]}'", decorator.span.line, decorator.span.column)
+                continue
+
             if decorator.name != "gpu":
                 self._add_error("E2030", f"unknown decorator '@{decorator.name}'", decorator.span.line, decorator.span.column)
-                continue
 
-            gpu_count += 1
-            if gpu_count > 1:
-                self._add_error("E2031", "duplicate '@gpu' decorator", decorator.span.line, decorator.span.column)
-                continue
+        if has_static_method_decorator(decl) and accessor_kind(decl) in {"getter", "setter", "both"}:
+            self._add_error("E2058", "accessors cannot also be marked '@static_method'", decl.span.line, decl.span.column)
 
-            try:
-                normalize_gpu_decorator(ast.FnDecl(name=decl.name, params=decl.params, return_type=decl.return_type, body=decl.body, span=decl.span, decorators=[decorator]))
-            except ValueError as err:
-                self._add_error("E2032", str(err), decorator.span.line, decorator.span.column)
-            except TypeError as err:
-                self._add_error("E2033", str(err), decorator.span.line, decorator.span.column)
-            except KeyError as err:
-                self._add_error("E2034", f"unknown @gpu option '{err.args[0]}'", decorator.span.line, decorator.span.column)
+        kind = accessor_kind(decl)
+        if kind == "both":
+            self._add_error("E2059", "a method cannot be both '@getter' and '@setter'", decl.span.line, decl.span.column)
+        if kind == "getter":
+            if len(decl.params) != 1 or decl.params[0].name != "self":
+                self._add_error("E2060", "@getter methods must have signature 'fn name(self) -> ...'", decl.span.line, decl.span.column)
+            if normalize_type_name(decl.return_type) == "none":
+                self._add_error("E2061", "@getter methods must return a value", decl.span.line, decl.span.column)
+        if kind == "setter":
+            if len(decl.params) != 2 or decl.params[0].name != "self":
+                self._add_error("E2062", "@setter methods must have signature 'fn name(self, value) -> none'", decl.span.line, decl.span.column)
+            if decl.return_type is not None and normalize_type_name(decl.return_type) != "none":
+                self._add_error("E2063", "@setter methods must return none", decl.span.line, decl.span.column)
 
     def assert_valid(self, result: SemanticResult) -> None:
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -270,6 +507,9 @@ class SemanticAnalyzer:
 
         if isinstance(stmt, ast.SetAttrStmt):
             self._analyze_expr(stmt.target, scope, as_callee=False)
+            if isinstance(stmt.target, ast.IdentifierExpr) and stmt.target.name in self.type_attrs:
+                if stmt.attr in self.type_attrs.get(stmt.target.name, {}):
+                    self._add_error("E2038", f"type attribute '{stmt.target.name}.{stmt.attr}' is immutable", stmt.span.line, stmt.span.column)
             self._analyze_expr(stmt.value, scope, as_callee=False)
             return
 
@@ -423,6 +663,27 @@ class SemanticAnalyzer:
             return None
         return ret
 
+    def _resolve_unshadowed_call_alias(self, callee: object, scope: Scope) -> str | None:
+        """Return a builtin call alias only when user code does not shadow it.
+
+        Why this exists:
+        - Builtin aliases like `min`/`max` are convenience spellings over
+          narrow intrinsics.
+        - They should behave like normal builtins and lose to user/module
+          bindings with the same name.
+        - This is what lets stdlib modules define public functions such as
+          `math.min` without semantic analysis silently re-routing calls to the
+          builtin intrinsic surface.
+        """
+
+        if not isinstance(callee, ast.IdentifierExpr):
+            return None
+        if scope.contains(callee.name):
+            return None
+        if callee.name in self.functions or callee.name in self.types:
+            return None
+        return BUILTIN_ALIASES.get(callee.name)
+
     def _analyze_expr(self, expr: object, scope: Scope, as_callee: bool) -> str | None:
         if isinstance(expr, ast.LiteralExpr):
             return {"int": "i32", "float": "f32"}.get(expr.literal_type, expr.literal_type)
@@ -443,6 +704,8 @@ class SemanticAnalyzer:
                     return "fn"
                 self._add_error("E2011", f"undefined function or type '{expr.name}'", expr.span.line, expr.span.column)
                 return None
+            if expr.name in self.functions:
+                return "fn"
             if expr.name in self.types:
                 return normalize_type_name(expr.name)
             symbol_type = scope.lookup(expr.name)
@@ -489,7 +752,7 @@ class SemanticAnalyzer:
                     enforce_std_only=True,
                 )
 
-            alias = resolve_call_alias_name(expr.callee)
+            alias = self._resolve_unshadowed_call_alias(expr.callee, scope)
             if alias is not None:
                 return self._analyze_intrinsic_call(
                     alias,

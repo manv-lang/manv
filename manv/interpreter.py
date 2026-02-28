@@ -29,7 +29,13 @@ from .object_runtime import (
     OutOfMemoryError,
     TypeObject,
 )
-from .semantics import normalize_gpu_decorator
+from .semantics import (
+    accessor_kind,
+    accessor_property_name,
+    has_static_method_decorator,
+    normalize_gpu_decorator,
+    normalize_type_name,
+)
 from .parser import Parser
 from .intrinsics import (
     IntrinsicCallable,
@@ -68,6 +74,7 @@ class FunctionValue:
     decl: ast.FnDecl
     owner_type: TypeObject | None = None
     globals_env: "Environment | None" = None
+    is_static_method: bool = False
 
 
 class Environment:
@@ -113,6 +120,7 @@ class Interpreter:
         self.global_env = Environment()
         self.functions: dict[str, FunctionValue] = {}
         self.types: dict[str, TypeObject] = {}
+        self.type_constants: dict[str, set[str]] = {}
         self.call_stack: list[dict[str, Any]] = []
         self.active_exceptions: list[ExceptionObject] = []
         self.stable_debug_format = stable_debug_format
@@ -155,6 +163,7 @@ class Interpreter:
         self._define_type("KeyError", "Exception")
         self._define_type("IndexError", "Exception")
         self._define_type("ValueError", "Exception")
+        self._define_type("OverflowError", "Exception")
         self._define_type("RuntimeError", "Exception")
         self._define_type("OSError", "Exception")
         self._define_type("OutOfMemoryError", "RuntimeError")
@@ -172,6 +181,38 @@ class Interpreter:
         obj = self.heap.allocate("Type", TypeObject(name=name, base=base, mro=[name, *base.mro]))
         self.types[name] = obj
         return obj
+
+    def _runtime_function_value(self, method: ast.FnDecl, owner_type: TypeObject) -> FunctionValue:
+        return FunctionValue(
+            decl=method,
+            owner_type=owner_type,
+            globals_env=self.global_env,
+            is_static_method=has_static_method_decorator(method),
+        )
+
+    def _register_type_method(self, type_obj: TypeObject, method: ast.FnDecl) -> None:
+        """Attach one source method to the runtime type object.
+
+        Accessors are stored in dedicated getter/setter tables instead of the
+        ordinary method table. That separation is what lets a getter and setter
+        share the same public property name while still leaving ordinary method
+        dispatch rules unchanged.
+        """
+
+        fn_val = self._runtime_function_value(method, type_obj)
+        accessor = accessor_kind(method)
+        if accessor in {"getter", "setter"}:
+            property_name = accessor_property_name(method) or method.name
+            if accessor == "getter":
+                type_obj.getters[property_name] = fn_val
+            else:
+                type_obj.setters[property_name] = fn_val
+            return
+
+        key = "__init__" if method.name == "init" else method.name
+        type_obj.methods[key] = fn_val
+        if method.name == "init":
+            type_obj.methods["init"] = fn_val
 
     def _gc_roots(self) -> list[Any]:
         roots: list[Any] = [self.global_env.values, self.types, self.active_exceptions, self.module_cache]
@@ -197,22 +238,19 @@ class Interpreter:
                 if decl.base_name and decl.base_name in self.types:
                     type_obj.base = self.types[decl.base_name]
                     type_obj.mro = [type_obj.name, *type_obj.base.mro]
+                type_obj.docstring = decl.docstring
+                if decl.attrs:
+                    self.type_constants.setdefault(type_obj.name, set()).update(attr.name for attr in decl.attrs)
+                    for attr in decl.attrs:
+                        type_obj.attrs[attr.name] = self.eval_expr(attr.value, self.global_env)
                 for method in decl.methods:
-                    key = "__init__" if method.name == "init" else method.name
-                    fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=self.global_env)
-                    type_obj.methods[key] = fn_val
-                    if method.name == "init":
-                        type_obj.methods["init"] = fn_val
+                    self._register_type_method(type_obj, method)
             elif isinstance(decl, ast.ImplDecl):
                 type_obj = self.types.get(decl.target)
                 if type_obj is None:
                     self._raise_runtime("TypeError", f"impl target '{decl.target}' is undefined", decl.span)
                 for method in decl.methods:
-                    key = "__init__" if method.name == "init" else method.name
-                    fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=self.global_env)
-                    type_obj.methods[key] = fn_val
-                    if method.name == "init":
-                        type_obj.methods["init"] = fn_val
+                    self._register_type_method(type_obj, method)
             elif isinstance(decl, ast.MacroDeclStub):
                 continue
             else:
@@ -525,11 +563,17 @@ class Interpreter:
                     value = self.eval_expr(expr.args[0], env)
                     heap_id = getattr(value, "_heap_id", None)
                     return int(heap_id) if isinstance(heap_id, int) else int(id(value))
+                if name == "help":
+                    if len(expr.args) != 1:
+                        self._raise_runtime("TypeError", "help() expects exactly 1 argument", expr.span)
+                    value = self.eval_expr(expr.args[0], env)
+                    self.stdout.write(self._help_text(value) + "\n")
+                    return None
 
             args = [self.eval_expr(arg, env) for arg in expr.args]
 
             if isinstance(expr.callee, ast.IdentifierExpr):
-                alias = resolve_call_alias_name(expr.callee)
+                alias = self._resolve_unshadowed_call_alias(expr.callee, env)
                 if alias is not None:
                     if alias == "io_print":
                         return self._invoke_intrinsic(alias, [args], expr.span)
@@ -539,6 +583,25 @@ class Interpreter:
             return self._call_value(callee, args, expr.span)
 
         self._raise_runtime("RuntimeError", f"unsupported expression '{type(expr).__name__}'", self._span_of(expr))
+
+    def _resolve_unshadowed_call_alias(self, callee: ast.IdentifierExpr, env: Environment) -> str | None:
+        """Resolve builtin aliases only when normal runtime bindings do not win.
+
+        This keeps interpreter execution aligned with source-level expectations:
+        local variables, imported functions, module globals, and declared types
+        should all beat fallback builtin aliases like `min` and `max`.
+        """
+
+        try:
+            env.lookup(callee.name)
+        except KeyError:
+            pass
+        else:
+            return None
+
+        if callee.name in self.functions or callee.name in self.types:
+            return None
+        return resolve_call_alias_name(callee)
 
     def _call_value(self, callee: Any, args: list[Any], span: Any) -> Any:
         if isinstance(callee, FunctionValue):
@@ -580,11 +643,32 @@ class Interpreter:
             cur = cur.base
         return None
 
+    def _lookup_getter(self, type_obj: TypeObject, name: str) -> FunctionValue | None:
+        cur: TypeObject | None = type_obj
+        while cur is not None:
+            if name in cur.getters:
+                return cur.getters[name]
+            cur = cur.base
+        return None
+
+    def _lookup_setter(self, type_obj: TypeObject, name: str) -> FunctionValue | None:
+        cur: TypeObject | None = type_obj
+        while cur is not None:
+            if name in cur.setters:
+                return cur.setters[name]
+            cur = cur.base
+        return None
+
     def _lookup_attr(self, base: Any, attr: str, span: Any) -> Any:
         if isinstance(base, InstanceObject):
+            getter = self._lookup_getter(base.type_obj, attr)
+            if getter is not None:
+                return self._call_function(getter, [base])
             if attr in base.attrs:
                 value = base.attrs[attr]
                 if isinstance(value, FunctionValue):
+                    if value.is_static_method:
+                        return value
                     try:
                         return self.heap.allocate("BoundMethod", BoundMethodObject(receiver=base, function=value))
                     except OutOfMemoryError as exc:
@@ -595,6 +679,8 @@ class Interpreter:
                 return class_attr
             method = self._lookup_method(base.type_obj, attr)
             if method is not None:
+                if method.is_static_method:
+                    return method
                 try:
                     return self.heap.allocate("BoundMethod", BoundMethodObject(receiver=base, function=method))
                 except OutOfMemoryError as exc:
@@ -608,6 +694,13 @@ class Interpreter:
                 return class_attr
             method = self._lookup_method(base, attr)
             if method is not None:
+                if method.is_static_method:
+                    return method
+                self._raise_runtime(
+                    "AttributeError",
+                    f"instance method '{base.name}.{attr}' requires an object; mark it @static_method to call it on the type",
+                    span,
+                )
                 return method
             self._raise_runtime("AttributeError", f"type '{base.name}' has no attribute '{attr}'", span)
         if isinstance(base, ModuleObject):
@@ -630,9 +723,15 @@ class Interpreter:
 
     def _store_attr(self, target: Any, attr: str, value: Any, span: Any) -> None:
         if isinstance(target, InstanceObject):
+            setter = self._lookup_setter(target.type_obj, attr)
+            if setter is not None:
+                self._call_function(setter, [target, value])
+                return
             target.attrs[attr] = value
             return
         if isinstance(target, TypeObject):
+            if attr in self.type_constants.get(target.name, set()):
+                self._raise_runtime("RuntimeError", f"type attribute '{target.name}.{attr}' is immutable", span)
             target.attrs[attr] = value
             return
         if isinstance(target, ModuleObject):
@@ -690,6 +789,57 @@ class Interpreter:
             self.call_stack.pop()
         return None
 
+    def _help_text(self, value: Any) -> str:
+        """Render deterministic help text from runtime doc metadata."""
+
+        if isinstance(value, BoundMethodObject):
+            return self._help_text(value.function)
+
+        if isinstance(value, FunctionValue):
+            return self._format_function_help(value)
+
+        if isinstance(value, TypeObject):
+            lines = [f"class {value.name}"]
+            lines.append(value.docstring or "No docstring available.")
+            return "\n".join(lines)
+
+        if isinstance(value, ModuleObject):
+            lines = [f"module {value.name}"]
+            lines.append(value.docstring or "No docstring available.")
+            return "\n".join(lines)
+
+        return "\n".join(
+            [
+                f"value of type {self._runtime_type_name(value)}",
+                "No docstring available.",
+            ]
+        )
+
+    def _format_function_help(self, fn: FunctionValue) -> str:
+        prefixes: list[str] = []
+        if fn.is_static_method:
+            prefixes.append("@static_method")
+        gpu = normalize_gpu_decorator(fn.decl)
+        if gpu is not None:
+            required = "true" if gpu.required else "false"
+            prefixes.append(f'@gpu(required={required}, mode="{gpu.mode}")')
+        prefix = ""
+        if prefixes:
+            prefix = " ".join(prefixes) + " "
+        args = ", ".join(f"{param.name}: {normalize_type_name(param.type_name) or 'any'}" for param in fn.decl.params)
+        ret = normalize_type_name(fn.decl.return_type) or "none"
+        qualified_name = fn.decl.name
+        if fn.owner_type is not None:
+            qualified_name = f"{fn.owner_type.name}.{fn.decl.name}"
+        signature = f"{prefix}fn {qualified_name}({args}) -> {ret}"
+        return "\n".join([signature, fn.decl.docstring or "No docstring available."])
+
+    def _runtime_type_name(self, value: Any) -> str:
+        runtime_type = self._runtime_type(value)
+        if isinstance(runtime_type, TypeObject):
+            return runtime_type.name
+        return type(value).__name__
+
     def _gc_intrinsic_hooks(self) -> dict[str, Any]:
         return {
             "collect": self.heap.collect,
@@ -712,6 +862,8 @@ class Interpreter:
                 stdin_readline=lambda: "",
                 gc_hooks=self._gc_intrinsic_hooks(),
             )
+        except OverflowError as exc:
+            self._raise_runtime("OverflowError", f"intrinsic {name}: {exc}", span)
         except TypeError as exc:
             self._raise_runtime("TypeError", f"intrinsic {name}: {exc}", span)
         except ValueError as exc:
@@ -866,6 +1018,7 @@ class Interpreter:
             analyzer = SemanticAnalyzer(file=str(module_path))
             result = analyzer.analyze(program)
             analyzer.assert_valid(result)
+            module_obj.docstring = program.docstring
 
             module_env = Environment(parent=self.global_env)
             module_env.define(canonical_name.split(".")[-1], module_obj)
@@ -885,10 +1038,28 @@ class Interpreter:
                     if decl.base_name and decl.base_name in self.types:
                         type_obj.base = self.types[decl.base_name]
                         type_obj.mro = [type_obj.name, *type_obj.base.mro]
+                    type_obj.docstring = decl.docstring
                     module_env.define(decl.name, type_obj)
+                    if decl.attrs:
+                        self.type_constants.setdefault(type_obj.name, set()).update(attr.name for attr in decl.attrs)
+                        for attr in decl.attrs:
+                            type_obj.attrs[attr.name] = self.eval_expr(attr.value, module_env)
                     for method in decl.methods:
+                        fn_val = FunctionValue(
+                            decl=method,
+                            owner_type=type_obj,
+                            globals_env=module_env,
+                            is_static_method=has_static_method_decorator(method),
+                        )
+                        accessor = accessor_kind(method)
+                        if accessor in {"getter", "setter"}:
+                            property_name = accessor_property_name(method) or method.name
+                            if accessor == "getter":
+                                type_obj.getters[property_name] = fn_val
+                            else:
+                                type_obj.setters[property_name] = fn_val
+                            continue
                         key = "__init__" if method.name == "init" else method.name
-                        fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=module_env)
                         type_obj.methods[key] = fn_val
                         if method.name == "init":
                             type_obj.methods["init"] = fn_val
@@ -898,8 +1069,21 @@ class Interpreter:
                     if type_obj is None:
                         self._raise_runtime("TypeError", f"impl target '{decl.target}' is undefined", decl.span)
                     for method in decl.methods:
+                        fn_val = FunctionValue(
+                            decl=method,
+                            owner_type=type_obj,
+                            globals_env=module_env,
+                            is_static_method=has_static_method_decorator(method),
+                        )
+                        accessor = accessor_kind(method)
+                        if accessor in {"getter", "setter"}:
+                            property_name = accessor_property_name(method) or method.name
+                            if accessor == "getter":
+                                type_obj.getters[property_name] = fn_val
+                            else:
+                                type_obj.setters[property_name] = fn_val
+                            continue
                         key = "__init__" if method.name == "init" else method.name
-                        fn_val = FunctionValue(decl=method, owner_type=type_obj, globals_env=module_env)
                         type_obj.methods[key] = fn_val
                         if method.name == "init":
                             type_obj.methods["init"] = fn_val

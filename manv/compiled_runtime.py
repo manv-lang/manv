@@ -149,10 +149,10 @@ def _lower_module_abi(module: HModule, target: TargetSpec) -> dict[str, ABIFunct
 
 def _program_uses_gpu_decorators(program: ast.Program) -> bool:
     for decl in program.declarations:
-        if isinstance(decl, ast.FnDecl) and decl.decorators:
+        if isinstance(decl, ast.FnDecl) and any(decorator.name == "gpu" for decorator in decl.decorators):
             return True
-        if isinstance(decl, ast.TypeDecl) and any(method.decorators for method in decl.methods):
+        if isinstance(decl, ast.TypeDecl) and any(any(decorator.name == "gpu" for decorator in method.decorators) for method in decl.methods):
             return True
-        if isinstance(decl, ast.ImplDecl) and any(method.decorators for method in decl.methods):
+        if isinstance(decl, ast.ImplDecl) and any(any(decorator.name == "gpu" for decorator in method.decorators) for method in decl.methods):
             return True
     return False
