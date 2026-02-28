@@ -18,6 +18,7 @@ from typing import Any, TextIO
 
 from . import ast
 from .diagnostics import ManvError, diag
+from .gpu_dispatch import backend_selection_report
 from .lexer import Lexer
 from .object_runtime import (
     BoundMethodObject,
@@ -28,6 +29,7 @@ from .object_runtime import (
     OutOfMemoryError,
     TypeObject,
 )
+from .semantics import normalize_gpu_decorator
 from .parser import Parser
 from .intrinsics import (
     IntrinsicCallable,
@@ -657,6 +659,22 @@ class Interpreter:
     def _call_function(self, fn: FunctionValue, args: list[object]) -> object:
         if len(args) != len(fn.decl.params):
             self._raise_runtime("TypeError", f"function '{fn.decl.name}' expects {len(fn.decl.params)} args, got {len(args)}", fn.decl.span)
+
+        gpu_config = normalize_gpu_decorator(fn.decl)
+        if gpu_config is not None and gpu_config.required:
+            selection = backend_selection_report("auto", policy="required")
+            if selection.selected_backend == "cpu":
+                self._raise_runtime(
+                    "RuntimeError",
+                    "GPU backend unavailable for required @gpu call",
+                    fn.decl.span,
+                )
+            if selection.selected_backend != "cuda":
+                self._raise_runtime(
+                    "RuntimeError",
+                    f"required @gpu backend '{selection.selected_backend}' is not implemented in interpreter mode",
+                    fn.decl.span,
+                )
 
         env = Environment(parent=fn.globals_env or self.global_env)
         for param, value in zip(fn.decl.params, args, strict=True):

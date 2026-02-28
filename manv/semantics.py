@@ -17,7 +17,7 @@ from .intrinsics import (
 
 BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
 BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id"})
-PRIMITIVE_TYPES = {"int", "float", "bool", "str", "u8", "usize", "array", "map", "none"}
+PRIMITIVE_TYPES = {"int", "i32", "float", "f32", "bool", "str", "u8", "usize", "array", "map", "none", "range"}
 BUILTIN_TYPES = {
     "object",
     "type",
@@ -41,6 +41,81 @@ STUB_FEATURE_STMTS = (ast.UnsupportedStmt,)
 @dataclass
 class SemanticResult:
     diagnostics: list[Diagnostic]
+
+
+@dataclass(frozen=True)
+class GpuDecoratorConfig:
+    """Normalized `@gpu` policy captured at the semantic boundary.
+
+    This normalization step is the single place that turns loose decorator
+    syntax into stable compiler meaning. Every downstream phase should consume
+    the normalized values rather than re-parsing raw decorator arguments.
+    """
+
+    required: bool = False
+    mode: str = "kernel"
+
+
+def normalize_type_name(type_name: str | None) -> str | None:
+    """Normalize user-facing type aliases into the internal semantic surface.
+
+    Why this exists:
+    - The current language still accepts legacy `int`/`float` names.
+    - GPU eligibility wants deterministic scalar names (`i32`, `f32`).
+    - The new `T[]` syntax should lower to the same internal array type form
+      as existing `array[T]` annotations.
+    """
+
+    if type_name is None:
+        return None
+
+    text = type_name.strip()
+    array_depth = 0
+    while text.endswith("[]"):
+        array_depth += 1
+        text = text[:-2].strip()
+
+    base = {
+        "int": "i32",
+        "float": "f32",
+        "void": "none",
+    }.get(text, text)
+
+    for _ in range(array_depth):
+        base = f"array[{base}]"
+    return base
+
+
+def normalize_gpu_decorator(decl: ast.FnDecl) -> GpuDecoratorConfig | None:
+    """Return the normalized GPU policy for a function or `None` if undecorated."""
+
+    gpu_decorators = [decorator for decorator in decl.decorators if decorator.name == "gpu"]
+    if not gpu_decorators:
+        return None
+
+    decorator = gpu_decorators[-1]
+    required = False
+    mode = "kernel"
+
+    if decorator.args:
+        raise ValueError("@gpu does not accept positional arguments in v1")
+
+    for key, value in decorator.kwargs.items():
+        if key == "required":
+            if not isinstance(value, ast.LiteralExpr) or value.literal_type != "bool":
+                raise TypeError("@gpu(required=...) expects a bool literal")
+            required = bool(value.value)
+            continue
+        if key == "mode":
+            if not isinstance(value, ast.LiteralExpr) or value.literal_type != "str":
+                raise TypeError("@gpu(mode=...) expects a string literal")
+            mode = str(value.value)
+            if mode not in {"kernel", "graph"}:
+                raise ValueError("@gpu(mode=...) must be 'kernel' or 'graph'")
+            continue
+        raise KeyError(key)
+
+    return GpuDecoratorConfig(required=required, mode=mode)
 
 
 class Scope:
@@ -117,11 +192,33 @@ class SemanticAnalyzer:
         self.functions[name] = decl
 
     def _analyze_function_decl(self, decl: ast.FnDecl, parent: Scope) -> None:
+        self._validate_function_decorators(decl)
         fn_scope = Scope(parent=parent)
         for param in decl.params:
-            fn_scope.define(param.name, param.type_name)
+            fn_scope.define(param.name, normalize_type_name(param.type_name))
         for stmt in decl.body:
             self._analyze_stmt(stmt, fn_scope, decl, loop_depth=0, except_depth=0)
+
+    def _validate_function_decorators(self, decl: ast.FnDecl) -> None:
+        gpu_count = 0
+        for decorator in decl.decorators:
+            if decorator.name != "gpu":
+                self._add_error("E2030", f"unknown decorator '@{decorator.name}'", decorator.span.line, decorator.span.column)
+                continue
+
+            gpu_count += 1
+            if gpu_count > 1:
+                self._add_error("E2031", "duplicate '@gpu' decorator", decorator.span.line, decorator.span.column)
+                continue
+
+            try:
+                normalize_gpu_decorator(ast.FnDecl(name=decl.name, params=decl.params, return_type=decl.return_type, body=decl.body, span=decl.span, decorators=[decorator]))
+            except ValueError as err:
+                self._add_error("E2032", str(err), decorator.span.line, decorator.span.column)
+            except TypeError as err:
+                self._add_error("E2033", str(err), decorator.span.line, decorator.span.column)
+            except KeyError as err:
+                self._add_error("E2034", f"unknown @gpu option '{err.args[0]}'", decorator.span.line, decorator.span.column)
 
     def assert_valid(self, result: SemanticResult) -> None:
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -146,7 +243,8 @@ class SemanticAnalyzer:
             value_type = self._analyze_expr(stmt.value, scope, as_callee=False) if stmt.value is not None else None
             if stmt.array_size is not None and value_type is None:
                 value_type = "array"
-            scope.define(stmt.name, stmt.type_name or value_type)
+            declared_type = normalize_type_name(stmt.type_name) or normalize_type_name(value_type)
+            scope.define(stmt.name, declared_type)
             if stmt.type_name and value_type and not self._type_compatible(stmt.type_name, value_type):
                 self._add_error("E2002", f"type mismatch for '{stmt.name}': expected {stmt.type_name}, got {value_type}", stmt.span.line, stmt.span.column)
             return
@@ -249,6 +347,16 @@ class SemanticAnalyzer:
                 self._analyze_stmt(inner, body_scope, fn_decl, loop_depth=loop_depth + 1, except_depth=except_depth)
             return
 
+        if isinstance(stmt, ast.ForStmt):
+            iterable_type = self._analyze_expr(stmt.iterable, scope, as_callee=False)
+            if iterable_type != "range":
+                self._add_error("E2035", "for-loops currently require a range expression like '0..n'", stmt.span.line, stmt.span.column)
+            body_scope = Scope(parent=scope)
+            body_scope.define(stmt.var_name, "i32")
+            for inner in stmt.body:
+                self._analyze_stmt(inner, body_scope, fn_decl, loop_depth=loop_depth + 1, except_depth=except_depth)
+            return
+
         if isinstance(stmt, ast.BreakStmt):
             if loop_depth <= 0:
                 self._add_error("E2008", "'break' is only valid inside loops", stmt.span.line, stmt.span.column)
@@ -317,7 +425,7 @@ class SemanticAnalyzer:
 
     def _analyze_expr(self, expr: object, scope: Scope, as_callee: bool) -> str | None:
         if isinstance(expr, ast.LiteralExpr):
-            return expr.literal_type
+            return {"int": "i32", "float": "f32"}.get(expr.literal_type, expr.literal_type)
 
         if isinstance(expr, ast.IdentifierExpr):
             if expr.name == "std":
@@ -336,12 +444,12 @@ class SemanticAnalyzer:
                 self._add_error("E2011", f"undefined function or type '{expr.name}'", expr.span.line, expr.span.column)
                 return None
             if expr.name in self.types:
-                return expr.name
+                return normalize_type_name(expr.name)
             symbol_type = scope.lookup(expr.name)
             if not scope.contains(expr.name):
                 self._add_error("E2010", f"undefined variable '{expr.name}'", expr.span.line, expr.span.column)
                 return None
-            return symbol_type
+            return normalize_type_name(symbol_type)
 
         if isinstance(expr, ast.UnaryExpr):
             inner = self._analyze_expr(expr.expr, scope, as_callee=False)
@@ -357,8 +465,17 @@ class SemanticAnalyzer:
             if expr.op in {"==", "!=", "<", "<=", ">", ">="}:
                 return "bool"
             if left and right and left != right and left in {"int", "float"} and right in {"int", "float"}:
-                return "float"
+                return "f32"
             return left or right
+
+        if isinstance(expr, ast.RangeExpr):
+            start_type = self._analyze_expr(expr.start, scope, as_callee=False)
+            stop_type = self._analyze_expr(expr.stop, scope, as_callee=False)
+            if start_type and not self._type_compatible("int", start_type):
+                self._add_error("E2036", f"range start must be int-compatible, got {start_type}", expr.span.line, expr.span.column)
+            if stop_type and not self._type_compatible("int", stop_type):
+                self._add_error("E2037", f"range stop must be int-compatible, got {stop_type}", expr.span.line, expr.span.column)
+            return "range"
 
         if isinstance(expr, ast.CallExpr):
             intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee)
@@ -389,9 +506,9 @@ class SemanticAnalyzer:
             if isinstance(expr.callee, ast.IdentifierExpr):
                 fn = self.functions.get(expr.callee.name)
                 if fn:
-                    return fn.return_type
+                    return normalize_type_name(fn.return_type)
                 if expr.callee.name in self.types:
-                    return expr.callee.name
+                    return normalize_type_name(expr.callee.name)
             return None
 
         if isinstance(expr, ast.AttributeExpr):
@@ -432,11 +549,13 @@ class SemanticAnalyzer:
         return None
 
     def _type_compatible(self, expected: str, actual: str) -> bool:
+        expected = normalize_type_name(expected) or expected
+        actual = normalize_type_name(actual) or actual
         if expected == actual:
             return True
-        if expected in {"int", "usize", "u8"} and actual == "int":
+        if expected in {"int", "i32", "usize", "u8"} and actual in {"int", "i32"}:
             return True
-        if expected == "float" and actual in {"float", "int"}:
+        if expected in {"float", "f32"} and actual in {"float", "f32", "int", "i32"}:
             return True
         if expected.startswith("[") and actual == "array":
             return True

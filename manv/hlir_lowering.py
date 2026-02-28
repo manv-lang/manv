@@ -17,6 +17,7 @@ from . import ast
 from .diagnostics import Span
 from .hlir import HBasicBlock, HFunction, HInstruction, HModule, HTerminator, Provenance, SourceSpan
 from .intrinsics import intrinsic_effect_names, resolve_call_alias_name, resolve_intrinsic, resolve_intrinsic_name_from_callee
+from .semantics import GpuDecoratorConfig, normalize_gpu_decorator, normalize_type_name
 
 
 @dataclass
@@ -39,6 +40,7 @@ class _LowerState:
     loop_targets: list[tuple[str, str]] = field(default_factory=list)
     unwind_targets: list[str] = field(default_factory=list)
     declared_vars: set[str] = field(default_factory=set)
+    gpu_functions: dict[str, GpuDecoratorConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._ensure_block("entry")
@@ -148,6 +150,7 @@ class _LowerState:
 class HLIRLowerer:
     def lower_program(self, program: ast.Program, source_name: str) -> HModule:
         functions: list[HFunction] = []
+        gpu_functions = self._collect_gpu_functions(program)
 
         if program.statements:
             top_fn = self._lower_function_decl(
@@ -156,6 +159,7 @@ class HLIRLowerer:
                 params=[],
                 return_type=None,
                 body=program.statements,
+                gpu_functions=gpu_functions,
             )
             functions.append(top_fn)
 
@@ -165,9 +169,11 @@ class HLIRLowerer:
                     self._lower_function_decl(
                         fn_name=decl.name,
                         source_name=source_name,
-                        params=[{"name": p.name, "type": p.type_name, "span": p.span} for p in decl.params],
-                        return_type=decl.return_type,
+                        params=[{"name": p.name, "type": normalize_type_name(p.type_name), "span": p.span} for p in decl.params],
+                        return_type=normalize_type_name(decl.return_type),
                         body=decl.body,
+                        attrs=_function_attrs(decl),
+                        gpu_functions=gpu_functions,
                     )
                 )
                 continue
@@ -178,9 +184,11 @@ class HLIRLowerer:
                         self._lower_function_decl(
                             fn_name=f"{decl.name}.{method.name}",
                             source_name=source_name,
-                            params=[{"name": p.name, "type": p.type_name, "span": p.span} for p in method.params],
-                            return_type=method.return_type,
+                            params=[{"name": p.name, "type": normalize_type_name(p.type_name), "span": p.span} for p in method.params],
+                            return_type=normalize_type_name(method.return_type),
                             body=method.body,
+                            attrs=_function_attrs(method),
+                            gpu_functions=gpu_functions,
                         )
                     )
                 continue
@@ -191,13 +199,34 @@ class HLIRLowerer:
                         self._lower_function_decl(
                             fn_name=f"{decl.target}.{method.name}",
                             source_name=source_name,
-                            params=[{"name": p.name, "type": p.type_name, "span": p.span} for p in method.params],
-                            return_type=method.return_type,
+                            params=[{"name": p.name, "type": normalize_type_name(p.type_name), "span": p.span} for p in method.params],
+                            return_type=normalize_type_name(method.return_type),
                             body=method.body,
+                            attrs=_function_attrs(method),
+                            gpu_functions=gpu_functions,
                         )
                     )
 
         return HModule(version="0.1", source=source_name, functions=functions)
+
+    def _collect_gpu_functions(self, program: ast.Program) -> dict[str, GpuDecoratorConfig]:
+        gpu_functions: dict[str, GpuDecoratorConfig] = {}
+        for decl in program.declarations:
+            if isinstance(decl, ast.FnDecl):
+                config = normalize_gpu_decorator(decl)
+                if config is not None:
+                    gpu_functions[decl.name] = config
+            elif isinstance(decl, ast.TypeDecl):
+                for method in decl.methods:
+                    config = normalize_gpu_decorator(method)
+                    if config is not None:
+                        gpu_functions[f"{decl.name}.{method.name}"] = config
+            elif isinstance(decl, ast.ImplDecl):
+                for method in decl.methods:
+                    config = normalize_gpu_decorator(method)
+                    if config is not None:
+                        gpu_functions[f"{decl.target}.{method.name}"] = config
+        return gpu_functions
 
     def _lower_function_decl(
         self,
@@ -206,8 +235,17 @@ class HLIRLowerer:
         params: list[dict[str, Any]],
         return_type: str | None,
         body: list[Any],
+        *,
+        attrs: dict[str, Any] | None = None,
+        gpu_functions: dict[str, GpuDecoratorConfig] | None = None,
     ) -> HFunction:
-        state = _LowerState(fn_name=fn_name, source_name=source_name, return_type=return_type, params=params)
+        state = _LowerState(
+            fn_name=fn_name,
+            source_name=source_name,
+            return_type=return_type,
+            params=params,
+            gpu_functions=dict(gpu_functions or {}),
+        )
 
         for index, param in enumerate(params):
             var_name = str(param["name"])
@@ -242,7 +280,14 @@ class HLIRLowerer:
 
         blocks = [state.blocks[label] for label in state.order]
         public_params = [{"name": p.get("name"), "type": p.get("type")} for p in params]
-        return HFunction(name=fn_name, params=public_params, return_type=return_type, entry="entry", blocks=blocks)
+        return HFunction(
+            name=fn_name,
+            params=public_params,
+            return_type=return_type,
+            entry="entry",
+            blocks=blocks,
+            attrs=dict(attrs or {}),
+        )
 
     def _lower_statements(self, state: _LowerState, statements: list[Any]) -> None:
         for stmt in statements:
@@ -385,6 +430,10 @@ class HLIRLowerer:
             self._lower_while(state, stmt)
             return
 
+        if isinstance(stmt, ast.ForStmt):
+            self._lower_for(state, stmt)
+            return
+
         if isinstance(stmt, ast.BreakStmt):
             if state.loop_targets:
                 break_label, _ = state.loop_targets[-1]
@@ -468,6 +517,59 @@ class HLIRLowerer:
         state.loop_targets.pop()
         if not state.has_terminator():
             state.terminate("br", [cond_label], node=stmt)
+
+        state.set_block(exit_label)
+
+    def _lower_for(self, state: _LowerState, stmt: ast.ForStmt) -> None:
+        # GPU eligibility depends on seeing a canonical counted-loop shape.
+        # Lowering therefore normalizes source `for i in a..b:` into explicit
+        # init/compare/increment blocks while preserving the original source
+        # spans on the generated operations.
+        if not isinstance(stmt.iterable, ast.RangeExpr):
+            state.emit(HInstruction(op="unsupported_stmt", attrs={"kind": "ForStmt"}, effects=["may_throw"]), node=stmt)
+            return
+
+        if stmt.var_name not in state.declared_vars:
+            state.emit(
+                HInstruction(op="declare_var", attrs={"name": stmt.var_name, "type": "i32"}, effects=["writes_memory"]),
+                node=stmt,
+            )
+            state.declared_vars.add(stmt.var_name)
+
+        start_value = self._lower_expr(state, stmt.iterable.start)
+        state.emit(HInstruction(op="store_var", args=[stmt.var_name, start_value], effects=["writes_memory"]), node=stmt)
+
+        cond_label = state.new_label("for_cond")
+        body_label = state.new_label("for_body")
+        incr_label = state.new_label("for_incr")
+        exit_label = state.new_label("for_exit")
+
+        state.terminate("br", [cond_label], node=stmt)
+
+        state.set_block(cond_label)
+        loop_index = state.new_temp()
+        state.emit(HInstruction(op="load_var", dest=loop_index, args=[stmt.var_name], effects=["reads_memory"]), node=stmt)
+        stop_value = self._lower_expr(state, stmt.iterable.stop)
+        compare = state.new_temp()
+        state.emit(HInstruction(op="binop", dest=compare, args=[loop_index, stop_value], attrs={"op": "<"}), node=stmt)
+        state.terminate("cbr", [compare, body_label, exit_label], node=stmt)
+
+        state.set_block(body_label)
+        state.loop_targets.append((exit_label, incr_label))
+        self._lower_statements(state, stmt.body)
+        state.loop_targets.pop()
+        if not state.has_terminator():
+            state.terminate("br", [incr_label], node=stmt)
+
+        state.set_block(incr_label)
+        current_value = state.new_temp()
+        state.emit(HInstruction(op="load_var", dest=current_value, args=[stmt.var_name], effects=["reads_memory"]), node=stmt)
+        one_value = state.new_temp()
+        state.emit(HInstruction(op="const", dest=one_value, type_name="i32", attrs={"value": 1}), node=stmt)
+        next_value = state.new_temp()
+        state.emit(HInstruction(op="binop", dest=next_value, args=[current_value, one_value], attrs={"op": "+"}), node=stmt)
+        state.emit(HInstruction(op="store_var", args=[stmt.var_name, next_value], effects=["writes_memory"]), node=stmt)
+        state.terminate("br", [cond_label], node=stmt)
 
         state.set_block(exit_label)
 
@@ -619,6 +721,11 @@ class HLIRLowerer:
             state.emit(HInstruction(op="binop", dest=out, args=[left, right], attrs={"op": expr.op}), node=expr)
             return out
 
+        if isinstance(expr, ast.RangeExpr):
+            out = state.new_temp()
+            state.emit(HInstruction(op="const", dest=out, type_name="range", attrs={"value": None}), node=expr)
+            return out
+
         if isinstance(expr, ast.CallExpr):
             arg_values = [self._lower_expr(state, arg) for arg in expr.args]
             callsite_id = state.next_callsite_id()
@@ -669,7 +776,45 @@ class HLIRLowerer:
             callee_name = "<dynamic>"
             if isinstance(expr.callee, ast.IdentifierExpr):
                 callee_name = expr.callee.name
+            gpu_config = state.gpu_functions.get(callee_name)
             out = state.new_temp()
+            if gpu_config is not None:
+                # HLIR is the semantic authority for GPU dispatch decisions.
+                # Downstream passes must consult this explicit op instead of
+                # inferring GPU intent from backend or naming conventions.
+                if state.unwind_targets:
+                    normal_label = state.new_label("invoke_ok")
+                    state.terminate(
+                        "invoke",
+                        [*arg_values, normal_label, state.unwind_targets[-1]],
+                        attrs={
+                            "kind": "gpu_call",
+                            "callee": callee_name,
+                            "callsite_id": callsite_id,
+                            "dest": out,
+                            "policy": "required" if gpu_config.required else "best_effort",
+                            "mode": gpu_config.mode,
+                        },
+                        node=expr,
+                    )
+                    state.set_block(normal_label)
+                    return out
+                state.emit(
+                    HInstruction(
+                        op="gpu_call",
+                        dest=out,
+                        args=arg_values,
+                        attrs={
+                            "callee": callee_name,
+                            "callsite_id": callsite_id,
+                            "policy": "required" if gpu_config.required else "best_effort",
+                            "mode": gpu_config.mode,
+                        },
+                        effects=["reads_memory", "writes_memory", "may_throw"],
+                    ),
+                    node=expr,
+                )
+                return out
             if state.unwind_targets:
                 normal_label = state.new_label("invoke_ok")
                 state.terminate(
@@ -767,3 +912,12 @@ def lower_ast_to_hlir(program: ast.Program, source_name: str) -> HModule:
     return HLIRLowerer().lower_program(program, source_name)
 
 
+def _function_attrs(decl: ast.FnDecl) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    gpu = normalize_gpu_decorator(decl)
+    if gpu is not None:
+        attrs["gpu"] = {
+            "required": gpu.required,
+            "mode": gpu.mode,
+        }
+    return attrs

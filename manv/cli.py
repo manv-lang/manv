@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 import sys
 from typing import Annotated
@@ -8,10 +9,13 @@ from typing import Annotated
 import typer
 
 from . import __version__
-from .builder import build_target
-from .compiler import compile_target
+from .builder import build_target, host_target_name
+from .compiler import compile_pipeline_full, compile_target
+from .device import render_selection_report
 from .dap import DAPServer
 from .diagnostics import ManvError, diag
+from .gpu_dispatch import backend_selection_report
+from .host import HostSelectionRequest, render_joint_backend_report, resolve_host_selection
 from .project import discover_target, init_project
 from .registry import (
     DEFAULT_REGISTRY_URL,
@@ -48,6 +52,45 @@ def _title(text: str) -> None:
 
 def _kv(key: str, value: object) -> None:
     typer.echo(f"{key}: {value}")
+
+
+def _requested_reports(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {part.strip().lower() for part in value.split(",") if part.strip()}
+
+
+def _emit_backend_report(
+    preferred_backend: str,
+    *,
+    host_backend: str = "auto",
+    device: str | None = None,
+    policy: str = "auto",
+) -> None:
+    typer.echo("[Report:backend]")
+    host_report = resolve_host_selection(
+        HostSelectionRequest(
+            requested_host_backend=host_backend,
+            policy=policy,
+        )
+    )
+    device_report = backend_selection_report(preferred_backend, device=device, policy=policy)
+    typer.echo(render_joint_backend_report(host_report, device_report), nl=False)
+
+
+def _emit_kernelize_report(target: str | Path, *, optimize: bool = True, abi_target: str = "x86_64-sysv") -> None:
+    context = discover_target(target)
+    source = context.entry.read_text(encoding="utf-8")
+    artifacts = compile_pipeline_full(
+        source,
+        str(context.entry),
+        optimize=optimize,
+        target_name=abi_target,
+        capture_graph=False,
+    )
+    typer.echo("[Report:kernelize]")
+    typer.echo(json.dumps(artifacts["gpu_report"], indent=2, sort_keys=True), nl=False)
+    typer.echo()
 
 
 @app.command()
@@ -110,10 +153,29 @@ def run(
     target: Annotated[str, typer.Argument(help="project directory or .mv file")] = ".",
     mode: Annotated[str, typer.Option(help="execution mode: interpreter|compiled")] = "interpreter",
     abi_target: Annotated[str, typer.Option("--target", help="cpu target ABI")] = "x86_64-sysv",
+    backend: Annotated[str, typer.Option("--backend", help="runtime backend preference: auto,cuda,rocm,level0,vulkan-spv,directx,webgpu,cpu")] = "auto",
+    device: Annotated[str | None, typer.Option("--device", help="preferred runtime device id")] = None,
+    report: Annotated[str | None, typer.Option("--report", help="comma separated report kinds: backend,kernelize")] = None,
+    cuda: Annotated[bool, typer.Option("--cuda", help="enable CUDA-aware execution paths when available")] = False,
+    cuda_arch: Annotated[str, typer.Option("--cuda-arch", help="CUDA architecture for JIT compilation")] = "sm_80",
+    cuda_dump_kernels: Annotated[bool, typer.Option("--cuda-dump-kernels", help="dump generated CUDA source alongside PTX")] = False,
+    cuda_jit: Annotated[bool, typer.Option("--cuda-jit", help="prefer JIT compilation for CUDA kernels")] = True,
+    cuda_aot: Annotated[bool, typer.Option("--cuda-aot", help="request AOT-style artifact emission where supported")] = False,
     deterministic_gc: Annotated[bool, typer.Option(help="enable deterministic GC checkpoints")] = False,
     gc_stress: Annotated[bool, typer.Option(help="force GC at every safe point")] = False,
     stable_debug_format: Annotated[bool, typer.Option(help="stable map/object formatting for debugging")] = False,
 ) -> None:
+    del cuda, cuda_arch, cuda_dump_kernels, cuda_jit, cuda_aot
+    reports = _requested_reports(report)
+    if "backend" in reports:
+        _emit_backend_report(
+            backend,
+            host_backend="interp" if mode == "interpreter" else "llvm",
+            device=device,
+            policy="run",
+        )
+    if "kernelize" in reports:
+        _emit_kernelize_report(target, optimize=True, abi_target=abi_target)
     out = io.StringIO()
     try:
         code = run_target(
@@ -121,6 +183,8 @@ def run(
             stdout=out,
             mode=mode,
             target_name=abi_target,
+            backend=backend,
+            device=device,
             deterministic_gc=deterministic_gc,
             gc_stress=gc_stress,
             stable_debug_format=stable_debug_format,
@@ -141,34 +205,65 @@ def compile_cmd(
         typer.Option(
             help=(
                 "comma separated list: ast,hir,hlir,graph,capture,kernel,kernel_exec,"
-                "abi,host_stub_abi,asm,host_stub,source_map,backend_bundle,ptx,hip,msl,spirv,wgsl,opencl,hlsl,native_obj,native_exe"
+                "abi,host_stub_abi,asm,host_stub,source_map,gpu_report,backend_bundle,ptx,cuda_cpp,hip,spirv,wgsl,hlsl,llvm_ir,native_obj,native_exe"
             )
         ),
-    ] = "ast,hir,hlir,graph,kernel,abi,asm,host_stub",
+    ] = "ast,hir,hlir,graph,kernel,abi,llvm_ir,native_exe",
     out: Annotated[str | None, typer.Option(help="output directory override")] = None,
-    backend: Annotated[str, typer.Option(help="backend target: none,cuda,rocm,metal,vulkan-spv,webgpu,opencl,directx,cpu-ref")] = "none",
+    host: Annotated[str, typer.Option("--host", help="host backend: auto,llvm,interp")] = "auto",
+    device_backend: Annotated[
+        str,
+        typer.Option("--device-backend", "--backend", help="device backend target: auto,none,cuda,rocm,level0,vulkan-spv,webgpu,directx,cpu"),
+    ] = "none",
     optimize: Annotated[bool, typer.Option(help="enable Graph IR optimization")] = True,
-    abi_target: Annotated[str, typer.Option("--target", help="cpu target ABI")] = "x86_64-sysv",
+    abi_target: Annotated[str, typer.Option("--target", help="cpu target ABI")] = host_target_name(),
     capture: Annotated[bool, typer.Option(help="capture Graph IR by tracing HLIR execution")] = False,
+    device: Annotated[str | None, typer.Option("--device", help="preferred runtime device id for reports")] = None,
+    link_lib: Annotated[list[str] | None, typer.Option("--link-lib", help="native linker library name")] = None,
+    link_path: Annotated[list[str] | None, typer.Option("--link-path", help="native linker search path")] = None,
+    link_arg: Annotated[list[str] | None, typer.Option("--link-arg", help="raw native linker argument")] = None,
+    report: Annotated[str | None, typer.Option("--report", help="comma separated report kinds: backend,kernelize")] = None,
+    cuda_arch: Annotated[str, typer.Option("--cuda-arch", help="CUDA architecture for JIT compilation")] = "sm_80",
+    cuda_dump_kernels: Annotated[bool, typer.Option("--cuda-dump-kernels", help="dump generated CUDA source")] = False,
+    cuda_jit: Annotated[bool, typer.Option("--cuda-jit", help="prefer JIT compilation for CUDA kernels")] = True,
+    cuda_aot: Annotated[bool, typer.Option("--cuda-aot", help="request AOT-style artifact emission where supported")] = False,
 ) -> None:
+    del cuda_jit, cuda_aot
     try:
         ctx = discover_target(target)
         out_dir = Path(out).resolve() if out else ctx.target_dir
+        reports = _requested_reports(report)
+        if "backend" in reports:
+            _emit_backend_report(
+                "auto" if device_backend == "none" else device_backend,
+                host_backend=host,
+                device=device,
+                policy="compile",
+            )
+        if "kernelize" in reports:
+            _emit_kernelize_report(ctx.entry, optimize=optimize, abi_target=abi_target)
         emit_parts = [item.strip() for item in emit.split(",") if item.strip()]
         written = compile_target(
             ctx.entry,
             out_dir,
             emit=emit_parts,
-            backend=backend,
+            backend=device_backend,
             optimize=optimize,
             target_name=abi_target,
             capture_graph=capture,
+            host_backend=host,
+            cuda_arch=cuda_arch,
+            cuda_dump_kernels=cuda_dump_kernels,
+            link_libs=tuple(link_lib or []),
+            link_paths=tuple(link_path or []),
+            link_args=tuple(link_arg or []),
         )
     except ManvError as err:
         _fail(err)
     _title("Compile")
     _kv("source", ctx.entry)
-    _kv("backend", backend)
+    _kv("host_backend", host)
+    _kv("device_backend", device_backend)
     _kv("target", abi_target)
     _kv("optimize", optimize)
     _kv("capture", capture)
@@ -182,14 +277,40 @@ def compile_cmd(
 def build(
     target: Annotated[str, typer.Argument(help="project directory or .mv file")] = ".",
     out: Annotated[str | None, typer.Option(help="dist directory override")] = None,
+    host: Annotated[str, typer.Option("--host", help="host backend: auto,llvm,interp")] = "auto",
+    device_backend: Annotated[
+        str,
+        typer.Option("--device-backend", "--backend", help="device backend preference: auto,none,cuda,rocm,level0,vulkan-spv,directx,webgpu,cpu"),
+    ] = "auto",
+    device: Annotated[str | None, typer.Option("--device", help="preferred runtime device id for reports")] = None,
+    report: Annotated[str | None, typer.Option("--report", help="comma separated report kinds: backend,kernelize")] = None,
+    portable_cache: Annotated[bool, typer.Option("--portable-cache", help="extract bundled program payload next to the executable")] = False,
+    cuda_arch: Annotated[str, typer.Option("--cuda-arch", help="CUDA architecture for emitted artifacts")] = "sm_80",
+    cuda_dump_kernels: Annotated[bool, typer.Option("--cuda-dump-kernels", help="dump generated CUDA source")] = False,
+    cuda_jit: Annotated[bool, typer.Option("--cuda-jit", help="prefer JIT compilation for CUDA kernels")] = True,
+    cuda_aot: Annotated[bool, typer.Option("--cuda-aot", help="request AOT-style artifact emission where supported")] = False,
 ) -> None:
+    del cuda_arch, cuda_dump_kernels, cuda_jit, cuda_aot
+    reports = _requested_reports(report)
+    if "backend" in reports:
+        _emit_backend_report(device_backend, host_backend=host, device=device, policy="build")
+    if "kernelize" in reports:
+        _emit_kernelize_report(target)
     try:
-        bundle = build_target(target, Path(out).resolve() if out else None)
+        bundle = build_target(
+            target,
+            Path(out).resolve() if out else None,
+            portable_cache=portable_cache,
+            host_backend=host,
+            device_backend=device_backend,
+        )
     except ManvError as err:
         _fail(err)
     _title("Build")
-    _kv("bundle", bundle)
-    _kv("run", bundle / "run.py")
+    _kv("artifact", bundle)
+    _kv("host_backend", host)
+    _kv("device_backend", device_backend)
+    _kv("target", host_target_name())
     typer.echo("status: built")
 
 
@@ -204,7 +325,11 @@ def repl() -> None:
 
 
 @app.command()
-def test(path: Annotated[str, typer.Argument(help="project root or fixtures root")] = ".") -> None:
+def test(
+    path: Annotated[str, typer.Argument(help="project root or fixtures root")] = ".",
+    cuda: Annotated[bool, typer.Option("--cuda", help="run CUDA-aware tests when the environment supports them")] = False,
+) -> None:
+    del cuda
     result = run_e2e_suite(path)
     _title("Test")
     typer.echo(f"{'result':<8} {'case':<28} detail")
@@ -384,4 +509,3 @@ def lsp(
 
 if __name__ == "__main__":
     app()
-

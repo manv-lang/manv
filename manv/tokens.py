@@ -23,16 +23,21 @@ KEYWORDS = {
     "fn",
     "let",
     "int",
+    "i32",
     "str",
     "array",
     "map",
     "u8",
     "usize",
     "float",
+    "f32",
     "bool",
+    "void",
     "if",
     "else",
     "while",
+    "for",
+    "in",
     "break",
     "continue",
     "return",
@@ -41,6 +46,8 @@ KEYWORDS = {
     "not",
     "true",
     "false",
+    "True",
+    "False",
     "none",
     "type",
     "class",
@@ -58,8 +65,9 @@ KEYWORDS = {
     "memory",
 }
 
-DOUBLE_CHAR_OPS = {"->", "==", "!=", "<=", ">=", "&&", "||"}
+DOUBLE_CHAR_OPS = {"->", "==", "!=", "<=", ">=", "&&", "||", ".."}
 SINGLE_CHAR_OPS = {
+    "@",
     "+",
     "-",
     "*",

@@ -1,19 +1,40 @@
+"""Compatibility backend layer used during the device-subsystem migration.
+
+Why this module still exists:
+- A large part of the compiler/test surface already imports
+  `compile_kir_backend`, `create_runtime`, and `list_backends`.
+- The new `manv.device` package is the canonical source of backend naming and
+  selection, but the compile/runtime shims still need a stable compatibility
+  facade while the rest of the codebase migrates incrementally.
+
+Important constraints:
+- Backend ids here must match the canonical ids in `manv.device`.
+- CUDA is the only backend that attempts a real driver-facing runtime today.
+- All non-CUDA runtime execution paths remain explicit CPU-reference shims so
+  semantics stay deterministic even before those backends gain real runtimes.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any
 
-from .backends.cuda_ptx import emit_cuda_ptx
+from .backends.cuda import (
+    CudaCacheStore,
+    build_cuda_cache_key,
+    compile_cuda_source,
+    cuda_is_available,
+    emit_cuda_cpp,
+)
+from .device.interfaces import BackendId
 from .gpu_trace import TraceRecorder
 from .kernel_ir import KIRModule, parse_kir_module
 from .kernel_mock import execute_kernel_ir_reference
 
 
-BackendId = Literal["cuda", "rocm", "metal", "vulkan_spirv", "webgpu", "opencl", "directx", "cpu_ref"]
-
-
-@dataclass
+@dataclass(frozen=True)
 class BackendCapabilities:
     fp16: bool
     bf16: bool
@@ -51,7 +72,7 @@ class CompiledKernelBundle:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class RuntimeHandle:
     backend: BackendId
     device: str
@@ -65,7 +86,7 @@ class DeviceBuffer:
     data: list[Any] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(frozen=True)
 class KernelHandle:
     backend: BackendId
     entry: str
@@ -79,7 +100,7 @@ class LaunchToken:
 
 
 class BaseKernelCompiler:
-    backend: BackendId = "cpu_ref"
+    backend: BackendId = "cpu"
 
     def compile(self, module: KIRModule, target: str, options: dict[str, Any] | None = None) -> CompiledKernelBundle:
         raise NotImplementedError
@@ -89,16 +110,57 @@ class CudaKernelCompiler(BaseKernelCompiler):
     backend: BackendId = "cuda"
 
     def compile(self, module: KIRModule, target: str, options: dict[str, Any] | None = None) -> CompiledKernelBundle:
-        payload = module.to_dict()
-        ptx = emit_cuda_ptx(payload)
+        options = dict(options or {})
+        arch = str(options.get("arch", "sm_80"))
+        debug = bool(options.get("debug", False))
+        source = emit_cuda_cpp(module, arch=arch, debug=debug)
+        cache = CudaCacheStore(Path(".manv") / "target" / "cuda_cache")
+        cache_key = build_cuda_cache_key(
+            kir_hash=module.canonical_hash(),
+            arch=arch,
+            driver_version="available" if cuda_is_available() else "unavailable",
+            nvrtc_version="nvrtc" if cuda_is_available() else "unavailable",
+            compile_flags=[f"--gpu-architecture={arch}"],
+            cuda_source=source,
+        )
+        cached = cache.load(cache_key)
+        compile_log: list[str] = [f"cuda source emission complete for arch={arch}"]
+        if cached is not None:
+            source, ptx = cached
+            compile_log.append("cuda cache hit")
+        else:
+            result = compile_cuda_source(source, arch=arch)
+            if result.success and result.ptx:
+                ptx = result.ptx
+                compile_log.append(result.log or "nvrtc compilation completed")
+                cache.store(
+                    cache_key,
+                    source=source,
+                    ptx=ptx,
+                    metadata={
+                        "arch": arch,
+                        "backend": "cuda",
+                        "compile_log": compile_log,
+                        "kir_hash": module.canonical_hash(),
+                    },
+                )
+            else:
+                compile_log.append(result.log or "nvrtc compilation unavailable")
+                ptx = "\n".join(
+                    [
+                        "// PTX unavailable on this machine; emitting generated CUDA source instead.",
+                        f"// nvrtc_log: {result.log}",
+                        source,
+                    ]
+                )
         return CompiledKernelBundle(
             backend=self.backend,
             target=target,
-            binaries={"ptx": ptx},
-            reflection={"kernels": [k.name for k in module.kernels]},
-            entrypoints=[k.name for k in module.kernels],
-            compile_log=["cuda ptx emission complete"],
-            cache_key=module.canonical_hash() + ":cuda:" + target,
+            binaries={"ptx": ptx, "cuda_cpp": source},
+            reflection={"kernels": [kernel.name for kernel in module.kernels], "arch": arch},
+            entrypoints=[kernel.name for kernel in module.kernels],
+            compile_log=compile_log,
+            cache_key=cache_key,
         )
 
 
@@ -114,15 +176,15 @@ class TextBackendCompiler(BaseKernelCompiler):
             backend=self.backend,
             target=target,
             binaries={self.dialect: code},
-            reflection={"kernels": [k.name for k in module.kernels], "dialect": self.dialect},
-            entrypoints=[k.name for k in module.kernels],
+            reflection={"kernels": [kernel.name for kernel in module.kernels], "dialect": self.dialect},
+            entrypoints=[kernel.name for kernel in module.kernels],
             compile_log=[f"{self.backend} textual emission complete"],
-            cache_key=module.canonical_hash() + f":{self.backend}:{target}",
+            cache_key=f"{module.canonical_hash()}:{self.backend}:{target}",
         )
 
 
 class BaseGpuRuntime:
-    backend: BackendId = "cpu_ref"
+    backend: BackendId = "cpu"
 
     def __init__(self, trace: TraceRecorder | None = None):
         self.trace = trace
@@ -136,11 +198,11 @@ class BaseGpuRuntime:
 
     def allocate(self, size: int, memory_kind: str = "global") -> DeviceBuffer:
         bid = f"buf_{len(self._buffers) + 1}"
-        buf = DeviceBuffer(id=bid, size=size, memory_kind=memory_kind, data=[0] * max(1, size))
-        self._buffers[bid] = buf
+        buffer = DeviceBuffer(id=bid, size=size, memory_kind=memory_kind, data=[0] * max(1, size))
+        self._buffers[bid] = buffer
         if self.trace:
             self.trace.add("memory", "allocate", 0.01, {"backend": self.backend, "size": size, "kind": memory_kind})
-        return buf
+        return buffer
 
     def free(self, buffer: DeviceBuffer) -> None:
         self._buffers.pop(buffer.id, None)
@@ -173,8 +235,14 @@ class BaseGpuRuntime:
             self.trace.add("runtime", "load_kernel", 0.01, {"backend": self.backend, "entry": entry})
         return KernelHandle(backend=self.backend, entry=entry, bundle=bundle)
 
-    def launch(self, handle: KernelHandle, bindings: dict[str, list[Any]], launch_config: dict[str, int], stream: str | None = None) -> LaunchToken:
-        del stream
+    def launch(
+        self,
+        handle: KernelHandle,
+        bindings: dict[str, list[Any]],
+        launch_config: dict[str, int],
+        stream: str | None = None,
+    ) -> LaunchToken:
+        del bindings, stream
         self._launch_counter += 1
         if self.trace:
             self.trace.add(
@@ -209,13 +277,16 @@ class MockGpuRuntime(BaseGpuRuntime):
         self,
         module: KIRModule,
         *,
-        inputs: dict[str, list[Any]] | None = None,
+        inputs: dict[str, Any] | None = None,
         launch_override: dict[str, int] | None = None,
         capture_debug: bool = True,
+        compiled_bundle: CompiledKernelBundle | None = None,
+        allow_cpu_fallback: bool = True,
     ) -> dict[str, Any]:
+        del compiled_bundle, allow_cpu_fallback
         if self.trace:
             self.trace.add("runtime", "execute_kir", 0.05, {"backend": self.backend})
-        return execute_kernel_ir_reference(
+        result = execute_kernel_ir_reference(
             module,
             inputs=inputs,
             launch_override=launch_override,
@@ -223,29 +294,69 @@ class MockGpuRuntime(BaseGpuRuntime):
             capture_debug=capture_debug,
             check_oob=True,
         )
+        # Non-CUDA backends are still CPU-reference runtimes today. Recording
+        # that fact explicitly keeps `executed_backend` honest for reports.
+        result["_runtime"] = {
+            "backend": "cpu",
+            "executed_on_gpu": False,
+            "fallback_reason": f"{self.backend} runtime is not implemented yet",
+        }
+        return result
+
+
+class CudaDispatchRuntime(BaseGpuRuntime):
+    def __init__(self, trace: TraceRecorder | None = None):
+        super().__init__(trace=trace)
+        self.backend = "cuda"
+        from .backends.cuda.runtime import CudaRuntime
+
+        self._runtime = CudaRuntime()
+
+    def execute_kir(
+        self,
+        module: KIRModule,
+        *,
+        inputs: dict[str, Any] | None = None,
+        launch_override: dict[str, int] | None = None,
+        capture_debug: bool = True,
+        compiled_bundle: CompiledKernelBundle | None = None,
+        allow_cpu_fallback: bool = True,
+    ) -> dict[str, Any]:
+        del capture_debug
+        if self.trace:
+            self.trace.add("runtime", "execute_kir", 0.05, {"backend": self.backend, "available": self._runtime.available})
+        return self._runtime.execute_kir(
+            module,
+            inputs=inputs,
+            launch_override=launch_override,
+            compiled_bundle=compiled_bundle,
+            allow_cpu_fallback=allow_cpu_fallback,
+        )
+
+    def shutdown(self) -> None:
+        self._runtime.shutdown()
+        super().shutdown()
 
 
 BACKEND_CAPABILITIES: dict[BackendId, BackendCapabilities] = {
     "cuda": BackendCapabilities(True, True, True, True, True, True, True, True, 1024, 99_000, True, True),
     "rocm": BackendCapabilities(True, True, True, True, True, True, True, True, 1024, 64_000, True, True),
-    "metal": BackendCapabilities(True, False, True, True, True, False, True, True, 1024, 32_000, False, False),
-    "vulkan_spirv": BackendCapabilities(True, True, True, True, True, True, True, True, 1024, 64_000, True, False),
-    "webgpu": BackendCapabilities(True, False, True, False, True, False, True, True, 256, 32_000, False, False),
-    "opencl": BackendCapabilities(True, False, True, True, True, False, True, True, 1024, 32_000, True, False),
+    "level0": BackendCapabilities(True, True, True, True, True, True, True, True, 1024, 64_000, True, False),
+    "vulkan-spv": BackendCapabilities(True, True, True, True, True, True, True, True, 1024, 64_000, True, False),
     "directx": BackendCapabilities(True, True, True, True, True, True, True, True, 1024, 64_000, True, False),
-    "cpu_ref": BackendCapabilities(True, True, True, True, True, True, True, False, 8192, 0, False, True),
+    "webgpu": BackendCapabilities(True, False, True, False, True, False, True, True, 256, 32_000, False, False),
+    "cpu": BackendCapabilities(True, True, True, True, True, True, True, False, 8192, 0, False, True),
 }
 
 
 BACKEND_COMPILERS: dict[BackendId, BaseKernelCompiler] = {
     "cuda": CudaKernelCompiler(),
     "rocm": TextBackendCompiler("rocm", "hip"),
-    "metal": TextBackendCompiler("metal", "msl"),
-    "vulkan_spirv": TextBackendCompiler("vulkan_spirv", "spirv_text"),
-    "webgpu": TextBackendCompiler("webgpu", "wgsl"),
-    "opencl": TextBackendCompiler("opencl", "opencl_c"),
+    "level0": TextBackendCompiler("level0", "spirv_text"),
+    "vulkan-spv": TextBackendCompiler("vulkan-spv", "spirv_text"),
     "directx": TextBackendCompiler("directx", "hlsl"),
-    "cpu_ref": TextBackendCompiler("cpu_ref", "kir_json"),
+    "webgpu": TextBackendCompiler("webgpu", "wgsl"),
+    "cpu": TextBackendCompiler("cpu", "kir_json"),
 }
 
 
@@ -263,17 +374,17 @@ def compile_kir_backend(
     if trace:
         with trace.scoped("compile", "kir_backend_compile", {"backend": backend, "target": target}):
             return compiler.compile(module, target=target, options=options)
-
     return compiler.compile(module, target=target, options=options)
 
 
-def create_runtime(backend: BackendId, *, trace: TraceRecorder | None = None) -> MockGpuRuntime:
-    # v0.1 multi-backend runtime is unified through deterministic CPU reference execution.
+def create_runtime(backend: BackendId, *, trace: TraceRecorder | None = None) -> BaseGpuRuntime:
+    if backend == "cuda":
+        return CudaDispatchRuntime(trace=trace)
     return MockGpuRuntime(backend=backend, trace=trace)
 
 
 def list_backends() -> list[BackendId]:
-    return ["cuda", "rocm", "metal", "vulkan_spirv", "webgpu", "opencl", "directx", "cpu_ref"]
+    return ["cuda", "rocm", "level0", "vulkan-spv", "directx", "webgpu", "cpu"]
 
 
 def get_backend_capabilities(backend: BackendId) -> BackendCapabilities:
@@ -291,8 +402,12 @@ def _emit_text_backend(module: KIRModule, *, backend: BackendId, dialect: str) -
 
     for kernel in module.kernels:
         lines.append(f"kernel {kernel.name} {{")
-        lines.append(f"  launch grid=({kernel.launch_model.grid_x},{kernel.launch_model.grid_y},{kernel.launch_model.grid_z})")
-        lines.append(f"  launch block=({kernel.launch_model.block_x},{kernel.launch_model.block_y},{kernel.launch_model.block_z})")
+        lines.append(
+            f"  launch grid=({kernel.launch_model.grid_x},{kernel.launch_model.grid_y},{kernel.launch_model.grid_z})"
+        )
+        lines.append(
+            f"  launch block=({kernel.launch_model.block_x},{kernel.launch_model.block_y},{kernel.launch_model.block_z})"
+        )
         for op in kernel.all_ops():
             lines.append(f"  {op.id}: {op.opcode}({', '.join(op.inputs)}) -> {', '.join(op.outputs)}")
         lines.append("}")

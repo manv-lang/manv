@@ -234,7 +234,7 @@ def test_intrinsic_handler_runtime_matrix(tmp_path: Path) -> None:
     assert isinstance(caps, dict)
     disp = invoke_intrinsic(
         "gpu_dispatch",
-        [{"version": "0.1", "source": "x", "kernels": []}, "cpu_ref", "generic", {}, {}],
+        [{"version": "0.1", "source": "x", "kernels": []}, "cpu", "generic", {}, {}],
     )
-    assert disp["selected_backend"] == "cpu_ref"
+    assert disp["selected_backend"] == "cpu"
     assert isinstance(disp["trace"], dict)

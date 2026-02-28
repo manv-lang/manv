@@ -46,7 +46,7 @@ class ReplSession:
 
 def run_repl(in_stream: TextIO, out_stream: TextIO) -> int:
     session = ReplSession(out=out_stream)
-    out_stream.write("manv repl (type :q to quit)\n")
+    out_stream.write("ManV repl (type :q to quit)\n")
     out_stream.flush()
     if _supports_interactive_editing(in_stream, out_stream):
         return _run_interactive_repl(session, out_stream)

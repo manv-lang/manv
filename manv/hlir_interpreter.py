@@ -13,6 +13,7 @@ import io
 from dataclasses import dataclass, field
 from typing import Any, TextIO
 
+from .gpu_execution import GpuExecutionEngine
 from .hlir import HFunction, HInstruction, HModule
 from .intrinsics import BUILTIN_ALIASES, IntrinsicNamespace, StdNamespace, invoke_intrinsic, std_namespace_attr
 from .semantics_core import eval_binary, eval_unary
@@ -32,6 +33,7 @@ class HLIRFrame:
     values: dict[str, Any] = field(default_factory=dict)
     vars_mem: dict[str, Any] = field(default_factory=dict)
     current_instr_id: str | None = None
+    force_cpu: bool = False
 
 
 class HLIRTracer:
@@ -65,23 +67,45 @@ class HLIRTracer:
     def on_exception(self, frame: HLIRFrame, block_label: str, instr: HInstruction, error: Exception) -> None:
         return
 
+    def on_gpu_execution(self, fn_name: str, details: dict[str, Any]) -> None:
+        return
+
 
 class HLIRInterpreter:
-    def __init__(self, stdout: TextIO | None = None, tracer: HLIRTracer | None = None):
+    def __init__(
+        self,
+        stdout: TextIO | None = None,
+        tracer: HLIRTracer | None = None,
+        *,
+        preferred_backend: str = "auto",
+        preferred_device: str | None = None,
+    ):
         self.stdout = stdout or io.StringIO()
         self.tracer = tracer
+        self.preferred_backend = preferred_backend
+        self.preferred_device = preferred_device
         self.functions: dict[str, HFunction] = {}
         self.call_stack: list[HLIRFrame] = []
+        self.gpu_engine: GpuExecutionEngine | None = None
 
     def run_module(self, module: HModule, entry: str = "main") -> HLIRExecutionResult:
         self.functions = {fn.name: fn for fn in module.functions}
         self.call_stack = []
+        self.gpu_engine = GpuExecutionEngine(
+            module,
+            cpu_fallback=lambda name, args: self._call(name, args, force_cpu=True),
+            on_gpu_execution=None,
+            preferred_backend=self.preferred_backend,
+            preferred_device=self.preferred_device,
+        )
+        if self.tracer is not None:
+            self.gpu_engine.on_gpu_execution = lambda details: self.tracer.on_gpu_execution(str(details.get("function", "")), details)
         if "__top_level" in self.functions:
             self._call("__top_level", [])
         value = self._call(entry, [])
         return HLIRExecutionResult(value=value, stdout=self.stdout.getvalue() if isinstance(self.stdout, io.StringIO) else "")
 
-    def _call(self, name: str, args: list[Any]) -> Any:
+    def _call(self, name: str, args: list[Any], *, force_cpu: bool = False) -> Any:
         depth = len(self.call_stack)
         if self.tracer is not None:
             self.tracer.on_call(name, args, depth)
@@ -135,14 +159,14 @@ class HLIRInterpreter:
             raise RuntimeError(f"undefined function: {name}")
 
         fn = self.functions[name]
-        out = self._execute_function(fn, args)
+        out = self._execute_function(fn, args, force_cpu=force_cpu)
         if self.tracer is not None:
             self.tracer.on_return(name, out, depth)
         return out
 
-    def _execute_function(self, fn: HFunction, args: list[Any]) -> Any:
+    def _execute_function(self, fn: HFunction, args: list[Any], *, force_cpu: bool = False) -> Any:
         blocks = {b.label: b for b in fn.blocks}
-        frame = HLIRFrame(function=fn.name, block=fn.entry, args=list(args))
+        frame = HLIRFrame(function=fn.name, block=fn.entry, args=list(args), force_cpu=force_cpu)
         self.call_stack.append(frame)
 
         try:
@@ -161,7 +185,7 @@ class HLIRInterpreter:
                         self.tracer.before_instruction(frame, block.label, instr, arg_vals)
 
                     try:
-                        result = self._eval_instruction(instr, arg_vals, frame.values, frame.vars_mem, args)
+                        result = self._eval_instruction(instr, arg_vals, frame.values, frame.vars_mem, args, frame)
                     except Exception as exc:  # pragma: no cover - delegated to debugger path
                         if self.tracer is not None:
                             self.tracer.on_exception(frame, block.label, instr, exc)
@@ -196,6 +220,15 @@ class HLIRInterpreter:
                         if kind == "intrinsic":
                             name = str(attrs.get("name", ""))
                             result = self._invoke_intrinsic(name, call_arg_values)
+                        elif kind == "gpu_call":
+                            if self.gpu_engine is None:
+                                raise RuntimeError("gpu engine is not initialized")
+                            result, _ = self.gpu_engine.execute(
+                                callee=str(attrs.get("callee", "")),
+                                args=call_arg_values,
+                                policy=str(attrs.get("policy", "best_effort")),
+                                mode=str(attrs.get("mode", "kernel")),
+                            )
                         else:
                             callee = str(attrs.get("callee", ""))
                             result = self._call(callee, call_arg_values)
@@ -249,6 +282,7 @@ class HLIRInterpreter:
         values: dict[str, Any],
         vars_mem: dict[str, Any],
         call_args: list[Any],
+        frame: HLIRFrame,
     ) -> Any:
         op = instr.op
         if op == "const":
@@ -338,11 +372,24 @@ class HLIRInterpreter:
         if op == "intrinsic_call":
             name = str(instr.attrs.get("name", ""))
             return self._invoke_intrinsic(name, list(resolved_args))
+        if op == "gpu_call":
+            callee = str(instr.attrs.get("callee", ""))
+            if frame.force_cpu:
+                return self._call(callee, list(resolved_args), force_cpu=True)
+            if self.gpu_engine is None:
+                raise RuntimeError("gpu engine is not initialized")
+            value, _ = self.gpu_engine.execute(
+                callee=callee,
+                args=list(resolved_args),
+                policy=str(instr.attrs.get("policy", "best_effort")),
+                mode=str(instr.attrs.get("mode", "kernel")),
+            )
+            return value
         if op == "call":
             callee = str(instr.attrs.get("callee", ""))
             if callee == "<dynamic>":
                 raise RuntimeError("dynamic calls are not supported in HLIR")
-            return self._call(callee, list(resolved_args))
+            return self._call(callee, list(resolved_args), force_cpu=frame.force_cpu)
         if op == "unsupported_stmt":
             raise RuntimeError(f"unsupported statement in HLIR: {instr.attrs.get('kind')}")
         raise RuntimeError(f"unsupported instruction: {op}")

@@ -74,6 +74,16 @@ def _lower_fn_decl(decl: ast.FnDecl, name_override: str | None) -> HIRFunction:
         params=[{"name": p.name, "type": p.type_name} for p in decl.params],
         return_type=decl.return_type,
         body=[_stmt_to_hir(s) for s in decl.body],
+        attrs={
+            "decorators": [
+                {
+                    "name": decorator.name,
+                    "args": [_expr_to_hir(arg) for arg in decorator.args],
+                    "kwargs": {key: _expr_to_hir(value) for key, value in decorator.kwargs.items()},
+                }
+                for decorator in decl.decorators
+            ]
+        },
     )
 
 
@@ -155,6 +165,15 @@ def _stmt_to_hir(stmt: object) -> HIRStatement:
                 "body": [_stmt_to_hir(s).__dict__ for s in stmt.body],
             },
         )
+    if isinstance(stmt, ast.ForStmt):
+        return HIRStatement(
+            kind="for",
+            attrs={
+                "var": stmt.var_name,
+                "iterable": _expr_to_hir(stmt.iterable),
+                "body": [_stmt_to_hir(s).__dict__ for s in stmt.body],
+            },
+        )
     if isinstance(stmt, ast.ExprStmt):
         return HIRStatement(kind="expr", attrs={"expr": _expr_to_hir(stmt.expr)})
     if isinstance(stmt, ast.BreakStmt):
@@ -181,6 +200,12 @@ def _expr_to_hir(expr: object | None) -> Any:
             "op": expr.op,
             "left": _expr_to_hir(expr.left),
             "right": _expr_to_hir(expr.right),
+        }
+    if isinstance(expr, ast.RangeExpr):
+        return {
+            "kind": "range",
+            "start": _expr_to_hir(expr.start),
+            "stop": _expr_to_hir(expr.stop),
         }
     if isinstance(expr, ast.CallExpr):
         intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or resolve_call_alias_name(expr.callee)

@@ -16,6 +16,7 @@ class HIRFunction:
     params: list[dict[str, Any]]
     return_type: str | None
     body: list[HIRStatement]
+    attrs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -36,6 +37,7 @@ class HIRModule:
                     "params": fn.params,
                     "return_type": fn.return_type,
                     "body": [{"kind": st.kind, "attrs": st.attrs} for st in fn.body],
+                    "attrs": fn.attrs,
                 }
                 for fn in self.functions
             ],

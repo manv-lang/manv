@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -213,3 +214,65 @@ def test_dap_trace_compare_exception_stop(tmp_path: Path) -> None:
     term = session.wait_for_event("terminated")
     assert term["event"] == "terminated"
 
+
+def test_dap_reports_gpu_execution_and_serves_generated_cuda_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "gpu_main.mv"
+    src.write_text(
+        "@gpu\n"
+        "fn add(a: f32[], b: f32[], out: f32[]) -> void:\n"
+        "    for i in 0..len(out):\n"
+        "        out[i] = a[i] + b[i]\n"
+        "\n"
+        "fn main() -> int:\n"
+        "    let a: f32[] = [1.0, 2.0]\n"
+        "    let b: f32[] = [3.0, 4.0]\n"
+        "    let out: f32[] = [0.0, 0.0]\n"
+        "    add(a, b, out)\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("manv.gpu_execution.cuda_is_available", lambda: True)
+
+    def _fake_dispatch(*_args: object, **_kwargs: object) -> object:
+        bundle = SimpleNamespace(
+            entrypoints=["manv_add_deadbeef"],
+            cache_key="gpu-cache-key",
+            binaries={"cuda_cpp": '// fake generated cuda\nextern "C" __global__ void manv_add_deadbeef() {}\n'},
+        )
+        return SimpleNamespace(
+            executed_backend="cuda",
+            bundle=bundle,
+            outputs={"buffers": {"out": [4.0, 6.0]}, "trace": {"manv_add_deadbeef": {"grid_x": 1, "block_x": 2}}},
+        )
+
+    monkeypatch.setattr("manv.gpu_execution.dispatch_kernel_ir", _fake_dispatch)
+
+    session = _CapturingDAPSession()
+    session.handle_request({"type": "request", "seq": 1, "command": "initialize", "arguments": {}})
+    launch = session.handle_request(
+        {
+            "type": "request",
+            "seq": 2,
+            "command": "launch",
+            "arguments": {"program": str(src), "stopOnEntry": False},
+        }
+    )
+    assert launch["success"] is True
+
+    output = session.wait_for_event("output")
+    assert "Executed as GPU kernel: manv_add_deadbeef" in str(output["body"]["output"])
+    source_meta = output["body"]["source"]
+    source_resp = session.handle_request(
+        {
+            "type": "request",
+            "seq": 3,
+            "command": "source",
+            "arguments": {"sourceReference": source_meta["sourceReference"]},
+        }
+    )
+    assert source_resp["success"] is True
+    assert "manv_add_deadbeef" in source_resp["body"]["content"]
+
+    term = session.wait_for_event("terminated")
+    assert term["event"] == "terminated"

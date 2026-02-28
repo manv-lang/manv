@@ -107,6 +107,7 @@ class HFunction:
     return_type: str | None
     entry: str
     blocks: list[HBasicBlock]
+    attrs: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +116,7 @@ class HFunction:
             "return_type": self.return_type,
             "entry": self.entry,
             "blocks": [b.to_dict() for b in self.blocks],
+            "attrs": self.attrs,
         }
 
 

@@ -123,6 +123,9 @@ class _RuntimeSession:
     next_value_id: int = 1
     globals: dict[str, Any] = field(default_factory=dict)
     last_error: str | None = None
+    generated_sources: dict[int, dict[str, str]] = field(default_factory=dict)
+    next_source_ref: int = 1
+    event_history: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.cond = threading.Condition(self.lock)
@@ -185,6 +188,31 @@ class _DebugTracer(HLIRTracer):
                 while session.state == "Stopped" and not session.terminate_requested:
                     session.cond.wait()
 
+    def on_gpu_execution(self, fn_name: str, details: dict[str, Any]) -> None:
+        session = self.session
+        kernel_names = [str(name) for name in details.get("kernel_names", []) if name]
+        if not kernel_names:
+            return
+
+        source_body: dict[str, Any] = {}
+        with session.cond:
+            source_text = str(details.get("cuda_source", ""))
+            if source_text:
+                source_ref = self.engine._register_generated_source_locked(
+                    session,
+                    name=f"{kernel_names[0]}.cu",
+                    text=source_text,
+                )
+                source_body = {"name": f"{kernel_names[0]}.cu", "sourceReference": source_ref}
+
+        body: dict[str, Any] = {
+            "category": "console",
+            "output": f"Executed as GPU kernel: {', '.join(kernel_names)}\n",
+        }
+        if source_body:
+            body["source"] = source_body
+        self.engine._emit_event(session, "output", body)
+
 class DebugEngine:
     """Protocol-agnostic debugger runtime that powers DAP requests."""
 
@@ -246,18 +274,16 @@ class DebugEngine:
         session = self._session(session_id)
         with session.lock:
             session.listeners.append(listener)
-            # Late listeners must still see the latest stop/termination state.
-            if session.state == "Stopped":
-                body: dict[str, Any] = {
-                    "reason": session.stop_reason or "pause",
-                    "threadId": 1,
-                    "allThreadsStopped": True,
-                }
-                if session.stop_message:
-                    body["text"] = session.stop_message
-                self._emit_event(session, "stopped", body)
-            elif session.state == "Terminated":
-                self._emit_event(session, "terminated", {})
+            # Runtime execution can start before DAP attaches its listener, so
+            # every emitted event is replayable. Replaying the full history is
+            # simpler and more deterministic than trying to reconstruct only the
+            # "current state" event after the fact.
+            history = list(session.event_history)
+        for payload in history:
+            try:
+                listener(payload)
+            except Exception:
+                continue
 
     def remove_listener(self, session_id: str, listener: EventListener) -> None:
         session = self._session(session_id)
@@ -487,8 +513,13 @@ class DebugEngine:
         raise RuntimeError(f"unsupported evaluate context: {context}")
 
     def get_source(self, session_id: str, source_reference: int) -> str:
-        del source_reference
         session = self._session(session_id)
+        if source_reference > 0:
+            with session.lock:
+                generated = session.generated_sources.get(source_reference)
+                if generated is None:
+                    raise RuntimeError(f"unknown sourceReference: {source_reference}")
+                return generated["text"]
         return Path(session.source_uri).read_text(encoding="utf-8")
 
     def _run_session(self, session: _RuntimeSession) -> None:
@@ -746,12 +777,23 @@ class DebugEngine:
 
     def _emit_event(self, session: _RuntimeSession, event: str, body: dict[str, Any]) -> None:
         payload = {"event": event, "body": body, "sessionId": session.id}
-        listeners = list(session.listeners)
+        with session.lock:
+            session.event_history.append(payload)
+            listeners = list(session.listeners)
         for listener in listeners:
             try:
                 listener(payload)
             except Exception:
                 continue
+
+    def _register_generated_source_locked(self, session: _RuntimeSession, *, name: str, text: str) -> int:
+        for ref, existing in session.generated_sources.items():
+            if existing.get("name") == name and existing.get("text") == text:
+                return ref
+        ref = session.next_source_ref
+        session.next_source_ref += 1
+        session.generated_sources[ref] = {"name": name, "text": text}
+        return ref
 
     def _session(self, session_id: str) -> _RuntimeSession:
         if session_id not in self._sessions:
@@ -850,8 +892,5 @@ def _eval_node(node: pyast.AST, env: dict[str, Any]) -> Any:
         args = [_eval_node(a, env) for a in node.args]
         return len(args[0])
     raise RuntimeError("unsupported expression")
-
-
-
 
 

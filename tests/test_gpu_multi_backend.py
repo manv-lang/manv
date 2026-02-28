@@ -85,7 +85,7 @@ def test_kir_verifier_rejects_invalid_memory_space() -> None:
 
 def test_backend_compile_smoke_all_backends() -> None:
     payload = _vector_add_kernel_ir()
-    for backend in [b for b in list_backends() if b != "cpu_ref"]:
+    for backend in [b for b in list_backends() if b != "cpu"]:
         bundle = compile_kir_backend(payload, backend, target="generic")
         assert bundle.backend == backend
         assert bundle.entrypoints
@@ -103,7 +103,7 @@ def test_cross_backend_equivalence_against_cpu_reference() -> None:
     cpu = execute_kernel_ir_reference(payload, inputs=inputs, include_trace=True)
     expected = cpu["buffers"]["out"][:4]
 
-    for backend in ["cuda", "rocm", "metal", "vulkan-spv", "webgpu", "opencl", "directx"]:
+    for backend in ["cuda", "rocm", "level0", "vulkan-spv", "webgpu", "directx"]:
         result = dispatch_kernel_ir(payload, backend=backend, inputs=inputs)
         got = result.outputs["buffers"]["out"][:4]
         assert got == expected

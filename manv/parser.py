@@ -14,7 +14,7 @@ from . import ast
 from .diagnostics import ManvError, Span, diag
 from .tokens import Token
 
-C_DECL_TYPES = {"int", "str", "array", "map", "u8", "usize", "float", "bool"}
+C_DECL_TYPES = {"int", "i32", "str", "array", "map", "u8", "usize", "float", "f32", "bool"}
 MODULE_SEGMENT_KEYWORDS = {"str", "int", "float", "bool", "type", "array", "map"}
 
 
@@ -32,23 +32,33 @@ class Parser:
             self._consume_newlines()
             if self._is("EOF"):
                 break
+            decorators = self._parse_decorators()
             if self._match_keyword("fn"):
-                declarations.append(self._parse_fn_decl())
+                declarations.append(self._parse_fn_decl(decorators=decorators))
             elif self._match_keyword("type") or self._match_keyword("class"):
+                if decorators:
+                    self._error("E1012", "decorators are only supported on functions", self._current())
                 declarations.append(self._parse_type_decl())
             elif self._match_keyword("impl"):
+                if decorators:
+                    self._error("E1012", "decorators are only supported on functions", self._current())
                 declarations.append(self._parse_impl_decl())
             elif self._match_keyword("macro"):
+                if decorators:
+                    self._error("E1012", "decorators are only supported on functions", self._current())
                 declarations.append(self._parse_macro_decl_stub())
             else:
+                if decorators:
+                    self._error("E1012", "decorators must appear immediately before a function declaration", self._current())
                 statements.append(self._parse_statement())
         span = Span(self.file, 1, 1)
         return ast.Program(declarations=declarations, statements=statements, span=span)
 
-    def _parse_fn_decl(self) -> ast.FnDecl:
+    def _parse_fn_decl(self, *, decorators: list[ast.Decorator] | None = None) -> ast.FnDecl:
         fn_tok = self._prev()
         name_tok = self._expect("IDENT", message="expected function name")
         self._expect_op("(")
+    
         params: list[ast.Param] = []
         if not self._is_op(")"):
             while True:
@@ -60,18 +70,23 @@ class Parser:
                 if self._match_op(","):
                     continue
                 break
+    
         self._expect_op(")")
         return_type = None
+    
         if self._match_op("->"):
             return_type = self._parse_type(stop_ops={":"})
+    
         self._expect_op(":")
         body = self._parse_block()
+    
         return ast.FnDecl(
             name=name_tok.lexeme,
             params=params,
             return_type=return_type,
             body=body,
             span=self._span(fn_tok),
+            decorators=list(decorators or []),
         )
 
     def _parse_type_decl(self) -> ast.TypeDecl:
@@ -101,9 +116,10 @@ class Parser:
             self._consume_newlines()
             if self._is("DEDENT") or self._is("EOF"):
                 break
+            decorators = self._parse_decorators()
             if not self._match_keyword("fn"):
                 self._error("E1006", f"expected 'fn' inside {owner} block", self._current())
-            methods.append(self._parse_fn_decl())
+            methods.append(self._parse_fn_decl(decorators=decorators))
         self._expect("DEDENT", message="expected dedent")
         return methods
 
@@ -123,6 +139,36 @@ class Parser:
         self._expect_op(":")
         body = self._parse_stub_block()
         return ast.MacroDeclStub(name=name_tok.lexeme, params=params, body=body, span=self._span(macro_tok))
+
+    def _parse_decorators(self) -> list[ast.Decorator]:
+        decorators: list[ast.Decorator] = []
+        while self._match_op("@"):
+            decorators.append(self._parse_decorator())
+            self._consume_required_newline("expected newline after decorator")
+        return decorators
+
+    def _parse_decorator(self) -> ast.Decorator:
+        if self._is("IDENT") or self._is("KEYWORD"):
+            name_tok = self._advance()
+        else:
+            self._error("E1004", "expected decorator name", self._current())
+            name_tok = self._current()
+        args: list[object] = []
+        kwargs: dict[str, object] = {}
+        if self._match_op("("):
+            if not self._is_op(")"):
+                while True:
+                    if self._is("IDENT") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "=":
+                        key_tok = self._advance()
+                        self._expect_op("=")
+                        kwargs[key_tok.lexeme] = self._parse_expression()
+                    else:
+                        args.append(self._parse_expression())
+                    if self._match_op(","):
+                        continue
+                    break
+            self._expect_op(")")
+        return ast.Decorator(name=name_tok.lexeme, args=args, kwargs=kwargs, span=self._span(name_tok))
 
     def _parse_statement(self) -> object:
         if self._match_keyword("import"):
@@ -165,6 +211,8 @@ class Parser:
             return self._parse_if_stmt()
         if self._match_keyword("while"):
             return self._parse_while_stmt()
+        if self._match_keyword("for"):
+            return self._parse_for_stmt()
         if self._match_keyword("try"):
             return self._parse_try_stmt()
         if self._match_keyword("gpu"):
@@ -377,6 +425,16 @@ class Parser:
         body = self._parse_block()
         return ast.WhileStmt(condition=condition, body=body, span=self._span(while_tok))
 
+    def _parse_for_stmt(self) -> ast.ForStmt:
+        for_tok = self._prev()
+        name_tok = self._expect("IDENT", message="expected loop variable name")
+        if not self._match_keyword("in"):
+            self._error("E1013", "expected 'in' after loop variable", self._current())
+        iterable = self._parse_expression()
+        self._expect_op(":")
+        body = self._parse_block()
+        return ast.ForStmt(var_name=name_tok.lexeme, iterable=iterable, body=body, span=self._span(for_tok))
+
     def _parse_block(self) -> list[object]:
         self._consume_required_newline("expected newline after ':'")
         self._expect("INDENT", message="expected indented block")
@@ -432,7 +490,14 @@ class Parser:
         return result
 
     def _parse_expression(self) -> object:
-        return self._parse_or()
+        return self._parse_range()
+
+    def _parse_range(self) -> object:
+        expr = self._parse_or()
+        if self._match_op(".."):
+            right = self._parse_or()
+            return ast.RangeExpr(start=expr, stop=right, span=self._span_from_expr(expr))
+        return expr
 
     def _parse_or(self) -> object:
         expr = self._parse_and()
@@ -557,15 +622,15 @@ class Parser:
             return ast.LiteralExpr(value=int(tok.lexeme), literal_type="int", span=self._span(tok))
         if self._match("STRING"):
             return ast.LiteralExpr(value=tok.lexeme, literal_type="str", span=self._span(tok))
-        if self._match_keyword("true"):
+        if self._match_keyword("true") or self._match_keyword("True"):
             return ast.LiteralExpr(value=True, literal_type="bool", span=self._span(tok))
-        if self._match_keyword("false"):
+        if self._match_keyword("false") or self._match_keyword("False"):
             return ast.LiteralExpr(value=False, literal_type="bool", span=self._span(tok))
         if self._match_keyword("none"):
             return ast.LiteralExpr(value=None, literal_type="none", span=self._span(tok))
         if self._match_keyword("syscall"):
             return self._parse_syscall_expr()
-        if tok.kind == "KEYWORD" and tok.lexeme in {"type", "int", "float", "bool", "str"}:
+        if tok.kind == "KEYWORD" and tok.lexeme in {"type", "int", "i32", "float", "f32", "bool", "str", "void"}:
             self._advance()
             return ast.IdentifierExpr(name=tok.lexeme, span=self._span(tok))
         if self._match("IDENT"):

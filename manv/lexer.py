@@ -125,10 +125,19 @@ class Lexer:
             if ch.isdigit():
                 start = i
                 has_dot = False
-                while i < len(line) and (line[i].isdigit() or (line[i] == "." and not has_dot)):
-                    if line[i] == ".":
+                while i < len(line):
+                    if line[i].isdigit():
+                        i += 1
+                        continue
+                    if (
+                        line[i] == "."
+                        and not has_dot
+                        and (i + 1 >= len(line) or line[i + 1] != ".")
+                    ):
                         has_dot = True
-                    i += 1
+                        i += 1
+                        continue
+                    break
                 out.append(Token("NUMBER", line[start:i], line_no, indent + start + 1))
                 continue
 

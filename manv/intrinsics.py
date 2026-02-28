@@ -12,6 +12,7 @@ from typing import Any, Callable
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
+from .backends.cuda.runtime import CudaRuntime, cuda_is_available as backend_cuda_is_available
 from .gpu_backends import list_backends
 from .gpu_dispatch import backend_capability_table, dispatch_kernel_ir
 
@@ -97,6 +98,7 @@ BUILTIN_ALIASES: dict[str, str] = {
 
 _INTRINSICS: dict[str, IntrinsicSpec] = {}
 _HANDLERS: dict[str, Callable[..., Any]] = {}
+_CUDA_RUNTIME: CudaRuntime | None = None
 
 
 def register_intrinsic(spec: IntrinsicSpec) -> None:
@@ -142,13 +144,19 @@ def intrinsic_public_id(spec: IntrinsicSpec) -> str:
 def resolve_intrinsic_name_from_callee(expr: Any) -> str | None:
     from . import ast
 
-    if not isinstance(expr, ast.AttributeExpr):
+    parts: list[str] = []
+    current = expr
+    while isinstance(current, ast.AttributeExpr):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.IdentifierExpr) or current.name != "__intrin":
         return None
-    if not isinstance(expr.value, ast.IdentifierExpr):
+    parts.reverse()
+    if not parts:
         return None
-    if expr.value.name != "__intrin":
-        return None
-    return expr.attr
+    if parts[0] == "cuda":
+        return "_".join(parts)
+    return parts[0] if len(parts) == 1 else "_".join(parts)
 
 
 def resolve_call_alias_name(callee: Any) -> str | None:
@@ -311,9 +319,9 @@ def intrinsic_type_matches(expected: str | IntrinsicTypeVar, got: str | None) ->
         return True
     if expected == "any":
         return True
-    if expected in {"int", "usize", "u8"} and got == "int":
+    if expected in {"int", "usize", "u8", "i32"} and got in {"int", "i32"}:
         return True
-    if expected == "float" and got in {"float", "int"}:
+    if expected in {"float", "f32"} and got in {"float", "f32", "int", "i32"}:
         return True
     if expected == "str_or_none" and got in {"str", "none"}:
         return True
@@ -809,6 +817,105 @@ def _mem_set_gc_stress(args: list[Any], *, gc_hooks: dict[str, Callable[..., Any
     return None
 
 
+def _cuda_runtime() -> CudaRuntime:
+    global _CUDA_RUNTIME
+    if _CUDA_RUNTIME is None:
+        _CUDA_RUNTIME = CudaRuntime()
+    return _CUDA_RUNTIME
+
+
+def _cuda_buffer_handle(buffer: Any) -> dict[str, Any]:
+    return {
+        "name": buffer.name,
+        "device_ptr": buffer.device_ptr,
+        "nbytes": buffer.nbytes,
+        "dtype": buffer.dtype,
+    }
+
+
+def _cuda_buffer_from_handle(handle: dict[str, Any]) -> Any:
+    runtime = _cuda_runtime()
+    ptr = int(handle.get("device_ptr", 0))
+    buffer = runtime.lookup_buffer(ptr)
+    if buffer is None:
+        raise RuntimeError(f"unknown CUDA buffer handle: {ptr}")
+    return buffer
+
+
+def _cuda_is_available(args: list[Any], **_: Any) -> bool:
+    _ensure_arity("cuda_is_available", args, min_n=0, max_n=0)
+    return backend_cuda_is_available()
+
+
+def _cuda_device_count(args: list[Any], **_: Any) -> int:
+    _ensure_arity("cuda_device_count", args, min_n=0, max_n=0)
+    return _cuda_runtime().device_count()
+
+
+def _cuda_set_device(args: list[Any], **_: Any) -> None:
+    _ensure_arity("cuda_set_device", args, min_n=1, max_n=1)
+    _expect_type("cuda_set_device", args[0], "int")
+    # v1 runtime uses the default device only; device selection is reserved for
+    # later runtime expansion while the intrinsic surface is stabilized.
+    return None
+
+
+def _cuda_alloc(args: list[Any], **_: Any) -> dict[str, Any]:
+    _ensure_arity("cuda_alloc", args, min_n=2, max_n=2)
+    _expect_type("cuda_alloc", args[0], "str")
+    _expect_type("cuda_alloc", args[1], "int")
+    buffer = _cuda_runtime().alloc(str(args[0]), int(args[1]), "i32")
+    return _cuda_buffer_handle(buffer)
+
+
+def _cuda_free(args: list[Any], **_: Any) -> None:
+    _ensure_arity("cuda_free", args, min_n=1, max_n=1)
+    _expect_type("cuda_free", args[0], "map")
+    _cuda_runtime().free(_cuda_buffer_from_handle(dict(args[0])))
+    return None
+
+
+def _cuda_memcpy_h2d(args: list[Any], **_: Any) -> None:
+    _ensure_arity("cuda_memcpy_h2d", args, min_n=2, max_n=2)
+    _expect_type("cuda_memcpy_h2d", args[0], "map")
+    _expect_type("cuda_memcpy_h2d", args[1], "array")
+    _cuda_runtime().copy_h2d(_cuda_buffer_from_handle(dict(args[0])), list(args[1]))
+    return None
+
+
+def _cuda_memcpy_d2h(args: list[Any], **_: Any) -> list[Any]:
+    _ensure_arity("cuda_memcpy_d2h", args, min_n=1, max_n=1)
+    _expect_type("cuda_memcpy_d2h", args[0], "map")
+    return _cuda_runtime().copy_d2h(_cuda_buffer_from_handle(dict(args[0])))
+
+
+def _cuda_memcpy_d2d(args: list[Any], **_: Any) -> None:
+    _ensure_arity("cuda_memcpy_d2d", args, min_n=2, max_n=2)
+    _expect_type("cuda_memcpy_d2d", args[0], "map")
+    _expect_type("cuda_memcpy_d2d", args[1], "map")
+    _cuda_runtime().copy_d2d(_cuda_buffer_from_handle(dict(args[0])), _cuda_buffer_from_handle(dict(args[1])))
+    return None
+
+
+def _cuda_launch(args: list[Any], **_: Any) -> dict[str, Any]:
+    _ensure_arity("cuda_launch", args, min_n=3, max_n=3)
+    _expect_type("cuda_launch", args[0], "map")
+    _expect_type("cuda_launch", args[1], "map")
+    _expect_type("cuda_launch", args[2], "map")
+    return {"status": "submitted"}
+
+
+def _cuda_sync(args: list[Any], **_: Any) -> None:
+    _ensure_arity("cuda_sync", args, min_n=0, max_n=0)
+    _cuda_runtime().sync()
+    return None
+
+
+def _cuda_last_error(args: list[Any], **_: Any) -> str:
+    _ensure_arity("cuda_last_error", args, min_n=0, max_n=0)
+    return _cuda_runtime().last_error()
+
+
 def _gpu_backends(args: list[Any], **_: Any) -> list[str]:
     _ensure_arity("gpu_backends", args, min_n=0, max_n=0)
     return list_backends()
@@ -910,6 +1017,19 @@ def _register_defaults() -> None:
     register_intrinsic(IntrinsicSpec("mem_set_deterministic_gc", ["bool"], "none", {Effect.WRITES_MEMORY}, may_throw=False))
     register_intrinsic(IntrinsicSpec("mem_set_gc_stress", ["bool"], "none", {Effect.WRITES_MEMORY}, may_throw=False))
 
+    cudafx = {Effect.READS_MEMORY, Effect.WRITES_MEMORY, Effect.MAY_THROW}
+    register_intrinsic(IntrinsicSpec("cuda_is_available", [], "bool", {Effect.READS_MEMORY}, may_throw=False, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_device_count", [], "int", {Effect.READS_MEMORY}, may_throw=False, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_set_device", ["int"], "none", {Effect.WRITES_MEMORY}, may_throw=False, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_alloc", ["str", "int"], "map", cudafx, may_throw=True, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_free", ["map"], "none", cudafx, may_throw=True, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_memcpy_h2d", ["map", "array"], "none", cudafx, may_throw=True, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_memcpy_d2h", ["map"], "array", cudafx, may_throw=True, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_memcpy_d2d", ["map", "map"], "none", cudafx, may_throw=True, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_launch", ["map", "map", "map"], "map", cudafx, may_throw=True, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_sync", [], "none", cudafx, may_throw=False, std_only=False))
+    register_intrinsic(IntrinsicSpec("cuda_last_error", [], "str", {Effect.READS_MEMORY}, may_throw=False, std_only=False))
+
     gpufx = {Effect.READS_MEMORY, Effect.WRITES_MEMORY, Effect.MAY_THROW}
     register_intrinsic(IntrinsicSpec("gpu_backends", [], "array", gpufx, may_throw=False))
     register_intrinsic(IntrinsicSpec("gpu_capabilities", [], "map", gpufx, may_throw=False))
@@ -968,6 +1088,17 @@ def _register_defaults() -> None:
     register_intrinsic_handler("mem_stats", _mem_stats)
     register_intrinsic_handler("mem_set_deterministic_gc", _mem_set_deterministic_gc)
     register_intrinsic_handler("mem_set_gc_stress", _mem_set_gc_stress)
+    register_intrinsic_handler("cuda_is_available", _cuda_is_available)
+    register_intrinsic_handler("cuda_device_count", _cuda_device_count)
+    register_intrinsic_handler("cuda_set_device", _cuda_set_device)
+    register_intrinsic_handler("cuda_alloc", _cuda_alloc)
+    register_intrinsic_handler("cuda_free", _cuda_free)
+    register_intrinsic_handler("cuda_memcpy_h2d", _cuda_memcpy_h2d)
+    register_intrinsic_handler("cuda_memcpy_d2h", _cuda_memcpy_d2h)
+    register_intrinsic_handler("cuda_memcpy_d2d", _cuda_memcpy_d2d)
+    register_intrinsic_handler("cuda_launch", _cuda_launch)
+    register_intrinsic_handler("cuda_sync", _cuda_sync)
+    register_intrinsic_handler("cuda_last_error", _cuda_last_error)
     register_intrinsic_handler("gpu_backends", _gpu_backends)
     register_intrinsic_handler("gpu_capabilities", _gpu_capabilities)
     register_intrinsic_handler("gpu_dispatch", _gpu_dispatch)

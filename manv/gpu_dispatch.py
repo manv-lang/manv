@@ -1,10 +1,28 @@
+"""Kernel-IR backend dispatch and compatibility reporting.
+
+Why this module exists:
+- It preserves the existing `dispatch_kernel_ir` entrypoint while the runtime
+  selection logic moves into the dedicated `manv.device` package.
+- It keeps backend compilation/runtime execution separate from backend probing
+  and reporting, which is important for the phased migration plan.
+
+Important invariants:
+- Auto selection must delegate to the deterministic device resolver.
+- Explicit backend requests normalize aliases but do not silently invent new
+  backends.
+- `executed_backend` must reflect where work actually happened. Today that
+  means CUDA for real GPU execution and `cpu` for every reference fallback.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
+from .device import SelectionRequest, normalize_backend_name, resolve_device_selection
+from .device.interfaces import BackendId, SelectionReport
 from .gpu_backends import (
-    BackendId,
     CompiledKernelBundle,
     create_runtime,
     compile_kir_backend,
@@ -25,6 +43,7 @@ class DispatchResult:
     outputs: dict[str, Any]
     trace: dict[str, Any]
     substitutions: list[dict[str, Any]]
+    selection_report: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -34,27 +53,36 @@ class DispatchResult:
             "outputs": self.outputs,
             "trace": self.trace,
             "substitutions": self.substitutions,
+            "selection_report": self.selection_report,
         }
 
 
-def select_backend(preferred: str = "auto") -> BackendId:
-    if preferred == "auto":
-        return "cuda"
+def backend_selection_report(preferred: str = "auto", *, device: str | None = None, policy: str = "auto") -> SelectionReport:
+    requested_backend = preferred
+    requested_device = device
 
-    normalized = preferred.replace("-", "_").lower()
-    alias = {
-        "cuda_ptx": "cuda",
-        "vulkan": "vulkan_spirv",
-        "vulkan_spv": "vulkan_spirv",
-        "spirv": "vulkan_spirv",
-        "dx": "directx",
-        "cpu": "cpu_ref",
-        "cpu_reference": "cpu_ref",
-    }
-    resolved = alias.get(normalized, normalized)
-    if resolved not in list_backends():
-        raise RuntimeError(f"unsupported backend '{preferred}'")
-    return resolved  # type: ignore[return-value]
+    # Environment-based backend selection must apply at the shared dispatch
+    # entrypoint so CLI calls, intrinsic calls, and packaged runtimes all see
+    # the same override behavior. Explicit non-`auto` values still win.
+    if requested_backend == "auto":
+        requested_backend = os.getenv("MANV_BACKEND", requested_backend)
+    if requested_device is None:
+        requested_device = os.getenv("MANV_DEVICE")
+
+    return resolve_device_selection(
+        SelectionRequest(
+            requested_backend=requested_backend,
+            requested_device=requested_device,
+            policy=policy,
+        )
+    )
+
+
+def select_backend(preferred: str = "auto", *, device: str | None = None) -> BackendId:
+    normalized = normalize_backend_name(preferred)
+    if normalized == "auto":
+        return backend_selection_report(preferred, device=device).selected_backend
+    return normalized
 
 
 def dispatch_kernel_ir(
@@ -62,14 +90,17 @@ def dispatch_kernel_ir(
     *,
     backend: str = "auto",
     target: str = "generic",
-    inputs: dict[str, list[Any]] | None = None,
+    inputs: dict[str, Any] | None = None,
     launch_override: dict[str, int] | None = None,
     strict_verify: bool = False,
+    allow_cpu_fallback: bool = True,
+    device: str | None = None,
 ) -> DispatchResult:
     module = kernel_ir if isinstance(kernel_ir, KIRModule) else parse_kir_module(kernel_ir)
     assert_valid_kir_module(module, strict=strict_verify)
 
-    selected = select_backend(backend)
+    selection = backend_selection_report(backend, device=device)
+    selected = selection.selected_backend if normalize_backend_name(backend) == "auto" else select_backend(backend, device=device)
     trace = TraceRecorder()
 
     register_default_rules()
@@ -83,39 +114,53 @@ def dispatch_kernel_ir(
         bundle = compile_kir_backend(module, selected, target=target, trace=trace)
 
     runtime = create_runtime(selected, trace=trace)
-    runtime.initialize(device_selector=target)
+    runtime.initialize(device_selector=device or target)
 
-    with trace.scoped("runtime", "backend_launch", {"backend": selected}):
-        result = runtime.execute_kir(module, inputs=inputs, launch_override=launch_override, capture_debug=True)
+    try:
+        with trace.scoped("runtime", "backend_launch", {"backend": selected}):
+            result = runtime.execute_kir(
+                module,
+                inputs=inputs,
+                launch_override=launch_override,
+                capture_debug=True,
+                compiled_bundle=bundle,
+                allow_cpu_fallback=allow_cpu_fallback,
+            )
+    finally:
+        runtime.shutdown()
 
-    runtime.shutdown()
+    runtime_meta = result.get("_runtime", {}) if isinstance(result, dict) else {}
+    executed_backend = selected
+    if isinstance(runtime_meta, dict) and runtime_meta.get("executed_on_gpu") is False:
+        executed_backend = "cpu"
 
     return DispatchResult(
         selected_backend=selected,
-        executed_backend=selected,
+        executed_backend=executed_backend,
         bundle=bundle,
         outputs=result,
         trace=trace.to_chrome_trace(),
         substitutions=substitutions,
+        selection_report=selection.to_dict(),
     )
 
 
 def backend_capability_table() -> dict[str, dict[str, Any]]:
     table: dict[str, dict[str, Any]] = {}
     for backend in list_backends():
-        cap = get_backend_capabilities(backend)
+        capability = get_backend_capabilities(backend)
         table[backend] = {
-            "fp16": cap.fp16,
-            "bf16": cap.bf16,
-            "int8": cap.int8,
-            "atomics": cap.atomics,
-            "shared_mem": cap.shared_mem,
-            "subgroup_ops": cap.subgroup_ops,
-            "barriers": cap.barriers,
-            "images": cap.images,
-            "max_threads_per_block": cap.max_threads_per_block,
-            "max_shared_bytes": cap.max_shared_bytes,
-            "async_copy": cap.async_copy,
-            "debug_printf": cap.debug_printf,
+            "fp16": capability.fp16,
+            "bf16": capability.bf16,
+            "int8": capability.int8,
+            "atomics": capability.atomics,
+            "shared_mem": capability.shared_mem,
+            "subgroup_ops": capability.subgroup_ops,
+            "barriers": capability.barriers,
+            "images": capability.images,
+            "max_threads_per_block": capability.max_threads_per_block,
+            "max_shared_bytes": capability.max_shared_bytes,
+            "async_copy": capability.async_copy,
+            "debug_printf": capability.debug_printf,
         }
     return table

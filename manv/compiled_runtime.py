@@ -10,7 +10,7 @@ from .cpu_codegen import emit_target_assembly
 from .diagnostics import ManvError, diag
 from .gpu_dispatch import dispatch_kernel_ir
 from .graph_capture import GraphCaptureTracer
-from .graph_ir import lower_hir_to_graph
+from .graph_ir import lower_hlir_to_graph
 from .graph_opt import optimize_graph_ir
 from .hlir import HModule
 from .hlir_interpreter import HLIRInterpreter
@@ -19,7 +19,6 @@ from .host_stub import build_host_stubs
 from .interpreter import Interpreter, RaiseSignal
 from .kernel_ir import lower_graph_to_kernel
 from .kernel_mock import execute_kernel_ir
-from .lowering import lower_ast_to_hir
 from .targets import TargetSpec, get_target
 
 
@@ -49,6 +48,8 @@ def compile_and_run_program(
     source_name: str,
     stdout: TextIO | None = None,
     target_name: str = "x86_64-sysv",
+    backend: str = "auto",
+    device: str | None = None,
     optimize: bool = True,
     capture: bool = False,
     deterministic_gc: bool = False,
@@ -56,38 +57,48 @@ def compile_and_run_program(
     stable_debug_format: bool = False,
 ) -> CompiledRunResult:
     target = get_target(target_name)
+    uses_gpu_decorators = _program_uses_gpu_decorators(program)
 
-    # In v1 compiled mode, artifacts are emitted but execution remains interpreter-authoritative.
     out_stream = stdout or io.StringIO()
-    ast_interp = Interpreter(
-        file=source_name,
-        stdout=out_stream,
-        deterministic_gc=deterministic_gc,
-        gc_stress=gc_stress,
-        stable_debug_format=stable_debug_format,
-    )
-    try:
-        exit_code = ast_interp.run_main(program)
-    except RaiseSignal as rs:
-        frame = rs.error.stacktrace[-1] if rs.error.stacktrace else {"line": 1, "column": 1}
-        raise ManvError(
-            diag(
-                "E3900",
-                f"{rs.error.type_obj.name}: {rs.error.message}",
-                source_name,
-                int(frame.get("line", 1)),
-                int(frame.get("column", 1)),
-            )
-        ) from None
-
     hlir_module = lower_ast_to_hlir(program, source_name)
+    if uses_gpu_decorators:
+        try:
+            result = HLIRInterpreter(stdout=out_stream, preferred_backend=backend, preferred_device=device).run_module(
+                hlir_module, entry="main"
+            )
+            exit_code = int(result.value) if isinstance(result.value, int) else 0
+        except RuntimeError as err:
+            raise ManvError(diag("E3900", str(err), source_name, 1, 1)) from None
+    else:
+        ast_interp = Interpreter(
+            file=source_name,
+            stdout=out_stream,
+            deterministic_gc=deterministic_gc,
+            gc_stress=gc_stress,
+            stable_debug_format=stable_debug_format,
+        )
+        try:
+            exit_code = ast_interp.run_main(program)
+        except RaiseSignal as rs:
+            frame = rs.error.stacktrace[-1] if rs.error.stacktrace else {"line": 1, "column": 1}
+            raise ManvError(
+                diag(
+                    "E3900",
+                    f"{rs.error.type_obj.name}: {rs.error.message}",
+                    source_name,
+                    int(frame.get("line", 1)),
+                    int(frame.get("column", 1)),
+                )
+            ) from None
+
     tracer = GraphCaptureTracer() if capture else None
     if capture:
         sink = io.StringIO()
-        HLIRInterpreter(stdout=sink, tracer=tracer).run_module(hlir_module, entry="main")
+        HLIRInterpreter(stdout=sink, tracer=tracer, preferred_backend=backend, preferred_device=device).run_module(
+            hlir_module, entry="main"
+        )
 
-    hir_module = lower_ast_to_hir(program, source_name)
-    graph = tracer.to_graph_ir() if tracer else lower_hir_to_graph(hir_module)
+    graph = tracer.to_graph_ir() if tracer else lower_hlir_to_graph(hlir_module)
     if optimize:
         graph = optimize_graph_ir(graph)
 
@@ -96,7 +107,13 @@ def compile_and_run_program(
 
     gpu_dispatch = None
     try:
-        gpu_dispatch = dispatch_kernel_ir(kernel, backend="auto", target=target_name, strict_verify=False).to_dict()
+        gpu_dispatch = dispatch_kernel_ir(
+            kernel,
+            backend=backend,
+            target=target_name,
+            strict_verify=False,
+            device=device,
+        ).to_dict()
     except Exception:
         gpu_dispatch = None
 
@@ -128,3 +145,14 @@ def _lower_module_abi(module: HModule, target: TargetSpec) -> dict[str, ABIFunct
         param_types = [str(p.get("type")) if p.get("type") is not None else None for p in fn.params]
         abi_map[fn.name] = lower_function_abi(fn.name, param_types, fn.return_type, target)
     return abi_map
+
+
+def _program_uses_gpu_decorators(program: ast.Program) -> bool:
+    for decl in program.declarations:
+        if isinstance(decl, ast.FnDecl) and decl.decorators:
+            return True
+        if isinstance(decl, ast.TypeDecl) and any(method.decorators for method in decl.methods):
+            return True
+        if isinstance(decl, ast.ImplDecl) and any(method.decorators for method in decl.methods):
+            return True
+    return False

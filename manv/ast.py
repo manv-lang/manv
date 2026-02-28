@@ -11,7 +11,7 @@ Why this file exists:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
 from .diagnostics import Span
@@ -22,6 +22,22 @@ from .diagnostics import Span
 class Param:
     name: str
     type_name: str | None
+    span: Span
+
+
+@dataclass
+class Decorator:
+    """Structured decorator payload preserved all the way into lowering.
+
+    Why this exists:
+    - The parser should not leave decorator arguments as raw token strings.
+    - Semantics and HLIR lowering need a stable, typed representation so
+      deterministic validation and GPU policy normalization happen once.
+    """
+
+    name: str
+    args: list[Any]
+    kwargs: dict[str, Any]
     span: Span
 
 
@@ -62,6 +78,7 @@ class FnDecl:
     return_type: str | None
     body: list[Any]
     span: Span
+    decorators: list[Decorator] = field(default_factory=list)
 
 
 @dataclass
@@ -164,6 +181,21 @@ class WhileStmt:
 
 
 @dataclass
+class ForStmt:
+    """Canonical source-level for-range loop.
+
+    The frontend only accepts `for <name> in <start>..<stop>:` in v1.
+    Downstream passes lower this into explicit control-flow while preserving
+    the original range structure for GPU eligibility checks.
+    """
+
+    var_name: str
+    iterable: Any
+    body: list[Any]
+    span: Span
+
+
+@dataclass
 class ExprStmt:
     expr: Any
     span: Span
@@ -229,6 +261,15 @@ class BinaryExpr:
 
 
 @dataclass
+class RangeExpr:
+    """Half-open source range used by `for ... in a..b` syntax."""
+
+    start: Any
+    stop: Any
+    span: Span
+
+
+@dataclass
 class CallExpr:
     callee: Any
     args: list[Any]
@@ -281,4 +322,3 @@ def _convert(value: Any) -> Any:
 
 def to_dict(node: Any) -> dict[str, Any]:
     return _convert(node)
-
