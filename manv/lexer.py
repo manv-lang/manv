@@ -4,6 +4,9 @@ from .diagnostics import ManvError, diag
 from .tokens import DOUBLE_CHAR_OPS, KEYWORDS, SINGLE_CHAR_OPS, Token
 
 
+_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "\\": "\\", '"': '"', "'": "'"}
+
+
 class Lexer:
     def __init__(self, source: str, file: str):
         self.source = source
@@ -14,10 +17,26 @@ class Lexer:
         tokens: list[Token] = []
         indents = [0]
         line_index = 0
+        # Open brackets as (char, line, column). While one is open, line breaks are not
+        # statement ends and indentation means nothing ("continuation lines").
+        self._brackets: list[tuple[str, int, int]] = []
+        # A block lambda inside brackets (`f(xs, fn(x):` + indented body) is the one place
+        # layout still applies. Each entry is [bracket depth to return to, body indent or None].
+        blocks: list[list[int | None]] = []
 
         while line_index < len(self.lines):
             line_no = line_index + 1
             raw = self.lines[line_index]
+
+            if len(self._brackets) > self._block_base(blocks):
+                body = raw.lstrip(" \t")
+                if body != "" and not body.startswith("#"):
+                    start = len(tokens)
+                    self._tokenize_line(body, line_no, len(raw) - len(body), tokens)
+                    self._end_line(tokens, start, line_no, raw, blocks)
+                line_index += 1
+                continue
+
             stripped = raw.lstrip(" ")
             # Leading whitespace of either kind: a line holding only tabs is blank, and a
             # tab anywhere in the indentation is reported as such (not as a stray character).
@@ -41,12 +60,16 @@ class Lexer:
                 )
 
             if indent > indents[-1]:
+                if blocks and blocks[-1][1] is None:
+                    blocks[-1][1] = indent
                 indents.append(indent)
                 tokens.append(Token("INDENT", "<indent>", line_no, 1, end_line=line_no, end_column=1))
             else:
                 while indent < indents[-1]:
                     indents.pop()
                     tokens.append(Token("DEDENT", "<dedent>", line_no, 1, end_line=line_no, end_column=1))
+                while blocks and blocks[-1][1] is not None and indent < blocks[-1][1]:
+                    blocks.pop()
                 if indent != indents[-1]:
                     raise ManvError(
                         diag(
@@ -68,9 +91,23 @@ class Lexer:
                 line_index = closing_line + 1
                 continue
 
+            start = len(tokens)
             self._tokenize_line(stripped, line_no, indent, tokens)
-            tokens.append(Token("NEWLINE", "\n", line_no, len(raw) + 1, end_line=line_no, end_column=len(raw) + 1))
+            self._end_line(tokens, start, line_no, raw, blocks)
             line_index += 1
+
+        if self._brackets:
+            char, open_line, open_col = self._brackets[-1]
+            raise ManvError(
+                diag(
+                    "E0007",
+                    f"unclosed '{char}'",
+                    self.file,
+                    open_line,
+                    open_col,
+                    self.lines[open_line - 1],
+                )
+            )
 
         last_line = max(len(self.lines), 1)
         while len(indents) > 1:
@@ -78,6 +115,29 @@ class Lexer:
             tokens.append(Token("DEDENT", "<dedent>", last_line, 1, end_line=last_line, end_column=1))
         tokens.append(Token("EOF", "", last_line + 1, 1, end_line=last_line + 1, end_column=1))
         return tokens
+
+    @staticmethod
+    def _block_base(blocks: list[list[int | None]]) -> int:
+        """Bracket depth at which a new line starts a statement (0, or inside a block lambda)."""
+        return blocks[-1][0] if blocks else 0
+
+    def _end_line(self, tokens: list[Token], start: int, line_no: int, raw: str, blocks: list[list[int | None]]) -> None:
+        """Close a physical line: emit NEWLINE when a statement ended, or open a block lambda."""
+        newline = Token("NEWLINE", "\n", line_no, len(raw) + 1, end_line=line_no, end_column=len(raw) + 1)
+        depth = len(self._brackets)
+        if depth <= self._block_base(blocks):
+            tokens.append(newline)
+            return
+        line_tokens = tokens[start:]
+        opens_block_lambda = (
+            bool(line_tokens)
+            and line_tokens[-1].kind == "OP"
+            and line_tokens[-1].lexeme == ":"
+            and any(tok.kind == "KEYWORD" and tok.lexeme == "fn" for tok in line_tokens)
+        )
+        if opens_block_lambda:
+            tokens.append(newline)
+            blocks.append([depth, None])
 
     def _tokenize_line(self, line: str, line_no: int, indent: int, out: list[Token]) -> None:
         i = 0
@@ -99,6 +159,10 @@ class Lexer:
                     continue
 
             if ch in SINGLE_CHAR_OPS:
+                if ch in "([{":
+                    self._brackets.append((ch, line_no, col))
+                elif ch in ")]}" and self._brackets:
+                    self._brackets.pop()
                 out.append(Token("OP", ch, line_no, col, end_line=line_no, end_column=col))
                 i += 1
                 continue
@@ -117,21 +181,15 @@ class Lexer:
                     )
                 quote = ch
                 i += 1
-                escaped = False
                 value_chars: list[str] = []
                 raw_chars: list[str] = []
                 while i < len(line):
                     current = line[i]
-                    if escaped:
-                        raw_chars.append(current)
-                        value_chars.append(current)
-                        escaped = False
-                        i += 1
-                        continue
-                    if current == "\\":
-                        raw_chars.append(current)
-                        escaped = True
-                        i += 1
+                    if current == "\\" and i + 1 < len(line):
+                        decoded, width = self._decode_escape(line, i, line_no, indent)
+                        raw_chars.append(line[i : i + width])
+                        value_chars.append(decoded)
+                        i += width
                         continue
                     if current == quote:
                         break
@@ -219,6 +277,21 @@ class Lexer:
                     line,
                 )
             )
+
+    def _decode_escape(self, line: str, i: int, line_no: int, indent: int) -> tuple[str, int]:
+        """Decode the escape sequence starting at line[i] (a backslash). Returns (text, width)."""
+        kind = line[i + 1]
+        if kind in _SIMPLE_ESCAPES:
+            return _SIMPLE_ESCAPES[kind], 2
+        digits = {"x": 2, "u": 4}.get(kind)
+        if digits is not None:
+            hex_text = line[i + 2 : i + 2 + digits]
+            if len(hex_text) == digits and all(c in "0123456789abcdefABCDEF" for c in hex_text):
+                return chr(int(hex_text, 16)), 2 + digits
+            message = f"invalid \\{kind} escape: expected {digits} hex digits"
+        else:
+            message = f"unknown escape sequence '\\{kind}'"
+        raise ManvError(diag("E0006", message, self.file, line_no, indent + i + 1, line))
 
     def _tokenize_triple_docstring(self, start_line_index: int, indent: int) -> tuple[Token, int]:
         """Lex a triple-quoted docstring token spanning one or more physical lines.

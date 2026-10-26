@@ -1,0 +1,7 @@
+fn main() -> int:
+    print("A\x41B")
+    print("caf\u00e9")
+    print("nul:\0:")
+    print('it\'s')
+    print(len("a\nb"))
+    return 0

@@ -1,0 +1,12 @@
+fn apply_all(xs: array, f) -> array:
+    array out = []
+    for x in xs:
+        out = array_append(out, f(x))
+    return out
+
+fn main() -> int:
+    print(apply_all([1,
+        2, 3], fn(x: int) -> int:
+        return x * 10
+    ))
+    return 0

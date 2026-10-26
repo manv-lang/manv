@@ -1,0 +1,12 @@
+fn add3(a: int, b: int, c: int) -> int:
+    return a + b + c
+
+fn main() -> int:
+    print(add3(
+        1,
+        2,
+        3
+    ))
+    print(add3(1,
+               2, 3))
+    return 0

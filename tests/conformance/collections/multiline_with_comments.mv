@@ -1,0 +1,21 @@
+fn main() -> int:
+    array xs = [
+        # leading comment
+        1,
+
+        2,   # trailing comment
+        3
+    ]
+    map m = {
+        "a": 1,
+        "b": [
+            10,
+            20
+        ]
+    }
+    print(sum(xs))
+    print(sum(m["b"]))
+    print(len(
+        xs
+    ))
+    return 0

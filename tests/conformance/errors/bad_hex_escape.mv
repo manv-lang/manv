@@ -1,0 +1,3 @@
+fn main() -> int:
+    print("bad \xZZ")
+    return 0
