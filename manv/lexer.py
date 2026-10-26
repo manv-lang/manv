@@ -19,13 +19,16 @@ class Lexer:
             line_no = line_index + 1
             raw = self.lines[line_index]
             stripped = raw.lstrip(" ")
-            if stripped == "" or stripped.startswith("#"):
+            # Leading whitespace of either kind: a line holding only tabs is blank, and a
+            # tab anywhere in the indentation is reported as such (not as a stray character).
+            body = raw.lstrip(" \t")
+            if body == "" or body.startswith("#"):
                 tokens.append(Token("NEWLINE", "\n", line_no, 1, end_line=line_no, end_column=len(raw) + 1))
                 line_index += 1
                 continue
 
             indent = len(raw) - len(stripped)
-            if "\t" in raw[:indent]:
+            if "\t" in raw[: len(raw) - len(body)]:
                 raise ManvError(
                     diag(
                         "E0001",

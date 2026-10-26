@@ -524,12 +524,8 @@ class Interpreter:
             return None
 
         if isinstance(stmt, ast.WhileStmt):
-            guard = 0
             broke = False
             while self.eval_expr(stmt.condition, env):
-                guard += 1
-                if guard > 1_000_000:
-                    self._raise_runtime("RuntimeError", "loop iteration guard exceeded", stmt.span)
                 loop_env = Environment(parent=env)
                 try:
                     for inner in stmt.body:
