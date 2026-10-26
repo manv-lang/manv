@@ -63,7 +63,7 @@ Every diagnostic has a stable code (`E0xxx` lexer, `E1xxx` parser, `E2xxx` seman
 - A statement ends at the end of the line. There are no semicolons.
 - A block opens with `:` at the end of a header line, followed by an indented body.
 - Blank lines and comment-only lines are ignored.
-- Within `( )`, `[ ]` or `{ }` a line break is **not** allowed. See [§4.5](#45-collections-and-ranges).
+- Inside `( )`, `[ ]` or `{ }` a line break does not end the statement and indentation is ignored, so literals and calls can span lines (comments and blank lines are fine there). A bracket that is never closed is `E0007`, reported at the opening bracket. The one place layout still applies inside brackets is a block lambda: a line ending in `:` that contains `fn` opens an indented body, and the closing `)` goes on a line after it (§4.4).
 
 ```manv
 fn main() -> int:
@@ -118,14 +118,14 @@ Notes:
 | Float | `3.14`, `1.0`, `0.5` | ✅ decimal only, requires a digit before and after `.` |
 | Boolean | `true`, `false` | ✅ |
 | None | `none` | ✅ |
-| String | `"hi"`, `'hi'` | ✅ single-line only |
-| Array | `[1, 2, 3]` | ✅ one line only |
-| Map | `{"a": 1, "b": 2}` | ✅ one line only |
+| String | `"hi"`, `'hi'` | ✅ single-line only (see escapes below) |
+| Array | `[1, 2, 3]` | ✅ may span lines |
+| Map | `{"a": 1, "b": 2}` | ✅ may span lines |
 | Hex/octal/binary, `1_000`, `1e3` | `0xFF`, `0b101`, `1_000`, `1e3` | 🧭 |
 | Tuple | `(1, 2)` | 🧭 |
 | f-string / interpolation | `f"x={x}"` | 🧭 |
 
-**Strings.** Either quote character works. ⚠️ Escape sequences are **not** interpreted. A backslash only makes the next character literal and is then dropped, so `"a\nb"` is the three characters `anb`. Interpreting `\n`, `\t`, `\\`, `\"` and `\xNN` is planned.
+**Strings.** Either quote character works. Escape sequences are interpreted (✅): `\n` `\t` `\r` `\0` `\\` `\"` `\'`, `\xNN` (two hex digits) and `\uNNNN` (four hex digits). Any other escape, or a malformed `\x`/`\u`, is `E0006`. A string cannot contain a raw line break; use `\n`.
 
 **Number edge.** `0..5` lexes as `0`, `..`, `5` (a range), not as a float.
 
@@ -136,7 +136,7 @@ Notes:
 == != <  <= >  >=             comparison
 and or not   &&  ||  !        logic (word forms and symbol forms are interchangeable)
 =                             assignment
-+= -= *= /= %=                augmented assignment (see §5.2, ⚠️)
++= -= *= /= %=                augmented assignment (§5.2)
 ..                            range
 ->                            return-type arrow
 @                             decorator
@@ -219,7 +219,7 @@ m["key"]         # map lookup
 shapes.area(r)   # member of an included module
 ```
 
-Argument lists cannot span lines ⚠️. Keyword arguments are accepted only in decorators.
+Argument lists may span lines. Keyword arguments are accepted only in decorators.
 
 ### 4.4 Function literals ✅
 
@@ -248,7 +248,7 @@ for i in 0..5:                # ✅ range: 0,1,2,3,4 (end is exclusive)
 ```
 
 - `a .. b` is a half-open range. It is accepted in `for ... in` ✅. Elsewhere it parses but is not a runtime value ⚠️, so `a[0..2]` fails.
-- Missing 🧭: multi-line array, map and call literals, slices `a[1..3]`, stepped ranges `0..10..2`, map iteration `for k in m`, and indexing into strings `s[1]`.
+- Missing 🧭: slices `a[1..3]`, stepped ranges `0..10..2`, map iteration `for k in m`, and indexing into strings `s[1]`.
 - Collections are managed values. `a[i] = v` mutates in place. ⚠️ `array_append(a, x)` also mutates `a` in place (and returns it), although `examples/05_collections.mv` describes it as returning a new array. Which one is intended is an open decision (Decision 9 in [TODO.md](TODO.md)), so don't rely on either: write `a = array_append(a, x)`, which behaves the same under both.
 
 ---
@@ -313,10 +313,10 @@ const float PI = 3.14159
 x = 5            # ✅ variable (🧭 declares it if unbound, see §5.1)
 obj.field = 5    # ✅ attribute
 a[i] = 5         # ✅ element
-x += 1           # ⚠️ parses, rejected: E2099 unsupported statement 'AugAssignStmt'
+x += 1           # ✅ augmented assignment (also p.x += 1 and a[i] += 1)
 ```
 
-Augmented assignment (`+= -= *= /= %=`) parses for variables, attributes and elements, but is not yet implemented. Write `x = x + 1` until it is.
+Augmented assignment (`+= -= *= /= %=`) works on variables, attributes and elements. The target must already exist (`E2003` otherwise).
 
 ### 5.3 Conditionals ✅
 
@@ -348,7 +348,7 @@ continue
 
 `for` binds a single name. Destructuring (`for k, v in ...`) does not exist 🧭. `enumerate(xs)` yields `[index, value]` arrays.
 
-### 5.5 Pattern matching ⚠️
+### 5.5 Pattern matching
 
 ```manv
 match x:
@@ -358,7 +358,9 @@ match x:
         print("big")
 ```
 
-`match` and `case` parse, including guards. The interpreter's semantic pass rejects them (`E2099 unsupported statement 'MatchStmt'`). HLIR lowering already handles `match`, so the gap is in the semantic and interpreter layer.
+✅ `match` compares the subject with each `case` in order and runs the first that matches. A pattern is a literal (compared with `==`), `_` (matches anything), a name that is **not** already bound (it captures the subject for the case body and guard), or a name that is bound (compared with `==`). An optional `if` guard must also be true. If no case matches, nothing runs.
+
+Not supported yet 🧭: array, tuple, type and alternative (`1 | 2`) patterns, and exhaustiveness checking.
 
 ### 5.6 Exceptions ✅
 
@@ -389,7 +391,7 @@ raise ValueError("message")
 | `return` / `return expr` | ✅ |
 | expression statement (`f(x)`) | ✅ |
 | `with expr as name:` | ⚠️ parses, rejected at semantic analysis |
-| nested `fn` inside a function body | ⚠️ parses, rejected (`E2099`). Declare helpers at the top level. |
+| nested `fn` inside a function body | ✅ visible from its declaration on, and can read (and recurse through) the enclosing scope. Declaring the same name twice in one scope is `E2007`. |
 | `syscall(target, args...)` as statement or expression | ✅ |
 | `gpu ...`, `memory ...` | ⚠️ reserved. Parse as "unsupported statement". |
 

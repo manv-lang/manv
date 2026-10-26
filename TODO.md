@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **252 passed, 12 skipped (with stated reasons), 15 expected failures, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **271 passed, 12 skipped (with stated reasons), 10 expected failures, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is not a language you could write a real program in. Basic things fail: `x += 1`, `match`, nested functions, `"\n"`, string indexing and methods, multi-line literals, `elif`, and printing an object with a `__repr__`. Details in the phases below.
+**Not yet true of the interpreter:** it is still not a language you could write a real program in. Still missing: string indexing and methods, `elif`, slices, tuples, hex/exponent number literals, `print` of an object with a `__repr__`, and the declaration redesign (Phase 3a). Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
@@ -82,7 +82,7 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 
 - [ ] **`print` of booleans and none.** `print(true)` prints `True` and `print(none)` prints `None`. Define the canonical text (`true`, `false`, `none`) and apply it everywhere a value is rendered (`print`, `str()`, `repr`, collection printing).
 - [ ] **`print(obj)` ignores `__repr__`.** It dumps the internal `InstanceObject(type_obj=TypeObject(...))`. Honor `__repr__` (and `__str__` if adopted), with a sane default such as `<Point>`. Never leak interpreter internals.
-- [ ] **String escapes.** `"a\nb"` yields `anb`. Implement `\n \t \r \\ \" \' \0 \xNN \uNNNN` in the lexer, and error on unknown escapes (`E0006`).
+- [x] **String escapes.** `\n \t \r \0 \\ \" \' \xNN \uNNNN` are interpreted in the lexer. Any other escape or a malformed `\x`/`\u` is `E0006`. (`conformance/basics/string_escapes*`)
 - [ ] **`zip`.** It takes `zip([a, b])` (one array of arrays) and returns the wrong shape (`[['x','y','z']]`). Decide the signature (`zip(a, b)` is the obvious one), fix it and fix example 05.
 - [ ] **Fixed-width integers.** `i32` does not wrap or trap (`2147483647 + 1` gives `2147483648`). Pick wrap vs. trap vs. checked per type, and implement it. This matters later for compiler parity.
 - [ ] **`/` on two ints gives a float.** Intentional or not, decide it ([§Decisions](#decisions-needed-from-you)). Adding an integer-division operator or function is part of the answer.
@@ -101,7 +101,7 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 ## Phase 2 — Lexer
 
 - [ ] Number literals: hex `0xFF`, octal `0o17`, binary `0b101`, digit separators `1_000`, float exponent `1e-3`, and a leading-dot or trailing-dot policy.
-- [ ] Multi-line **bracketed** expressions: arrays, maps and call arguments continue across lines inside `( ) [ ] { }` (suppress NEWLINE/INDENT while nesting depth > 0). This is the single most-felt gap in real code.
+- [x] Multi-line **bracketed** expressions: arrays, maps and call arguments continue across lines inside `( ) [ ] { }`, with comments and blank lines allowed. Layout is suppressed inside brackets except for block lambdas (a line ending in `:` that contains `fn` still opens an indented body, so the existing `)`-on-the-next-line style works). An unclosed bracket is `E0007`, reported at the opener. (`conformance/collections/multiline_*`, `functions/multiline_*`, `functions/block_lambda_in_multiline_call`)
 - [ ] Explicit line continuation with `\` (if wanted).
 - [ ] Multi-line (triple-quoted) strings as ordinary expressions, not just docstrings (`E0005` today).
 - [ ] Raw strings (`r"..."`) and string interpolation, per the decision (f-string, `"${x}"`, or none).
@@ -115,10 +115,11 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 
 The target: nothing that parses is rejected later with a generic `E2099`.
 
-- [ ] **Augmented assignment** `+= -= *= /= %=` on names, attributes and elements. The parser already supports it. Add semantics and interpreter support.
-- [ ] **`match` / `case`** with literal, wildcard `_`, binding, guard (`case n if n > 0`), and later tuple/array/type patterns. Parser and HLIR lowering exist; the semantic pass and interpreter need the work.
+- [x] **Augmented assignment** `+= -= *= /= %=` on names, attributes and elements. The interpreter and HLIR lowering already handled it; the semantic pass now accepts it (undefined target is `E2003`).
+- [x] **`match` / `case`** with literal, wildcard `_`, binding and guard patterns. Two fixes were needed: the semantic pass rejected the statement, and the parser never recognised a guard (`if` is a keyword token, but the parser looked for an identifier). Still open: array, tuple, type and alternative patterns, and exhaustiveness checking.
 - [ ] **`elif`** (pending the decision). Cheap to add and removes a lot of nesting.
-- [ ] **Nested functions** and local helpers (`E2099` today). Decide capture semantics, and make named inner functions and lambdas consistent.
+- [x] **Nested functions**: declared in a function body, visible from the declaration on, can read the enclosing scope and recurse. A duplicate name in one scope is `E2007`. Capture semantics for *mutating* an enclosing variable are still undecided (Phase 4, closures).
+- [x] The semantic pass skipped the `else:` body of `while` entirely, so an undefined name there went unreported. It is analysed now. (`conformance/errors/while_else_undefined_name`)
 - [ ] **Single-expression lambdas** (`fn(x): x * 2`), pending the decision.
 - [ ] **`with` statement** and a context-manager protocol (`__enter__` / `__exit__`), or remove `with` from the grammar.
 - [ ] **Conditional expression** (`a if cond else b`).
@@ -309,9 +310,9 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 55 cases so far: the rest pass today, 14 are strict xfails that mark known gaps. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 69 cases: 60 pass, 9 are strict xfails that mark known gaps. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
-- [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 16 cases). Locations (line/column) are not asserted yet.
+- [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 23 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
 - [ ] Fuzz the lexer and parser (random bytes must never crash with a Python exception; only `ManvError`).
 - [ ] Property tests for arithmetic, conversion and collection semantics.
