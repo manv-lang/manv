@@ -1,0 +1,1 @@
+TODO Phase 1: output printed before an uncaught error is dropped (the CLI only prints it on success)

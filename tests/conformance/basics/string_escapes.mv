@@ -1,0 +1,6 @@
+fn main() -> int:
+    print("a\tb")
+    print("line1\nline2")
+    print("say \"hi\"")
+    print("back\\slash")
+    return 0

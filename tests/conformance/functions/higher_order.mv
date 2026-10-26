@@ -1,0 +1,19 @@
+fn apply(f, x: int) -> int:
+    return f(x)
+
+fn apply_twice(f, x: int) -> int:
+    return f(f(x))
+
+fn apply_to_seven(f) -> int:
+    return f(7)
+
+fn double(x: int) -> int:
+    return x * 2
+
+fn main() -> int:
+    print(apply(double, 5))
+    print(apply_twice(double, 3))
+    print(apply_to_seven(fn(x: int) -> int:
+        return x * x
+    ))
+    return 0

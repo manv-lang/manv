@@ -1,0 +1,9 @@
+const LIMIT = 10
+const float HALF = 0.5
+
+fn main() -> int:
+    print(LIMIT)
+    print(HALF * 4.0)
+    const int local = 3
+    print(local + LIMIT)
+    return 0

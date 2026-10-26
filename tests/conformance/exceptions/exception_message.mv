@@ -1,0 +1,6 @@
+fn main() -> int:
+    try:
+        raise ValueError("boom")
+    except ValueError as e:
+        print(e.message)
+    return 0

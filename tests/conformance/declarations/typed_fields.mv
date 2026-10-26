@@ -1,0 +1,8 @@
+type Box:
+    int size = 4
+    str label = "box"
+
+fn main() -> int:
+    print(Box().size)
+    print(Box().label)
+    return 0

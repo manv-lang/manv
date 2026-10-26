@@ -1,0 +1,17 @@
+fn show(b: bool) -> str:
+    if b:
+        return "yes"
+    return "no"
+
+fn main() -> int:
+    print(show(1 < 2))
+    print(show(2 <= 2))
+    print(show(3 > 4))
+    print(show(3 >= 4))
+    print(show(1 == 1))
+    print(show(1 != 1))
+    print(show(true and false))
+    print(show(true or false))
+    print(show(not true))
+    print(show(not false or false))
+    return 0

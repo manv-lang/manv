@@ -1,0 +1,10 @@
+type Point:
+    fn __init__(self, x: int):
+        self.x = x
+
+fn main() -> int:
+    i64 big = 9223372036854
+    print(big)
+    Point p = Point(7)
+    print(p.x)
+    return 0

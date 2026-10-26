@@ -1,0 +1,4 @@
+fn main() -> int:
+    try:
+        print(1)
+    return 0

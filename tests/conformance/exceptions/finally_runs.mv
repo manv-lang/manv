@@ -1,0 +1,19 @@
+fn f() -> int:
+    try:
+        return 1
+    finally:
+        print("cleanup")
+
+fn g() -> int:
+    for i in 0..3:
+        try:
+            if i == 1:
+                break
+        finally:
+            print("g finally")
+    return 9
+
+fn main() -> int:
+    print(f())
+    print(g())
+    return 0

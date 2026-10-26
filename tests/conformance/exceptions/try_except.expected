@@ -1,0 +1,10 @@
+5
+no error
+finally 1
+caught value error
+finally 2
+caught index error
+inner finally
+outer caught
+re-raising
+outer got re-raise

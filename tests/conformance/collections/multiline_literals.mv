@@ -1,0 +1,9 @@
+fn main() -> int:
+    array xs = [1,
+        2,
+        3]
+    map m = {"a": 1,
+        "b": 2}
+    print(sum(xs))
+    print(len(map_keys(m)))
+    return 0

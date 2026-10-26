@@ -1,0 +1,12 @@
+type Counter:
+    fn __init__(self, start: int):
+        self.n = start
+
+impl Counter:
+    fn bump(self, by: int) -> int:
+        self.n = self.n + by
+        return self.n
+
+fn main() -> int:
+    print(Counter(10).bump(5))
+    return 0

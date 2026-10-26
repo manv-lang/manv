@@ -1,0 +1,3 @@
+fn main() -> int:
+    print("exiting with 3")
+    return 3

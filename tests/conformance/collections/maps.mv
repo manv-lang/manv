@@ -1,0 +1,20 @@
+fn main() -> int:
+    map person = {"name": "Alice", "age": 30}
+    print(person["name"])
+    print(person["age"])
+    person["email"] = "a@b.c"
+    person["age"] = 31
+    print(person["age"])
+    print(person["email"])
+    print(len(map_keys(person)))
+    print(sorted(map_values({"a": 3, "b": 1, "c": 2})))
+    if map_has_key(person, "age"):
+        print("has age")
+    if not map_has_key(person, "phone"):
+        print("no phone")
+    map counts = {}
+    counts["x"] = 1
+    print(len(map_keys(counts)))
+    map nested = {"inner": {"v": 5}}
+    print(nested["inner"]["v"])
+    return 0

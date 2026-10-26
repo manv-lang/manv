@@ -1,0 +1,7 @@
+fn main() -> int:
+    map m = {"a": 1}
+    try:
+        print(m["zz"])
+    except KeyError:
+        print("caught KeyError")
+    return 0

@@ -1,0 +1,13 @@
+fn main() -> int:
+    str a = "hello"
+    str b = "world"
+    print(a + " " + b)
+    print(len(a))
+    if a < b:
+        print("hello < world")
+    if a == "hello":
+        print("equal")
+    if a != b:
+        print("different")
+    print('single quotes')
+    return 0

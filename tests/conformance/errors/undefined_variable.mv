@@ -1,0 +1,3 @@
+fn main() -> int:
+    print(zzz)
+    return 0

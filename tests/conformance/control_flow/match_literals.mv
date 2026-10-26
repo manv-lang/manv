@@ -1,0 +1,13 @@
+fn name(n: int) -> str:
+    match n:
+        case 1:
+            return "one"
+        case 2:
+            return "two"
+    return "other"
+
+fn main() -> int:
+    print(name(1))
+    print(name(2))
+    print(name(3))
+    return 0

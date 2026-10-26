@@ -1,0 +1,20 @@
+type User:
+    fn __init__(self, name: str):
+        self._name = name
+
+    @getter
+    fn name(self) -> str:
+        return self._name
+
+    @setter
+    fn name(self, value: str) -> none:
+        self._name = value
+
+fn rename(u, n: str):
+    u.name = n
+    print(u.name)
+
+fn main() -> int:
+    print(User("Ada").name)
+    rename(User("Ada"), "Grace")
+    return 0

@@ -1,0 +1,37 @@
+fn main() -> int:
+    int i = 0
+    int total = 0
+    while i < 5:
+        total = total + i
+        i = i + 1
+    print(total)
+
+    int j = 0
+    while true:
+        if j >= 3:
+            break
+        print(j)
+        j = j + 1
+
+    int k = 0
+    while k < 6:
+        k = k + 1
+        if k % 2 == 0:
+            continue
+        print(k)
+
+    int n = 0
+    while n < 2:
+        n = n + 1
+    else:
+        print("while-else ran")
+
+    int m = 0
+    while m < 5:
+        m = m + 1
+        if m == 2:
+            break
+    else:
+        print("never printed")
+    print(m)
+    return 0

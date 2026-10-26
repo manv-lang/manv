@@ -1,0 +1,6 @@
+fn main() -> int:
+    try:
+        raise ValueError("x")
+    except Exception:
+        print("caught as Exception")
+    return 0

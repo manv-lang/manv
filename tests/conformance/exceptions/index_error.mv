@@ -1,0 +1,7 @@
+fn main() -> int:
+    array xs = [1, 2, 3]
+    try:
+        print(xs[5])
+    except IndexError:
+        print("caught IndexError")
+    return 0

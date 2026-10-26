@@ -1,0 +1,12 @@
+fn noisy(label: str) -> bool:
+    print(label)
+    return true
+
+fn main() -> int:
+    if false and noisy("and-rhs ran (wrong)"):
+        print("unreachable")
+    if true or noisy("or-rhs ran (wrong)"):
+        print("or short-circuited")
+    if true and noisy("and evaluated its rhs"):
+        print("and rhs ran")
+    return 0

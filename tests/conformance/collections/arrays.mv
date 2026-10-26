@@ -1,0 +1,23 @@
+fn main() -> int:
+    array nums = [10, 30, 20, 50, 40]
+    print(nums[0])
+    print(nums[4])
+    print(nums[-1])
+    print(len(nums))
+    print(sum(nums))
+    print(min(nums))
+    print(max(nums))
+    print(sorted(nums))
+    print(nums)
+    nums[1] = 99
+    print(nums)
+    array more = array_append(nums, 7)
+    print(more)
+    array empty = []
+    print(len(empty))
+    print(empty)
+    array grid = [[1, 2], [3, 4]]
+    print(grid[1][0])
+    for pair in enumerate([5, 6]):
+        print(pair)
+    return 0

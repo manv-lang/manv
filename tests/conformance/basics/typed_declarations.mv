@@ -1,0 +1,18 @@
+fn main() -> int:
+    int a = 42
+    i32 b = 7
+    float c = 2.5
+    f32 d = 1.5
+    str s = "text"
+    bool t = true
+    array xs = [1, 2, 3]
+    map m = {"k": 1}
+    print(a + b)
+    print(c * 2.0)
+    print(d)
+    print(s)
+    print(xs)
+    print(m["k"])
+    if t:
+        print("t is true")
+    return 0

@@ -1,0 +1,6 @@
+fn main() -> int:
+    try:
+        print(int("abc"))
+    except ValueError:
+        print("caught ValueError")
+    return 0

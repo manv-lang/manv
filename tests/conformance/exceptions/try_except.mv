@@ -1,0 +1,50 @@
+fn risky(n: int) -> int:
+    if n == 0:
+        raise ValueError("zero")
+    if n == 1:
+        raise IndexError("one")
+    return n
+
+fn main() -> int:
+    try:
+        print(risky(5))
+    except ValueError:
+        print("value error")
+    else:
+        print("no error")
+    finally:
+        print("finally 1")
+
+    try:
+        risky(0)
+    except ValueError:
+        print("caught value error")
+    finally:
+        print("finally 2")
+
+    try:
+        risky(1)
+    except ValueError:
+        print("wrong clause")
+    except IndexError:
+        print("caught index error")
+
+    try:
+        try:
+            risky(0)
+        except IndexError:
+            print("inner wrong")
+        finally:
+            print("inner finally")
+    except ValueError:
+        print("outer caught")
+
+    try:
+        try:
+            risky(0)
+        except ValueError:
+            print("re-raising")
+            raise
+    except ValueError:
+        print("outer got re-raise")
+    return 0

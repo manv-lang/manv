@@ -1,0 +1,21 @@
+type Point:
+    fn __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    fn translate(self, dx: int, dy: int):
+        self.x = self.x + dx
+        self.y = self.y + dy
+
+    fn total(self) -> int:
+        return self.x + self.y
+
+fn bump(p, d: int):
+    p.translate(d, d)
+    print(p.x)
+    print(p.y)
+
+fn main() -> int:
+    print(Point(3, 4).total())
+    bump(Point(1, 2), 5)
+    return 0

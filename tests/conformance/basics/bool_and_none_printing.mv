@@ -1,0 +1,5 @@
+fn main() -> int:
+    print(true)
+    print(false)
+    print(none)
+    return 0

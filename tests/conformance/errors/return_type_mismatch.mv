@@ -1,0 +1,5 @@
+fn f() -> int:
+    return "text"
+
+fn main() -> int:
+    return f()

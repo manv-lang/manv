@@ -1,0 +1,21 @@
+fn classify(n: int) -> str:
+    if n < 0:
+        return "negative"
+    else:
+        if n == 0:
+            return "zero"
+        else:
+            if n < 10:
+                return "small"
+            else:
+                return "large"
+
+fn main() -> int:
+    print(classify(-5))
+    print(classify(0))
+    print(classify(7))
+    print(classify(42))
+    if 1 > 2:
+        print("never")
+    print("after")
+    return 0

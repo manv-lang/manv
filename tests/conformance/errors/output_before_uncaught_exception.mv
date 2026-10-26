@@ -1,0 +1,4 @@
+fn main() -> int:
+    print("before")
+    raise ValueError("boom")
+    return 0

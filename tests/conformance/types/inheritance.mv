@@ -1,0 +1,28 @@
+fn show(b: bool) -> str:
+    if b:
+        return "yes"
+    return "no"
+
+type Shape:
+    fn area(self) -> float:
+        return 0.0
+
+    fn describe(self) -> str:
+        return "a shape"
+
+type Rect(Shape):
+    fn __init__(self, w: float, h: float):
+        self.w = w
+        self.h = h
+
+    fn area(self) -> float:
+        return self.w * self.h
+
+fn main() -> int:
+    print(Rect(5.0, 3.0).area())
+    print(Rect(5.0, 3.0).describe())
+    print(Shape().area())
+    print(show(isinstance(Rect(1.0, 1.0), Rect)))
+    print(show(isinstance(Rect(1.0, 1.0), Shape)))
+    print(show(isinstance(Shape(), Rect)))
+    return 0

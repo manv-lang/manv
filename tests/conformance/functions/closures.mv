@@ -1,0 +1,15 @@
+fn make_adder(n: int):
+    return fn(x: int) -> int:
+        return x + n
+
+fn make_multiplier(factor: int):
+    return fn(x: int) -> int:
+        return x * factor
+
+fn main() -> int:
+    print(make_adder(5)(3))
+    array fs = [make_adder(1), make_adder(10), make_multiplier(3)]
+    print(fs[0](5))
+    print(fs[1](5))
+    print(fs[2](5))
+    return 0
