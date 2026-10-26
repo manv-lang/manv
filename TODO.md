@@ -19,29 +19,30 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **203 passed, 12 failed, 1 skipped** in about 8 s.
+- `pytest`: **252 passed, 12 skipped (with stated reasons), 15 expected failures, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
 
   | Measurement | ManV interpreter (Python tree-walker) | CPython 3.13, for scale |
   |-------------|---------------------------------------|-------------------------|
-  | Startup (`hello world`) | 0.65 s | ~0.02 s |
+  | Startup (`hello world`) | 0.46 s to 0.65 s (varies by run) | 0.07 s |
   | `while` loop, 2,000,000 iterations (one compare, two adds, two assignments each) | 5.1 s total, about 4.5 s net of startup (~2.2 µs/iteration) | 0.20 s |
   | `fib(22)` (about 57k calls) | 1.16 s total, about 0.5 s net of startup (~9 µs/call) | 0.002 s |
 
-  So the interpreter is about **20× slower than CPython** on plain loops. These are single runs, so they are indicative, not benchmark-grade. They are the numbers the C engine has to beat.
+  These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
 **Not yet true of the interpreter:** it is not a language you could write a real program in. Basic things fail: `x += 1`, `match`, nested functions, `"\n"`, string indexing and methods, multi-line literals, `elif`, and printing an object with a `__repr__`. Details in the phases below.
 
-### The 12 failing tests, grouped by cause
+### How the 12 failing tests were resolved
 
-| Cause | Tests | Belongs to |
-|-------|-------|------------|
-| Intrinsics rejected as "restricted to std sources" (`core_len`, `core_str`, `core_array_push`). The std in use is a cached copy at `%LOCALAPPDATA%\...\ManV\packages\std\git-…`, not `stdlib/src`. | `test_math_docstrings` (3), `test_oop_exceptions_runtime` (`str` module import) | **Parked with the stdlib.** Mark `stdlib` and skip ([P0](#phase-0--get-a-trustworthy-baseline)). |
-| Tests look for `std/src/main.mv`, but the directory is now `stdlib/`. | `test_oop_exceptions_runtime` (bundled std import), `test_syscall_keyword`, `test_cli_matrix::test_test_command_runs_fixture_suite` | **Parked with the stdlib.** Same. |
-| `no LLVM toolchain found (clang)` | `test_abi_runtime` (2) | Compiler. Skip when `clang` is absent. |
-| CUDA/PTX backend | `test_cli_matrix::test_compile_cuda_ptx_backend`, `test_dap_debugger::…cuda_source` | Compiler. Skip when no CUDA. |
-| `test_llvm_lowering_supports_arrays_maps_and_core_len` | `test_llvm_codegen` | Compiler (it may share the std cause, so check it when the compiler starts) |
+None of them was fixed by changing what it tests; each is now skipped or expected-to-fail with a stated reason. The skip logic lives in `conftest.py`.
+
+| Cause | Tests | Now |
+|-------|-------|-----|
+| Need the standard library (`include math`, `std` imports, std-only intrinsics like `core_len`) | `test_math_docstrings` (3), `test_oop_exceptions_runtime` (2), `test_syscall_keyword` (1), `test_llvm_codegen::…core_len` (1) | marker `stdlib`, skipped unless `--run-stdlib`. With the flag all 7 still fail, as expected. They are the starting regression list for the library redesign. |
+| Need an LLVM toolchain (`clang`), which this machine does not have | `test_abi_runtime` (2), `test_cli_matrix::test_compile_cuda_ptx_backend`, `test_cli_matrix::test_test_command_runs_fixture_suite` (its `build_ok` case) | marker `needs_clang`, skipped when `clang` is not on `PATH`. |
+| GPU / debugger: with CUDA mocked, the program runs but never takes the GPU path | `test_dap_debugger::…cuda_source` | `xfail` (non-strict). Out of scope until the interpreter works; re-verify with the DAP work in Phase 6. |
 
 ---
 
@@ -64,13 +65,14 @@ The interpreter is done when **all** of these are true. They are the exit criter
 
 Nothing else is worth building on a red test suite.
 
-- [ ] **Cut the interpreter's dependency on the stdlib.** Module search currently ends at a "bundled std" root and can pick up a stale network-installed cache (`%LOCALAPPDATA%\...\ManV\packages\std`). Remove std from the search path and from startup. Builtins already run natively, so this should mostly be deletion. `include` keeps working for the user's own modules (project root, `MANV_PATH`).
-- [ ] Add a `stdlib` pytest marker and skip every test that needs the stdlib (the 7 failures above plus any others), with the reason "stdlib parked". Do not fix or delete them. They are the starting regression list for the stdlib redesign.
-- [ ] Add `pytest.mark.skipif` / markers for tests that need `clang`, CUDA or a GPU. A missing tool is a skip, not a failure.
-- [ ] Move `examples/08_modules_stdlib.mv` (and any other example that needs `std.*` or an std `include`) to `examples/_parked/`, so the example set is stdlib-free and can become golden tests.
-- [ ] Get to 0 failures, then set up CI to run on Linux, macOS and Windows.
-- [ ] Untrack the build output that is committed despite `.gitignore` (19 files today: `__pycache__/*.pyc`, `tests/e2e/fixtures/**/.manv/target/*.exe|*.o`) with `git rm --cached`.
-- [ ] Add a `CHANGELOG.md` and a short `CONTRIBUTING.md` (how to run tests, where the grammar lives).
+- [x] **Cut the interpreter's dependency on the stdlib.** The module search path is the project root, `MANV_PATH`, and packages installed from the global cache. The cache used to include the installed `std` package, so a run depended on what happened to be installed on the machine. `std` is now excluded (`installed_package_roots(exclude=...)`); dependencies added with `manv add` still resolve. Excluding it changed no test result.
+- [x] Add a `stdlib` pytest marker and skip every test that needs the stdlib, with the reason "stdlib parked". Do not fix or delete them. They are the starting regression list for the stdlib redesign. (`--run-stdlib` runs them.)
+- [x] Add markers for tests that need `clang`. A missing tool is a skip, not a failure. (No CUDA-specific marker was needed: the CUDA-named tests fail for other reasons, see above.)
+- [x] Move `examples/08_modules_stdlib.mv` to `examples/_parked/`, so the example set is stdlib-free. Turning the remaining examples into golden tests is still open (Phase 1 and §0).
+- [x] Get to 0 failures.
+- [ ] Set up CI on Linux, macOS and Windows. `.github/workflows/ci.yml` is written but **has never run**. The first run on Linux and macOS may expose problems the Windows-only local runs hid (the repository stores CRLF line endings, `.exe` fixtures, path handling). Treat its first results as findings.
+- [x] Untrack the build output that was committed despite `.gitignore` (19 files: `__pycache__/*.pyc`, `tests/e2e/fixtures/**/.manv/target/*.exe|*.o`).
+- [x] Add a `CHANGELOG.md` and a short `CONTRIBUTING.md` (how to run tests, where the grammar lives).
 
 ## Phase 1 — Interpreter correctness bugs
 
@@ -90,6 +92,11 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 - [ ] **Uncaught exception output.** Currently `error[E3900]: ValueError: boom`. Add the source line, a call stack, and exit code 1.
 - [ ] Audit `None` vs. `none` vs. `void` return behavior (what does `print(f())` print for a function with no return?).
 - [ ] Fix the stale comments in `examples/` that describe behavior that is no longer true or never was (02, 04, 05, 06, 07). Each should match the golden output.
+- [x] **`while` had a hard cap of 1,000,000 iterations** (`RuntimeError: loop iteration guard exceeded`), so a legitimate long loop failed. Removed; `conformance/control_flow/while_beyond_one_million` covers it. The same arbitrary cap still exists for user-defined iterators (`iterator guard exceeded`).
+- [ ] **`and` / `or` do not short-circuit.** `false and f()` and `true or f()` still call `f()`. Case: `conformance/basics/short_circuit` (xfail).
+- [ ] **Output printed before an uncaught error is lost.** The CLI only prints the program's output when the run succeeds, so `print("before"); raise ...` shows nothing. Case: `conformance/errors/output_before_uncaught_exception` (xfail).
+- [ ] **`array_append` mutates its argument**, although `examples/05_collections.mv` documents it as returning a new array and leaving the original unchanged. Decide the semantics (Decision 9), then make the code, the example and [syntax.md](syntax.md) agree. No conformance case pins it until then.
+- [ ] `for x in a..b` builds the whole range as a list before looping (memory, and slow for large ranges). Fix in the engine, not the tree-walker.
 
 ## Phase 2 — Lexer
 
@@ -102,6 +109,7 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 - [ ] Unicode: the lexer accepts any Unicode letter in identifiers (it uses `str.isalpha`) without that being a decision. Decide the policy (allowed identifier characters, normalization) and the source encoding (UTF-8), and test non-ASCII text in strings.
 - [ ] Windows line endings (`\r\n`) in the indentation logic. Add a test.
 - [ ] Golden tests for diagnostic spans (line, column, end column).
+- [x] A line indented with only tabs was reported as `E0004 unexpected character '\t'`; it is now `E0001 tabs are not allowed for indentation`, and a line containing only whitespace and tabs is treated as blank. (`conformance/errors/tab_indentation`)
 
 ## Phase 3 — Parser and semantic analysis
 
@@ -222,7 +230,7 @@ The lever that can make ManV unusual among interpreted languages is its **option
 **Foundations**
 - [ ] Settle Decisions 5, 8, 9, 11, 12 and 13 first. They fix the value representation and the memory model, and changing them later means rewriting the engine.
 - [ ] Repository layout: `engine/` (C11, no GNU-only syntax except behind `#ifdef`, such as computed goto), a `Makefile` or CMake build, and a thin Python wrapper (`ctypes` or a CPython extension) used by the REPL, tests and tooling. The toolchain on this machine is `gcc` 15.2 (w64devkit). CI builds with gcc and clang on Linux and macOS and adds MSVC on Windows later, so avoid compiler-specific extensions where a portable form exists.
-- [ ] **Benchmark harness first**, before any engine code, so every change is measured: `fib(30)`, a 10M-iteration integer loop, nested loops over arrays, array fill/sum, map insert/lookup, string building, method calls on user types, closure calls, exception throw/catch in a loop, n-body and spectral-norm (float math). Run each against the current interpreter, CPython and Lua on the same machine and record the results in the repo.
+- [x] **Benchmark harness first**, before any engine code, so every change is measured. Done in [benchmarks/](benchmarks/README.md): 11 programs (startup, loop, fib, nested loops, array fill/sum, map ops, string building, method calls, closure calls, exceptions, mandelbrot), each in ManV and CPython with output cross-checked, and recorded baselines. Still to add: n-body and spectral-norm, and Lua as a third reference.
 - [ ] Warnings and sanitizer policy: `-Wall -Wextra -Werror`, UBSan/ASan builds in Linux CI, and a fuzzer for the bytecode loader (a corrupt `.mvc` file must produce an error, never a crash).
 
 **Bytecode**
@@ -301,9 +309,9 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [ ] `tests/conformance/*.mv` with sibling `.expected` (stdout and exit code). One feature per file. This suite is what the compiler will later be held to.
-- [ ] A harness that runs every conformance case through the interpreter. Later it also runs them through compiled mode and diffs the results.
-- [ ] A negative-test set: programs that must fail with a specific diagnostic code and location.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 55 cases so far: the rest pass today, 14 are strict xfails that mark known gaps. This suite is what the engines will be held to.
+- [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
+- [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 16 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
 - [ ] Fuzz the lexer and parser (random bytes must never crash with a Python exception; only `ManvError`).
 - [ ] Property tests for arithmetic, conversion and collection semantics.
@@ -334,7 +342,7 @@ These shape the language, so they are yours to make. Each blocks specific items 
 | 6 | Script mode: may a file be just statements with no `main`? | Yes for `manv run`, with the semantics "implicit main", so `manv run x.mv` works for small programs. | P3 |
 | 7 | Single-expression lambdas: `fn(x): x * 2`? | Yes. Block-only lambdas make `map`/`filter` noisy. | P3 |
 | 8 | `String` model: bytes or Unicode code points for `len`/index? | Code points, stored as UTF-8, with a separate `bytes` type for raw data. Indexing by code point is O(n) on UTF-8, so the engine needs an ASCII-only fast path (a flag on the string) to keep it cheap. | P4, P5 |
-| 9 | Value vs. reference semantics for `array`/`map`/`type` instances (aliasing on assignment/pass)? | Reference semantics for heap types, written down plainly, with an explicit `copy()`. This needs to be settled before the ownership model. | P4, P5, §9 |
+| 9 | Value vs. reference semantics for `array`/`map`/`type` instances (aliasing on assignment/pass)? A concrete symptom today: `array_append(a, x)` mutates `a`, while `examples/05` documents it as pure. | Reference semantics for heap types, written down plainly, with an explicit `copy()`. This needs to be settled before the ownership model. | P4, P5, §9 |
 | 10 | Keep or cut: `class` alias, `True`/`False` aliases, `&&`/`||`/`!` aliases, the `macro` stub, `gpu`/`memory` statements? | Cut the `True`/`False` and `&&`/`||`/`!` aliases (one way to do it). Keep `class` only if it is needed for migration. Defer macros. | P2, P3 |
 | 11 | **Where do runtime fixes go?** Phases 1 and 4 are mostly runtime behavior. Fix them in the Python tree-walker now (a quick path to a "working" interpreter, throwaway work later), or write them once in the C engine and keep the tree-walker frozen as an oracle? | Write them once, in the engine. The tree-walker is ~20× slower than CPython and is going away, so effort spent there is spent twice. The cost is a longer wait before the interpreter feels "working". Cap it by building a thin vertical slice first (ints, floats, strings, functions, `if`/`while`/`for`, `print`) and growing from there. Lexer, parser and semantic fixes are shared and stay in Python. | P1, P4, P5 |
 | 12 | **Memory management in the engine:** reference counting, tracing GC, or arenas/ownership from the start? | Start with a simple precise tracing GC (mark-sweep). It handles cycles, keeps the value representation simple, and can later be replaced behind the allocator interface. Reference counting costs a write on every copy, which works against the speed goal. Revisit when the ownership model (§9.4) is designed. | P5, §9.4 |

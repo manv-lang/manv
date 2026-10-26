@@ -206,6 +206,7 @@ Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a cha
 - ✅ `%` takes the sign of the divisor: `-7 % 3` is `2`.
 - ✅ `+` concatenates two strings. `"a" + 1` is a `TypeError`, so convert with `str(1)`.
 - ✅ Strings compare lexicographically with `<`, `==` and so on.
+- ⚠️ `and` / `or` do **not** short-circuit today: in `false and f()` the call to `f()` still happens. They are meant to (the right operand is evaluated only when it can change the result). Tracked in [TODO.md](TODO.md) Phase 1 and covered by `tests/conformance/basics/short_circuit`.
 
 ### 4.3 Calls, members and indexing ✅
 
@@ -248,7 +249,7 @@ for i in 0..5:                # ✅ range: 0,1,2,3,4 (end is exclusive)
 
 - `a .. b` is a half-open range. It is accepted in `for ... in` ✅. Elsewhere it parses but is not a runtime value ⚠️, so `a[0..2]` fails.
 - Missing 🧭: multi-line array, map and call literals, slices `a[1..3]`, stepped ranges `0..10..2`, map iteration `for k in m`, and indexing into strings `s[1]`.
-- Collections are managed values. `array_append(a, x)` returns a **new** array and leaves `a` unchanged. `a[i] = v` mutates in place.
+- Collections are managed values. `a[i] = v` mutates in place. ⚠️ `array_append(a, x)` also mutates `a` in place (and returns it), although `examples/05_collections.mv` describes it as returning a new array. Which one is intended is an open decision (Decision 9 in [TODO.md](TODO.md)), so don't rely on either: write `a = array_append(a, x)`, which behaves the same under both.
 
 ---
 
