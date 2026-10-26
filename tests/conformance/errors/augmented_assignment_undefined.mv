@@ -1,0 +1,3 @@
+fn main() -> int:
+    total += 1
+    return 0

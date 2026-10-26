@@ -1228,8 +1228,7 @@ class Parser:
             case_tok = self._advance()
             pattern = self._parse_expression()
             guard: object | None = None
-            if self._is("IDENT") and self._current().lexeme == "if":
-                self._advance()
+            if self._match_keyword("if"):
                 guard = self._parse_expression()
             self._expect_op(":")
             body = self._parse_block()

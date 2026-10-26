@@ -499,6 +499,60 @@ class SemanticAnalyzer:
             # Module declarations are pure metadata; no binding is introduced.
             return
 
+        if isinstance(stmt, ast.FnDecl):
+            # A function declared inside another body: visible from its declaration on,
+            # and able to read the enclosing scopes (closure).
+            if scope.has_local(stmt.name):
+                self._add_error("E2007", f"duplicate variable declaration '{stmt.name}' in same scope", stmt.span.line, stmt.span.column)
+            scope.define(stmt.name, "fn")
+            self._analyze_function_decl(stmt, scope, is_method=False)
+            return
+
+        if isinstance(stmt, ast.AugAssignStmt):
+            if not scope.contains(stmt.name):
+                self._add_error("E2003", f"undefined variable '{stmt.name}'", stmt.span.line, stmt.span.column)
+            self._analyze_expr(stmt.value, scope, as_callee=False)
+            return
+
+        if isinstance(stmt, ast.AugAssignAttrStmt):
+            self._analyze_expr(stmt.target, scope, as_callee=False)
+            if isinstance(stmt.target, ast.IdentifierExpr) and stmt.target.name in self.type_attrs:
+                if stmt.attr in self.type_attrs.get(stmt.target.name, {}):
+                    self._add_error("E2038", f"type attribute '{stmt.target.name}.{stmt.attr}' is immutable", stmt.span.line, stmt.span.column)
+            self._analyze_expr(stmt.value, scope, as_callee=False)
+            return
+
+        if isinstance(stmt, ast.AugAssignIndexStmt):
+            target_type = self._analyze_expr(stmt.target, scope, as_callee=False)
+            self._analyze_expr(stmt.index, scope, as_callee=False)
+            self._analyze_expr(stmt.value, scope, as_callee=False)
+            if target_type and not (
+                target_type == "array"
+                or target_type == "map"
+                or target_type.startswith("array[")
+                or target_type.startswith("[")
+                or target_type.startswith("map[")
+            ):
+                self._add_error("E2012", f"index assignment target must be array/map, got {target_type}", stmt.span.line, stmt.span.column)
+            return
+
+        if isinstance(stmt, ast.MatchStmt):
+            self._analyze_expr(stmt.subject, scope, as_callee=False)
+            for case in stmt.cases:
+                case_scope = Scope(parent=scope)
+                pattern = case.pattern
+                if isinstance(pattern, ast.IdentifierExpr) and pattern.name == "_":
+                    pass  # wildcard
+                elif isinstance(pattern, ast.IdentifierExpr) and not scope.contains(pattern.name):
+                    case_scope.define(pattern.name, None)  # an unbound name captures the subject
+                else:
+                    self._analyze_expr(pattern, scope, as_callee=False)
+                if case.guard is not None:
+                    self._analyze_expr(case.guard, case_scope, as_callee=False)
+                for inner in case.body:
+                    self._analyze_stmt(inner, case_scope, fn_decl, loop_depth=loop_depth, except_depth=except_depth)
+            return
+
         if isinstance(stmt, ast.IncludeStmt):
             if stmt.name is None:
                 # Whole-module include: bind as alias or leaf of dotted path.
@@ -599,6 +653,9 @@ class SemanticAnalyzer:
             body_scope = Scope(parent=scope)
             for inner in stmt.body:
                 self._analyze_stmt(inner, body_scope, fn_decl, loop_depth=loop_depth + 1, except_depth=except_depth)
+            else_scope = Scope(parent=scope)
+            for inner in stmt.else_body:
+                self._analyze_stmt(inner, else_scope, fn_decl, loop_depth=loop_depth, except_depth=except_depth)
             return
 
         if isinstance(stmt, ast.ForStmt):

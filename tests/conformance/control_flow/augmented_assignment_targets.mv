@@ -1,0 +1,21 @@
+type Box:
+    fn __init__(self):
+        self.n = 1
+
+fn grow(b):
+    b.n += 4
+    b.n *= 3
+    print(b.n)
+
+fn main() -> int:
+    str s = "ab"
+    s += "cd"
+    print(s)
+    float f = 1.5
+    f *= 2.0
+    print(f)
+    map m = {"k": 1}
+    m["k"] += 41
+    print(m["k"])
+    grow(Box())
+    return 0

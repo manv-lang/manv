@@ -1,0 +1,6 @@
+fn main() -> int:
+    fn helper() -> int:
+        return 1
+    fn helper() -> int:
+        return 2
+    return 0

@@ -1,0 +1,28 @@
+fn describe(n: int) -> str:
+    match n:
+        case 0:
+            return "zero"
+        case 1:
+            return "one"
+        case x if x < 0:
+            return "negative"
+        case _:
+            return "many"
+
+fn kind(s: str) -> str:
+    match s:
+        case "a":
+            return "first"
+        case "b":
+            return "second"
+    return "none"
+
+fn main() -> int:
+    print(describe(0))
+    print(describe(1))
+    print(describe(-5))
+    print(describe(9))
+    print(kind("a"))
+    print(kind("b"))
+    print(kind("zzz"))
+    return 0
