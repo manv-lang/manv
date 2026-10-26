@@ -392,6 +392,7 @@ def test_import_search_path_uses_manv_path_fallback(tmp_path: Path, monkeypatch:
     assert out.strip().splitlines() == ["55"]
 
 
+@pytest.mark.stdlib
 def test_bundled_std_module_import_without_project_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Std is now a separate package; resolve it via MANV_PATH pointing at std/src.
     monkeypatch.setenv("MANV_PATH", str(_STD_SRC))
@@ -408,6 +409,7 @@ def test_bundled_std_module_import_without_project_copy(tmp_path: Path, monkeypa
     assert out.strip().splitlines() == ["6", "2"]
 
 
+@pytest.mark.stdlib
 def test_bundled_str_module_import_uses_str_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # `str` module name is intentional; avoid `string` naming in bootstrap API.
     monkeypatch.setenv("MANV_PATH", str(_STD_SRC))

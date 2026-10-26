@@ -31,6 +31,7 @@ def test_interpreter_vs_compiled_equivalence() -> None:
     assert out_interp.getvalue() == out_comp.getvalue()
 
 
+@pytest.mark.needs_clang
 def test_abi_codegen_patterns_by_target(tmp_path: Path) -> None:
     source_path = FIXTURES / "compile_ok" / "src" / "main.mv"
 
@@ -119,6 +120,7 @@ def test_sysv_varargs_accounting() -> None:
     assert abi.varargs_gp_reg_count == 1
 
 
+@pytest.mark.needs_clang
 def test_native_machine_code_artifacts(tmp_path: Path) -> None:
     if detect_toolchain() is None:
         pytest.skip("native toolchain not available")

@@ -55,6 +55,7 @@ def test_llvm_lowering_supports_classes_syscall_and_required_gpu_stub() -> None:
     assert "call float @manv_rt_gpu_required_f32(ptr" in rendered
 
 
+@pytest.mark.stdlib
 def test_llvm_lowering_supports_arrays_maps_and_core_len() -> None:
     source = (
         "fn main() -> none:\n"

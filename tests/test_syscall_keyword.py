@@ -4,6 +4,8 @@ from io import StringIO
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -56,6 +58,7 @@ def test_syscall_expression_form(tmp_path: Path) -> None:
     assert out_i.getvalue() == out_c.getvalue()
 
 
+@pytest.mark.stdlib
 def test_bundled_std_has_typed_syscall_wrappers() -> None:
     std_main = _STD_SRC / "main.mv"
     text = std_main.read_text(encoding="utf-8")

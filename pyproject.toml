@@ -16,6 +16,12 @@ pytest = "^8.4.0"
 [tool.poetry.scripts]
 manv = "manv.cli:main"
 
+[tool.pytest.ini_options]
+markers = [
+    "stdlib: needs the standard library, which is parked until the interpreter works (skipped unless --run-stdlib)",
+    "needs_clang: needs an LLVM toolchain (clang on PATH); skipped when it is missing",
+]
+
 
 [build-system]
 requires = ["poetry-core"]

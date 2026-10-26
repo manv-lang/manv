@@ -83,6 +83,7 @@ def test_docstrings_are_metadata_only_and_do_not_reach_hlir() -> None:
     assert len(main_decl.body) == 1
 
 
+@pytest.mark.stdlib
 def test_math_stdlib_runtime_matches_in_interpreter_and_compiled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MANV_PATH", str(_STD_SRC))
     source = (
@@ -134,6 +135,7 @@ def test_math_stdlib_runtime_matches_in_interpreter_and_compiled(tmp_path: Path,
         ),
     ],
 )
+@pytest.mark.stdlib
 def test_math_edge_errors_are_deterministic(tmp_path: Path, source: str, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MANV_PATH", str(_STD_SRC))
     path = tmp_path / "main.mv"

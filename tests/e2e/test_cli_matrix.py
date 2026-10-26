@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import re
 from pathlib import Path
 import shutil
@@ -10,7 +9,6 @@ import subprocess
 import sys
 import tarfile
 import tomllib
-from dataclasses import dataclass
 
 import pytest
 
@@ -18,40 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from cli_runner import invoke
 from manv.builder import host_target_name
-from manv.cli import main
 from manv.native_toolchain import detect_toolchain
 from manv.llvm_toolchain import detect_llvm_toolchain
-
-
-@dataclass
-class CliResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-    exception: BaseException | None = None
-
-
-def invoke(args: list[str], *, env: dict[str, str] | None = None, input: str | None = None) -> CliResult:
-    """Run the CLI in-process with captured stdio, a temporary environment and optional stdin."""
-    out, err = io.StringIO(), io.StringIO()
-    saved_io = (sys.stdout, sys.stderr, sys.stdin)
-    saved_env = {key: os.environ.get(key) for key in (env or {})}
-    exception: BaseException | None = None
-    sys.stdout, sys.stderr, sys.stdin = out, err, io.StringIO(input or "")
-    os.environ.update(env or {})
-    try:
-        exit_code = main(list(args))
-    except Exception as exc:  # an uncaught error is a failed run, like a crashed process
-        exit_code, exception = 1, exc
-    finally:
-        sys.stdout, sys.stderr, sys.stdin = saved_io
-        for key, value in saved_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-    return CliResult(exit_code, out.getvalue(), err.getvalue(), exception)
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -325,6 +293,7 @@ def test_compile_outputs_all_ir(tmp_path: Path) -> None:
     assert graph_payload["optimization"]["dead_nodes_removed"] >= 1
 
 
+@pytest.mark.needs_clang
 def test_compile_cuda_ptx_backend(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
     result = invoke(["compile", str(project / "src" / "main.mv"), "--backend", "cuda-ptx"])
@@ -467,6 +436,7 @@ def test_repl_command() -> None:
     assert "5" in result.stdout
 
 
+@pytest.mark.needs_clang
 def test_test_command_runs_fixture_suite() -> None:
     result = invoke(["test", str(FIXTURES)])
     assert result.exit_code == 0

@@ -75,18 +75,19 @@ def get_active_env() -> PackageEnv:
     return PackageEnv(kind="global", root=root, packages_dir=root / "packages")
 
 
-def installed_package_roots() -> list[Path]:
+def installed_package_roots(exclude: frozenset[str] = frozenset()) -> list[Path]:
     """Returns src/ directories for every installed package version.
 
     Expected layout:  <packages_dir>/<name>/<version>/src/
     Returns only directories that actually exist, sorted by name then version.
+    Packages named in `exclude` are skipped.
     """
     env = get_active_env()
     if not env.packages_dir.exists():
         return []
     roots: list[Path] = []
     for pkg_dir in sorted(env.packages_dir.iterdir()):
-        if not pkg_dir.is_dir():
+        if not pkg_dir.is_dir() or pkg_dir.name in exclude:
             continue
         for ver_dir in sorted(pkg_dir.iterdir()):
             src = ver_dir / "src"

@@ -1714,10 +1714,13 @@ class Interpreter:
                 if candidate.exists() and candidate.is_dir():
                     roots.append(candidate)
 
-        # Global package cache — installed ManV packages.
+        # Global package cache — installed ManV packages (dependencies from `manv add`).
+        # The standard library is parked (see TODO.md): the installed `std` package is
+        # deliberately kept off the search path so a run never depends on what happens
+        # to be in this machine's cache.
         try:
             from . import packages as _pkg_mod
-            for _pkg_root in _pkg_mod.installed_package_roots():
+            for _pkg_root in _pkg_mod.installed_package_roots(exclude=frozenset({_pkg_mod.STDLIB_PACKAGE_NAME})):
                 roots.append(_pkg_root)
         except Exception:
             pass  # package cache unavailable; proceed without it
