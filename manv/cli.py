@@ -37,34 +37,12 @@ from .runner import run_target
 from .testing import run_e2e_suite
 
 
-# Commands that don't need stdlib (meta-operations)
-_STDLIB_EXEMPT_COMMANDS = frozenset({"setup", "auth", "version", "add", "install"})
-
-
 class _Exit(Exception):
     """Stops the running command with an exit code (raised from helpers like `_fail`)."""
 
     def __init__(self, code: int = 0):
         super().__init__(code)
         self.code = code
-
-
-def _check_stdlib(command: str | None) -> None:
-    """Warn once per invocation if the ManV stdlib is not installed."""
-    if command in _STDLIB_EXEMPT_COMMANDS:
-        return
-    try:
-        from .packages import is_stdlib_installed, STDLIB_GIT_URL, STDLIB_PACKAGE_NAME
-        if not is_stdlib_installed():
-            _echo(
-                f"warning: stdlib not installed. Run:\n"
-                f"  manv setup\n"
-                f"or manually:\n"
-                f"  manv add {STDLIB_GIT_URL} --branch main",
-                err=True,
-            )
-    except Exception:
-        pass
 
 
 def _echo(text: object = "", *, err: bool = False, nl: bool = True) -> None:
@@ -796,7 +774,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
 
     params = {k: v for k, v in vars(ns).items() if k not in {"command", "auth_command", "func"}}
-    _check_stdlib(ns.command)
     try:
         return ns.func(**params) or 0
     except _Exit as exc:
