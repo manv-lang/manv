@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from pathlib import Path
 import shutil
@@ -9,23 +10,48 @@ import subprocess
 import sys
 import tarfile
 import tomllib
-
-from typer.testing import CliRunner
+from dataclasses import dataclass
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from manv.builder import host_target_name
-from manv.cli import app
+from manv.cli import main
 from manv.native_toolchain import detect_toolchain
 from manv.llvm_toolchain import detect_llvm_toolchain
 
 
-try:
-    runner = CliRunner(mix_stderr=False)
-except TypeError:
-    runner = CliRunner()
+@dataclass
+class CliResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    exception: BaseException | None = None
+
+
+def invoke(args: list[str], *, env: dict[str, str] | None = None, input: str | None = None) -> CliResult:
+    """Run the CLI in-process with captured stdio, a temporary environment and optional stdin."""
+    out, err = io.StringIO(), io.StringIO()
+    saved_io = (sys.stdout, sys.stderr, sys.stdin)
+    saved_env = {key: os.environ.get(key) for key in (env or {})}
+    exception: BaseException | None = None
+    sys.stdout, sys.stderr, sys.stdin = out, err, io.StringIO(input or "")
+    os.environ.update(env or {})
+    try:
+        exit_code = main(list(args))
+    except Exception as exc:  # an uncaught error is a failed run, like a crashed process
+        exit_code, exception = 1, exc
+    finally:
+        sys.stdout, sys.stderr, sys.stdin = saved_io
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return CliResult(exit_code, out.getvalue(), err.getvalue(), exception)
+
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -40,7 +66,7 @@ def _copy_fixture(tmp_path: Path, name: str) -> Path:
 
 def test_init_command(tmp_path: Path) -> None:
     target = tmp_path / "demo"
-    result = runner.invoke(app, ["init", str(target)])
+    result = invoke(["init", str(target)])
     assert result.exit_code == 0
     assert "[Init]" in result.stdout
     assert "status: initialized" in result.stdout
@@ -49,16 +75,14 @@ def test_init_command(tmp_path: Path) -> None:
     assert (target / "src" / "main.mv").exists()
     assert ".manv/" in (target / ".gitignore").read_text(encoding="utf-8")
 
-    suite = runner.invoke(app, ["test", str(target)])
+    suite = invoke(["test", str(target)])
     assert suite.exit_code == 0
     assert "summary: passed=1 failed=0" in suite.stdout
 
 
 def test_init_command_with_metadata_flags(tmp_path: Path) -> None:
     target = tmp_path / "demo_meta"
-    result = runner.invoke(
-        app,
-        [
+    result = invoke([
             "init",
             str(target),
             "--name",
@@ -84,25 +108,23 @@ def test_auth_login_status_logout(tmp_path: Path) -> None:
     auth_file = tmp_path / "manv_auth.json"
     env = {"MANV_AUTH_FILE": str(auth_file)}
 
-    login = runner.invoke(
-        app,
-        ["auth", "login", "--registry", "https://registry.example.com", "--token", "tok_live_test_1234"],
+    login = invoke(["auth", "login", "--registry", "https://registry.example.com", "--token", "tok_live_test_1234"],
         env=env,
     )
     assert login.exit_code == 0
     assert "logged_in" in login.stdout
     assert auth_file.exists()
 
-    status = runner.invoke(app, ["auth", "status"], env=env)
+    status = invoke(["auth", "status"], env=env)
     assert status.exit_code == 0
     assert "https://registry.example.com" in status.stdout
     assert "1234" in status.stdout
 
-    logout = runner.invoke(app, ["auth", "logout"], env=env)
+    logout = invoke(["auth", "logout"], env=env)
     assert logout.exit_code == 0
     assert "logged_out" in logout.stdout
 
-    status_after = runner.invoke(app, ["auth", "status"], env=env)
+    status_after = invoke(["auth", "status"], env=env)
     assert status_after.exit_code == 0
     assert "logged_out" in status_after.stdout
 
@@ -125,16 +147,14 @@ def test_add_registry_dependency(tmp_path: Path) -> None:
     manv_home = tmp_path / "manv_home"
     env = {"MANV_AUTH_FILE": str(auth_file), "MANV_HOME": str(manv_home)}
 
-    login = runner.invoke(
-        app,
-        ["auth", "login", "--registry", "https://registry.example.com", "--token", "tok_live_test_1234"],
+    login = invoke(["auth", "login", "--registry", "https://registry.example.com", "--token", "tok_live_test_1234"],
         env=env,
     )
     assert login.exit_code == 0
 
     fake_archive = _make_fake_tarball("tensorx.mv", b'fn hello() -> str:\n    return "hello"\n')
     with patch("manv.registry.download_package_archive", return_value=fake_archive):
-        result = runner.invoke(app, ["add", "tensorx@1.2.3", str(project)], env=env)
+        result = invoke(["add", "tensorx@1.2.3", str(project)], env=env)
 
     assert result.exit_code == 0
     assert "source: registry" in result.stdout
@@ -167,9 +187,7 @@ def test_add_git_dependency(tmp_path: Path) -> None:
             pass
 
     with patch("manv.packages.urllib.request.urlopen", return_value=_FakeResp()):
-        result = runner.invoke(
-            app,
-            ["add", "https://github.com/manv-lang/math.git", str(project), "--branch", "main"],
+        result = invoke(["add", "https://github.com/manv-lang/math.git", str(project), "--branch", "main"],
             env=env,
         )
 
@@ -206,7 +224,7 @@ def test_install_command(tmp_path: Path) -> None:
 
     fake_archive = _make_fake_tarball("math.mv", b"fn pi() -> float:\n    return 3.14159\n")
     with patch("manv.registry.download_package_archive", return_value=fake_archive):
-        result = runner.invoke(app, ["install", str(project)], env=env)
+        result = invoke(["install", str(project)], env=env)
 
     assert result.exit_code == 0
     assert "math" in result.stdout
@@ -230,7 +248,7 @@ def test_setup_installs_stdlib(tmp_path: Path) -> None:
             pass
 
     with patch("manv.packages.urllib.request.urlopen", return_value=_FakeResp()):
-        result = runner.invoke(app, ["setup"], env=env)
+        result = invoke(["setup"], env=env)
 
     assert result.exit_code == 0
     assert "installed" in result.stdout
@@ -241,14 +259,14 @@ def test_setup_installs_stdlib(tmp_path: Path) -> None:
 
 def test_run_command(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "run_hello")
-    result = runner.invoke(app, ["run", str(project)])
+    result = invoke(["run", str(project)])
     assert result.exit_code == 0
     assert "Hello, World!" in result.stdout
 
 
 def test_run_core_language_features(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "run_core_features")
-    result = runner.invoke(app, ["run", str(project)])
+    result = invoke(["run", str(project)])
     assert result.exit_code == 0
     for expected in ["15", "10", "8", "9", "True"]:
         assert expected in result.stdout
@@ -256,7 +274,7 @@ def test_run_core_language_features(tmp_path: Path) -> None:
 
 def test_run_backend_report(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "run_hello")
-    result = runner.invoke(app, ["run", str(project), "--report", "backend"])
+    result = invoke(["run", str(project), "--report", "backend"])
     assert result.exit_code == 0
     assert "[Report:backend]" in result.stdout
     assert '"selected_backend"' in result.stdout
@@ -266,7 +284,7 @@ def test_run_backend_report(tmp_path: Path) -> None:
 
 def test_compile_outputs_all_ir(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv"), "--emit", "ast,hir,graph,kernel"])
+    result = invoke(["compile", str(project / "src" / "main.mv"), "--emit", "ast,hir,graph,kernel"])
     assert result.exit_code == 0
     assert "[Compile]" in result.stdout
     for name in ["main.ast.json", "main.hir.json", "main.graph.json", "main.kernel.json"]:
@@ -279,7 +297,7 @@ def test_compile_outputs_all_ir(tmp_path: Path) -> None:
 
 def test_compile_cuda_ptx_backend(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv"), "--backend", "cuda-ptx"])
+    result = invoke(["compile", str(project / "src" / "main.mv"), "--backend", "cuda-ptx"])
     assert result.exit_code == 0
     ptx = project / "src" / ".manv" / "target" / "main.cuda.ptx"
     assert ptx.exists()
@@ -290,7 +308,7 @@ def test_compile_cuda_ptx_backend(tmp_path: Path) -> None:
 
 def test_compile_default_emit_is_native_exe(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
+    result = invoke(["compile", str(project / "src" / "main.mv")])
     # Must succeed (or fail only due to missing LLVM toolchain, not emit config).
     if result.exit_code != 0:
         assert "no LLVM toolchain found" in result.stderr
@@ -304,28 +322,28 @@ def test_compile_default_emit_is_native_exe(tmp_path: Path) -> None:
 
 def test_compile_parse_failure(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_parse_error")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
+    result = invoke(["compile", str(project / "src" / "main.mv")])
     assert result.exit_code == 1
     assert "expected ':'" in result.stderr
 
 
 def test_compile_semantic_failure(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_semantic_error")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
+    result = invoke(["compile", str(project / "src" / "main.mv")])
     assert result.exit_code == 1
     assert "undefined variable 'y'" in result.stderr
 
 
 def test_compile_break_outside_loop_failure(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_break_outside")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv")])
+    result = invoke(["compile", str(project / "src" / "main.mv")])
     assert result.exit_code == 1
     assert "'break' is only valid inside loops" in result.stderr
 
 
 def test_build_command_and_bundle_run(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "build_ok")
-    build = runner.invoke(app, ["build", str(project)])
+    build = invoke(["build", str(project)])
     if detect_llvm_toolchain() is None:
         assert build.exit_code == 1
         assert "no LLVM toolchain found (clang)" in build.stderr
@@ -343,7 +361,7 @@ def test_build_command_and_bundle_run(tmp_path: Path) -> None:
 
 def test_build_host_interp_keeps_mvz(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "build_ok")
-    build = runner.invoke(app, ["build", str(project), "--host", "interp"])
+    build = invoke(["build", str(project), "--host", "interp"])
     assert build.exit_code == 0
     run_file = project / "build" / host_target_name() / "build_ok.mvz"
     assert run_file.exists()
@@ -356,12 +374,12 @@ def test_build_incremental_skips_rebuild(tmp_path: Path) -> None:
         pytest.skip("no LLVM toolchain")
 
     # First build
-    r1 = runner.invoke(app, ["build", str(project)])
+    r1 = invoke(["build", str(project)])
     assert r1.exit_code == 0
     assert "status: built" in r1.stdout
 
     # Second build — nothing changed
-    r2 = runner.invoke(app, ["build", str(project)])
+    r2 = invoke(["build", str(project)])
     assert r2.exit_code == 0
     assert "up to date" in r2.stdout
 
@@ -370,14 +388,14 @@ def test_build_incremental_skips_rebuild(tmp_path: Path) -> None:
     entry.write_text(entry.read_text() + "\n# touched\n")
 
     # Third build — should rebuild
-    r3 = runner.invoke(app, ["build", str(project)])
+    r3 = invoke(["build", str(project)])
     assert r3.exit_code == 0
     assert "status: built" in r3.stdout
 
 
 def test_compile_host_report_and_native_fallback(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project / "src" / "main.mv"), "--report", "backend"])
+    result = invoke(["compile", str(project / "src" / "main.mv"), "--report", "backend"])
     assert '"resolved_host_backend"' in result.stdout
     if detect_llvm_toolchain() is None:
         assert result.exit_code == 1
@@ -399,7 +417,7 @@ def test_compile_accepts_directory_with_root_main_file(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = runner.invoke(app, ["compile", str(root), "--emit", "ast"])
+    result = invoke(["compile", str(root), "--emit", "ast"])
     assert result.exit_code == 0
     assert "[Compile]" in result.stdout
     assert (root / ".manv" / "target" / "main.ast.json").exists()
@@ -407,27 +425,27 @@ def test_compile_accepts_directory_with_root_main_file(tmp_path: Path) -> None:
 
 def test_compile_rejects_project_root_and_points_to_build(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "compile_ok")
-    result = runner.invoke(app, ["compile", str(project)])
+    result = invoke(["compile", str(project)])
     assert result.exit_code == 1
     assert "use 'manv build' for projects or pass src/main.mv explicitly" in result.stderr
 
 
 def test_repl_command() -> None:
     script = "let x = 2\nx + 3\n:q\n"
-    result = runner.invoke(app, ["repl"], input=script)
+    result = invoke(["repl"], input=script)
     assert result.exit_code == 0
     assert "5" in result.stdout
 
 
 def test_test_command_runs_fixture_suite() -> None:
-    result = runner.invoke(app, ["test", str(FIXTURES)])
+    result = invoke(["test", str(FIXTURES)])
     assert result.exit_code == 0
     assert "[Test]" in result.stdout
     assert "summary: passed=" in result.stdout
 
 def test_repl_does_not_reexecute_previous_input() -> None:
     script = "let x = 1\nx + 1\nx + 2\n:q\n"
-    result = runner.invoke(app, ["repl"], input=script)
+    result = invoke(["repl"], input=script)
     assert result.exit_code == 0
 
     values: list[str] = []
