@@ -1,0 +1,9 @@
+fn main() -> int:
+    array xs = []
+    for i in 0..@N@:
+        xs = array_append(xs, i * 2)
+    int total = 0
+    for v in xs:
+        total = total + v
+    print(total)
+    return 0

@@ -1,0 +1,8 @@
+fn main() -> int:
+    int i = 0
+    int total = 0
+    while i < @N@:
+        total = total + i
+        i = i + 1
+    print(total)
+    return 0

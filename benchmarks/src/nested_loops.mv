@@ -1,0 +1,7 @@
+fn main() -> int:
+    int total = 0
+    for i in 0..@N@:
+        for j in 0..@N@:
+            total = total + (i * j) % 7
+    print(total)
+    return 0

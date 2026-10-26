@@ -1,0 +1,9 @@
+fn main() -> int:
+    int caught = 0
+    for i in 0..@N@:
+        try:
+            raise ValueError("x")
+        except ValueError:
+            caught = caught + 1
+    print(caught)
+    return 0

@@ -1,0 +1,9 @@
+fn main() -> int:
+    map m = {}
+    for i in 0..@N@:
+        m[str(i)] = i
+    int total = 0
+    for i in 0..@N@:
+        total = total + m[str(i)]
+    print(total)
+    return 0

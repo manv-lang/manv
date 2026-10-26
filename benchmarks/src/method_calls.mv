@@ -1,0 +1,15 @@
+type Counter:
+    fn __init__(self):
+        self.total = 0
+
+    fn add(self, v: int):
+        self.total = self.total + v
+
+fn run(c, n: int) -> int:
+    for i in 0..n:
+        c.add(i)
+    return c.total
+
+fn main() -> int:
+    print(run(Counter(), @N@))
+    return 0

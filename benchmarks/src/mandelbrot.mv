@@ -1,0 +1,23 @@
+fn mandel(cr: float, ci: float, limit: int) -> int:
+    float zr = 0.0
+    float zi = 0.0
+    int i = 0
+    while i < limit:
+        float zr2 = zr * zr
+        float zi2 = zi * zi
+        if zr2 + zi2 > 4.0:
+            return i
+        zi = 2.0 * zr * zi + ci
+        zr = zr2 - zi2 + cr
+        i = i + 1
+    return limit
+
+fn main() -> int:
+    int total = 0
+    for y in 0..@N@:
+        for x in 0..@N@:
+            float cr = 3.0 * float(x) / float(@N@) - 2.0
+            float ci = 2.0 * float(y) / float(@N@) - 1.0
+            total = total + mandel(cr, ci, @M@)
+    print(total)
+    return 0

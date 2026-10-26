@@ -1,0 +1,13 @@
+fn make_adder(n: int):
+    return fn(x: int) -> int:
+        return x + n
+
+fn run(f, n: int) -> int:
+    int acc = 0
+    for i in 0..n:
+        acc = f(acc)
+    return acc
+
+fn main() -> int:
+    print(run(make_adder(3), @N@))
+    return 0

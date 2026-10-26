@@ -1,0 +1,6 @@
+fn main() -> int:
+    str s = ""
+    for i in 0..@N@:
+        s = s + "x"
+    print(len(s))
+    return 0
