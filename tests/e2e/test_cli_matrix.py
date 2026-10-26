@@ -12,6 +12,8 @@ import tarfile
 import tomllib
 from dataclasses import dataclass
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -102,6 +104,34 @@ def test_init_command_with_metadata_flags(tmp_path: Path) -> None:
     # verify module declaration was written to main.mv (hyphens normalized to underscores)
     main_src = (target / "src" / "main.mv").read_text(encoding="utf-8")
     assert main_src.startswith("module demo_pkg")
+
+
+@pytest.mark.parametrize(
+    ("project_name", "module_name"),
+    [
+        ("demo-pkg", "demo_pkg"),
+        ("My Proj", "My_Proj"),
+        ("my.cool project", "my_cool_project"),
+        ("1app", "_1app"),
+        ("type", "type_"),
+        ("h\u00e9llo w\u00f6rld", "h_llo_w_rld"),
+        ("---", "app"),
+    ],
+)
+def test_init_command_generates_a_valid_module_name(tmp_path: Path, project_name: str, module_name: str) -> None:
+    target = tmp_path / "proj"
+    created = invoke(["init", str(target), f"--name={project_name}"])
+    assert created.exit_code == 0, created.stderr
+
+    main_src = (target / "src" / "main.mv").read_text(encoding="utf-8")
+    assert main_src.startswith(f"module {module_name}\n")
+    # The project name itself is kept verbatim in project.toml.
+    assert tomllib.loads((target / "project.toml").read_text(encoding="utf-8"))["project"]["name"] == project_name
+
+    # The scaffold must actually parse and run, whatever the name was.
+    ran = invoke(["run", str(target)])
+    assert ran.exit_code == 0, ran.stderr
+    assert "Hello, World!" in ran.stdout
 
 
 def test_auth_login_status_logout(tmp_path: Path) -> None:

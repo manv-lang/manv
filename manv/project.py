@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import tomllib
 
 from .diagnostics import ManvError, diag
+from .tokens import KEYWORDS
 
 
 DEFAULT_ENTRY = "src/main.mv"
@@ -240,6 +242,23 @@ def init_project(
     return discover_target(root)
 
 
+def _module_identifier(name: str) -> str:
+    """Turn a project name into a valid ManV module identifier.
+
+    Any run of characters that is not an ASCII letter, digit or underscore becomes
+    a single `_`. A leading digit gets a `_` prefix, and a reserved word (`type`,
+    `int`, ...) gets a `_` suffix, so the generated `module <name>` line always parses.
+    """
+    ident = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip()
+    if not ident.strip("_"):
+        return "app"
+    if ident[0].isdigit():
+        ident = "_" + ident
+    if ident in KEYWORDS:
+        ident += "_"
+    return ident
+
+
 def _write_if_missing(path: Path, content: str) -> None:
     if not path.exists():
         path.write_text(content, encoding="utf-8")
@@ -312,8 +331,7 @@ def _init_default_project(
         ),
     )
 
-    # ManV identifiers cannot contain hyphens or dots; normalize for the module decl.
-    module_ident = project_name.replace("-", "_").replace(".", "_")
+    module_ident = _module_identifier(project_name)
 
     _write_if_missing(
         src_dir / "main.mv",
