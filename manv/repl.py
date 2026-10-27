@@ -56,6 +56,9 @@ class ReplSession:
                 continue
             if isinstance(stmt, ast.AssignStmt) and not self._is_bound(stmt.name):
                 stmt.declares = True  # first assignment to a new name declares it
+            if isinstance(stmt, ast.DestructureStmt):
+                for target in stmt.targets:
+                    target.declares = not self._is_bound(target.name)
             value = self.interpreter.execute_stmt(stmt, self.interpreter.global_env)
             if isinstance(stmt, ast.LetStmt) and stmt.is_const:
                 self.consts.add(stmt.name)

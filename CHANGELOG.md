@@ -5,6 +5,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- Tuples `(a, b)` and unpacking (`a, b = f()`, `for k, v in ...`, `return a, b`).
 - The `in` / `not in` operators, open-ended slices (`a[1..]`, `a[..2]`), and the builtins `ord` and `chr`.
 - `elif`, and the conditional expression `a if cond else b` (the missing `else` is `E1017`).
 - `syntax.md`: the language's philosophy and syntax, with every construct marked as working, parsed-but-unsupported, or planned.
@@ -16,6 +17,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - A GitHub Actions workflow that runs the tests on Linux, macOS and Windows (not yet run).
 
 ### Changed
+- `m.items()` and `enumerate()` return tuples instead of two-element arrays.
 - Strings: indexing (`s[i]`, `s[-1]`), slicing (`s[a..b]`, also on arrays), iteration over characters, and methods (`upper`, `lower`, `strip`, `split`, `join`, `replace`, `find`, `startswith`, `endswith`, `contains`, ...).
 - Arrays gained `append`, `pop`, `insert`, `extend`, `remove`, `index`, `contains`, `count`, `reverse`, `sort`, `copy` and `clear`; maps gained `keys`, `values`, `items`, `get`, `has`, `remove`, `copy` and `clear`, and `for k in m` iterates keys in insertion order. Arrays and maps are reference values; `copy()` makes an independent one.
 - **Declarations:** `let` is removed (using it is `E1015`). A typed declaration `T name = v` now works for every type, including `i64`, `ptr`, user-defined types and `f32[]`. `name = v` declares the variable when the name is not bound yet (scope is by block). `const [T] NAME = v` declares a constant: assigning it is `E2064`, changing it through its name (`C[i] = v`, `C.f = v`) is `E2065`, and a missing value is `E1016`. Type bodies declare fields as `int x = 0`.

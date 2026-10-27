@@ -1,0 +1,4 @@
+fn main() -> int:
+    t = (1, 2)
+    t[0] = 9
+    return 0

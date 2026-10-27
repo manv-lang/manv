@@ -1,0 +1,17 @@
+fn main() -> int:
+    m = {"a": 1, "b": 2}
+    for k, v in m.items():
+        print(k, v)
+    for i, c in enumerate(["x", "y"]):
+        print(i, c)
+    for a, b in [(1, "p"), (2, "q")]:
+        print(a, b)
+    k = "outer"
+    for k, v in [(1, 2)]:
+        print(k, v)
+    print(k)
+    total = 0
+    for p, q in [[1, 2], [3, 4]]:
+        total += p * q
+    print(total)
+    return 0

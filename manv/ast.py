@@ -457,6 +457,26 @@ class ArrayExpr:
 
 
 @dataclass
+class TupleExpr:
+    """`(a, b)`, `(a,)` or `()`: a fixed-size, immutable sequence."""
+
+    elements: list[Any]
+    span: Span
+
+
+@dataclass
+class DestructureStmt:
+    """`a, b = value`: unpack an array or tuple into names. Each target is an `AssignStmt`
+    without a value; semantic analysis sets its `declares`. `always_declare` is used by
+    `for a, b in ...`, where the names belong to the loop body and never assign outer variables."""
+
+    targets: list[Any]
+    value: Any
+    span: Span
+    always_declare: bool = False
+
+
+@dataclass
 class MapExpr:
     entries: list[tuple[Any, Any]]
     span: Span

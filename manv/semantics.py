@@ -17,7 +17,7 @@ from .intrinsics import (
 
 BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
 BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id", "help"})
-PRIMITIVE_TYPES = {"int", "i32", "float", "f32", "bool", "str", "u8", "usize", "array", "map", "none", "range"}
+PRIMITIVE_TYPES = {"int", "i32", "float", "f32", "bool", "str", "u8", "usize", "array", "map", "tuple", "none", "range"}
 BUILTIN_TYPES = {
     "object",
     "type",
@@ -594,6 +594,20 @@ class SemanticAnalyzer:
                 self._add_error("E2004", f"type mismatch in assignment to '{stmt.name}': expected {current}, got {value_type}", stmt.span.line, stmt.span.column)
             return
 
+        if isinstance(stmt, ast.DestructureStmt):
+            self._analyze_expr(stmt.value, scope, as_callee=False)
+            seen: set[str] = set()
+            for target in stmt.targets:
+                if target.name in seen:
+                    self._add_error("E2007", f"'{target.name}' appears twice in the same unpacking", target.span.line, target.span.column)
+                seen.add(target.name)
+                if stmt.always_declare or not scope.contains(target.name):
+                    target.declares = True
+                    scope.define(target.name, None)
+                elif scope.is_const(target.name):
+                    self._add_error("E2064", f"cannot assign to constant '{target.name}'", target.span.line, target.span.column)
+            return
+
         if isinstance(stmt, ast.SetAttrStmt):
             self._check_not_const_target(stmt.target, scope, stmt)
             self._analyze_expr(stmt.target, scope, as_callee=False)
@@ -914,6 +928,11 @@ class SemanticAnalyzer:
             for e in expr.elements:
                 self._analyze_expr(e, scope, as_callee=False)
             return "array"
+
+        if isinstance(expr, ast.TupleExpr):
+            for e in expr.elements:
+                self._analyze_expr(e, scope, as_callee=False)
+            return "tuple"
 
         if isinstance(expr, ast.SyscallExpr):
             target_type = self._analyze_expr(expr.target, scope, as_callee=False)

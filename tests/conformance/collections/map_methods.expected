@@ -6,6 +6,6 @@ none
 true
 false
 1
-[[1, 10], [2, 20]]
+[(1, 10), (2, 20)]
 caught KeyError
 0

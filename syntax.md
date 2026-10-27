@@ -121,7 +121,7 @@ Notes:
 | String | `"hi"`, `'hi'` | ✅ single-line only (see escapes below) |
 | Array | `[1, 2, 3]` | ✅ may span lines |
 | Map | `{"a": 1, "b": 2}` | ✅ may span lines |
-| Tuple | `(1, 2)` | 🧭 |
+| Tuple | `(1, 2)`, `(1,)`, `()` | ✅ see §4.7 |
 | f-string / interpolation | `f"x={x}"` | 🧭 |
 
 **Strings.** Either quote character works. Escape sequences are interpreted (✅): `\n` `\t` `\r` `\0` `\\` `\"` `\'`, `\xNN` (two hex digits) and `\uNNNN` (four hex digits). Any other escape, or a malformed `\x`/`\u`, is `E0006`. A string cannot contain a raw line break; use `\n`.
@@ -135,7 +135,6 @@ Notes:
 == != <  <= >  >=             comparison
 in   not in                   membership (§4.6): substring, array element, map key
 and or not   &&  ||  !        logic (word forms and symbol forms are interchangeable)
-                              precedence, loosest first: if/else, .., or, and, not, comparison/in/==, + -, * / %, unary -
 =                             assignment
 += -= *= /= %=                augmented assignment (§5.2)
 ..                            range
@@ -191,15 +190,17 @@ Typing is gradual. Annotations are optional on parameters, returns and inferred 
 
 | Level | Operators | Associativity |
 |-------|-----------|---------------|
-| 1 | `a .. b` (range) | non-associative |
-| 2 | `or`, `\|\|` | left |
-| 3 | `and`, `&&` | left |
-| 4 | `==`, `!=` | left |
-| 5 | `<`, `<=`, `>`, `>=` | left |
-| 6 | `+`, `-` | left |
-| 7 | `*`, `/`, `%` | left |
-| 8 | unary `-`, `!`, `not` | right |
-| 9 | call `f(x)`, index `a[i]`, member `a.b` | left |
+| 1 | `a if c else b` | right |
+| 2 | `a .. b` (range) | non-associative |
+| 3 | `or`, `\|\|` | left |
+| 4 | `and`, `&&` | left |
+| 5 | `not` | right |
+| 6 | `==`, `!=` | left |
+| 7 | `<`, `<=`, `>`, `>=`, `in`, `not in` | left |
+| 8 | `+`, `-` | left |
+| 9 | `*`, `/`, `%` | left |
+| 10 | unary `-`, `!` | right |
+| 11 | call `f(x)`, index `a[i]`, member `a.b` | left |
 
 Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a chained comparison.
 
@@ -274,13 +275,48 @@ Methods are called with a dot, like methods of your own types. A mutating method
 |------|---------|
 | string | `upper()` `lower()` `strip()` `lstrip()` `rstrip()` `split([sep])` `join(items)` `replace(old, new)` `find(sub)` (index, or -1) `startswith(p)` `endswith(p)` `contains(sub)` |
 | array | `append(x)` `pop([i])` `insert(i, x)` `extend(items)` `remove(x)` `index(x)` `contains(x)` `count(x)` `reverse()` `sort()` `copy()` `clear()` |
-| map | `keys()` `values()` `items()` (an array of `[key, value]` pairs) `get(key[, default])` `has(key)` `remove(key)` `copy()` `clear()` |
+| map | `keys()` `values()` `items()` (an array of `(key, value)` tuples) `get(key[, default])` `has(key)` `remove(key)` `copy()` `clear()` |
 
 `remove` and `index` on a missing value are `ValueError`; `pop` on an empty array and an out-of-range `pop(i)` are `IndexError`; `remove` of a missing map key is `KeyError`. A map entry whose key is a method name (`{"keys": 1}`) is reached with `m["keys"]`, since `m.keys` is the method.
 
 `x in s` is substring search when `s` is a string (the left side must be a string too), element search (with `==`) for an array, and key lookup for a map. `x not in s` is `not (x in s)`. `ord("A")` is 65 and `chr(65)` is `"A"` (code points; a non-single-character string or a non-code-point int is an error).
 
 Not there yet 🧭: string formatting, sorting with a key function, and the same methods in compiled mode (the HLIR and native paths know none of them).
+
+### 4.7 Tuples and unpacking ✅
+
+A tuple is a fixed-size, immutable sequence of values of any type. Write it with parentheses; a one-element tuple needs a trailing comma, and `()` is the empty tuple.
+
+```manv
+t = (1, "one", 2.5)
+t[0]                  # 1          indexing, negative indexes, slices (t[1..]) work like arrays
+len(t)                # 3
+(1, 2) == (1, 2)      # true       compared element by element; a tuple never equals an array
+(1, 2) < (1, 3)       # true       ordered lexicographically
+(1, 2) + (3,)         # (1, 2, 3)
+2 in t                # membership
+t[0] = 9              # error E2012 (tuples cannot be changed)
+```
+
+A tuple of hashable values can be a map key (`grid[(x, y)] = cell`). Printing writes `(1, 'one')`, and `(7,)` for one element.
+
+**Unpacking** binds several names at once, from a tuple or an array. The right side is fully evaluated first, so a swap works:
+
+```manv
+a, b = 1, 2
+a, b = b, a                  # a is 2, b is 1
+q, r = divmod_like(7, 2)     # from a function that does `return x, y`
+for k, v in m.items():       # also: for i, x in enumerate(xs)
+    print(k, v)
+```
+
+- `return a, b` returns a tuple; the parentheses are optional.
+- `a, b = value` declares each name that is not bound yet and assigns the others (like a single `name = value`). In `for k, v in ...` the names always belong to the loop body.
+- A size mismatch is a `ValueError` and a non-sequence on the right is a `TypeError`. The same name twice is `E2007`; a constant as a target is `E2064`.
+- `tuple` can be written as a return type (`-> tuple`). There is no type syntax for the element types yet 🧭.
+- `m.items()` and `enumerate` now give tuples (they gave two-element arrays before).
+
+Not there yet 🧭: unpacking into attributes or elements (`xs[i], xs[j] = xs[j], xs[i]`), nested targets (`(a, b), c = ...`), a `*rest` target, tuple patterns in `match`, and tuples in compiled mode.
 
 ---
 

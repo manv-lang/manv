@@ -308,9 +308,20 @@ class Parser:
         if self._is("IDENT") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "=":
             name_tok = self._advance()
             assign_tok = self._advance()
-            value = self._parse_expression()
+            value = self._parse_expression_or_tuple()
             self._consume_required_newline("expected newline after assignment")
             return ast.AssignStmt(name=name_tok.lexeme, value=value, span=self._span(assign_tok))
+
+        if self._is_destructure_start():
+            first = self._current()
+            targets = [ast.AssignStmt(name=self._advance().lexeme, value=None, span=self._span(first))]
+            while self._match_op(","):
+                tok = self._expect("IDENT", message="expected a name to unpack into")
+                targets.append(ast.AssignStmt(name=tok.lexeme, value=None, span=self._span(tok)))
+            assign_tok = self._expect_op("=")
+            value = self._parse_expression_or_tuple()
+            self._consume_required_newline("expected newline after assignment")
+            return ast.DestructureStmt(targets=targets, value=value, span=self._span(assign_tok))
 
         attr_assign = self._try_parse_attr_assignment()
         if attr_assign is not None:
@@ -341,6 +352,27 @@ class Parser:
         expr = self._parse_expression()
         self._consume_required_newline("expected newline after expression")
         return ast.ExprStmt(expr=expr, span=self._span_from_expr(expr))
+
+    def _is_destructure_start(self) -> bool:
+        """`a, b = ...`: names separated by commas, then `=`."""
+        i = 0
+        while self._peek(i).kind == "IDENT" and self._peek(i + 1).kind == "OP" and self._peek(i + 1).lexeme == ",":
+            i += 2
+        if i == 0:
+            return False
+        return self._peek(i).kind == "IDENT" and self._peek(i + 1).kind == "OP" and self._peek(i + 1).lexeme == "="
+
+    def _parse_expression_or_tuple(self) -> object:
+        """An expression, or `a, b, c` (a tuple without parentheses) where a statement allows it."""
+        first = self._parse_expression()
+        if not self._is_op(","):
+            return first
+        elements = [first]
+        while self._match_op(","):
+            if self._is("NEWLINE"):
+                break
+            elements.append(self._parse_expression())
+        return ast.TupleExpr(elements=elements, span=self._span_from_expr(first))
 
     def _parse_const_stmt(self) -> ast.LetStmt:
         """`const NAME = value` or `const T NAME = value`; the value is required."""
@@ -405,7 +437,7 @@ class Parser:
         tok = self._prev()
         if self._is("NEWLINE"):
             return ast.ReturnStmt(value=None, span=self._span(tok))
-        value = self._parse_expression()
+        value = self._parse_expression_or_tuple()
         return ast.ReturnStmt(value=value, span=self._span(tok))
 
     def _parse_raise_stmt(self) -> ast.RaiseStmt:
@@ -781,11 +813,26 @@ class Parser:
     def _parse_for_stmt(self) -> ast.ForStmt:
         for_tok = self._prev()
         name_tok = self._expect("IDENT", message="expected loop variable name")
+        unpack: list[Token] = []
+        if self._is_op(","):
+            unpack = [name_tok]
+            while self._match_op(","):
+                unpack.append(self._expect("IDENT", message="expected loop variable name"))
         if not self._match_keyword("in"):
             self._error("E1013", "expected 'in' after loop variable", self._current())
         iterable = self._parse_expression()
         self._expect_op(":")
         body = self._parse_block()
+        if unpack:
+            hidden = f"__for_{for_tok.line}_{for_tok.column}"
+            unpacking = ast.DestructureStmt(
+                targets=[ast.AssignStmt(name=t.lexeme, value=None, span=self._span(t)) for t in unpack],
+                value=ast.IdentifierExpr(name=hidden, span=self._span(name_tok)),
+                span=self._span(name_tok),
+                always_declare=True,
+            )
+            body = [unpacking, *body]
+            name_tok = Token(kind="IDENT", lexeme=hidden, line=name_tok.line, column=name_tok.column)
         else_body: list[object] = []
         if self._match_keyword("else"):
             self._expect_op(":")
@@ -1050,7 +1097,18 @@ class Parser:
         if self._match("IDENT"):
             return ast.IdentifierExpr(name=tok.lexeme, span=self._span(tok))
         if self._match_op("("):
+            if self._is_op(")"):
+                close = self._advance()
+                return ast.TupleExpr(elements=[], span=self._span(close))
             expr = self._parse_expression()
+            if self._is_op(","):
+                elements = [expr]
+                while self._match_op(","):
+                    if self._is_op(")"):
+                        break
+                    elements.append(self._parse_expression())
+                close = self._expect_op(")")
+                return ast.TupleExpr(elements=elements, span=self._span(close))
             self._expect_op(")")
             return expr
         if self._match_op("["):

@@ -1,0 +1,17 @@
+fn divmod2(a: int, b: int) -> tuple:
+    return a / b, a % b
+
+fn main() -> int:
+    a, b = 1, 2
+    print(a, b)
+    a, b = b, a
+    print(a, b)
+    q, r = divmod2(7, 2)
+    print(q, r)
+    x, y, z = [10, 20, 30]
+    print(x + y + z)
+    first, rest = "head", (1, 2)
+    print(first, rest)
+    a, b = 5, 6
+    print(a, b)
+    return 0

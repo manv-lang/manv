@@ -1,0 +1,10 @@
+fn main() -> int:
+    try:
+        a, b = (1, 2, 3)
+    except ValueError as e:
+        print("ValueError")
+    try:
+        a, b = 5
+    except TypeError as e:
+        print("TypeError")
+    return 0

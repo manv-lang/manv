@@ -157,7 +157,7 @@ class Interpreter:
         self.types["object"] = object_t
         self.types["type"] = type_t
 
-        for primitive in ("int", "float", "bool", "str", "array", "map", "none"):
+        for primitive in ("int", "float", "bool", "str", "array", "map", "tuple", "none"):
             self._define_type(primitive, "object")
 
         exc_base = self._define_type("BaseException", "object")
@@ -393,6 +393,24 @@ class Interpreter:
                 self._raise_runtime("RuntimeError", f"undefined variable '{stmt.name}'", stmt.span)
             return None
 
+        if isinstance(stmt, ast.DestructureStmt):
+            value = self.eval_expr(stmt.value, env)
+            if not isinstance(value, (list, tuple)):
+                self._raise_runtime("TypeError", "only an array or tuple can be unpacked", stmt.span)
+            if len(value) != len(stmt.targets):
+                self._raise_runtime(
+                    "ValueError", f"cannot unpack {len(value)} value(s) into {len(stmt.targets)} name(s)", stmt.span
+                )
+            for target, item in zip(stmt.targets, value):
+                if stmt.always_declare or target.declares:
+                    env.define(target.name, item)
+                    continue
+                try:
+                    env.assign(target.name, item)
+                except KeyError:
+                    self._raise_runtime("RuntimeError", f"undefined variable '{target.name}'", stmt.span)
+            return None
+
         if isinstance(stmt, ast.AugAssignStmt):
             try:
                 current = env.lookup(stmt.name)
@@ -576,6 +594,8 @@ class Interpreter:
                     iterable = list(iterable)
                 elif isinstance(iterable, dict):
                     iterable = list(iterable.keys())
+                if isinstance(iterable, tuple):
+                    iterable = list(iterable)
                 if isinstance(iterable, list):
                     items = list(iterable)
                     broke = False
@@ -863,7 +883,7 @@ class Interpreter:
                         result, found = self._try_dunder(right, "contains", [left])
                     if found:
                         return bool(result)
-                if isinstance(right, list):
+                if isinstance(right, (list, tuple)):
                     return any(self._equals(item, left, expr.span) for item in right)
                 if isinstance(right, dict):
                     self._assert_hashable(left, expr.span)
@@ -894,6 +914,9 @@ class Interpreter:
         if isinstance(expr, ast.ArrayExpr):
             return [self.eval_expr(e, env) for e in expr.elements]
 
+        if isinstance(expr, ast.TupleExpr):
+            return tuple(self.eval_expr(e, env) for e in expr.elements)
+
         if isinstance(expr, ast.MapExpr):
             out: dict[object, object] = {}
             for key, value in expr.entries:
@@ -912,7 +935,7 @@ class Interpreter:
             if isinstance(expr.index, ast.RangeExpr):
                 return self._slice(target, expr.index, env, expr.span)
             index = self.eval_expr(expr.index, env)
-            if isinstance(target, list):
+            if isinstance(target, (list, tuple)):
                 idx = self._normalize_list_index(target, index, expr.span)
                 return target[idx]
             if isinstance(target, str):
@@ -1308,8 +1331,8 @@ class Interpreter:
     def _slice(self, target: Any, rng: "ast.RangeExpr", env: Environment, span: Any) -> Any:
         """`xs[a..b]` / `s[a..b]`: a new array or string with the items from a up to (not including) b.
         Negative bounds count from the end, and bounds outside the sequence are clamped."""
-        if not isinstance(target, (list, str)):
-            self._raise_runtime("TypeError", "only arrays and strings can be sliced", span)
+        if not isinstance(target, (list, tuple, str)):
+            self._raise_runtime("TypeError", "only arrays, tuples and strings can be sliced", span)
         start = None if rng.start is None else self.eval_expr(rng.start, env)
         stop = None if rng.stop is None else self.eval_expr(rng.stop, env)
         for bound in (start, stop):
@@ -1539,6 +1562,8 @@ class Interpreter:
             return self.types["str"]
         if isinstance(value, list):
             return self.types["array"]
+        if isinstance(value, tuple):
+            return self.types["tuple"]
         if isinstance(value, dict):
             return self.types["map"]
         return self.types["object"]
@@ -1799,6 +1824,9 @@ class Interpreter:
             return self._stringify(value)
         if isinstance(value, list):
             return "[" + ", ".join(self._to_text(v, nested=True) for v in value) + "]"
+        if isinstance(value, tuple):
+            body = ", ".join(self._to_text(v, nested=True) for v in value)
+            return "(" + body + ("," if len(value) == 1 else "") + ")"
         if isinstance(value, dict):
             items = list(value.items())
             if self.stable_debug_format:

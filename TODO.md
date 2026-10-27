@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **331 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **338 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is still not a language you could write a real program in. Still missing: tuples, hex/exponent number literals, and `print` of an object with a `__repr__`. Details in the phases below.
+**Not yet true of the interpreter:** it is not yet a language you could write a real program in. Still missing: string formatting, default and keyword arguments, `with`, classes' inheritance details and the builtins in the stdlib's place. Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
@@ -125,7 +125,7 @@ The target: nothing that parses is rejected later with a generic `E2099`.
 - [ ] **Single-expression lambdas** (`fn(x): x * 2`), pending the decision.
 - [ ] **`with` statement** and a context-manager protocol (`__enter__` / `__exit__`), or remove `with` from the grammar.
 - [x] **Conditional expression** (`a if cond else b`), right-associative, lowest precedence, `else` required (`E1017`). Only the chosen branch runs, in the interpreter and in HLIR lowering (`conformance/control_flow/conditional_expression`, `tests/test_hlir_parity.py`). Native LLVM output has not been checked.
-- [ ] **Tuples** and destructuring: `a, b = f()`, `for k, v in ...`, multiple return values.
+- [x] **Tuples** `(a, b)`, `(a,)`, `()` and unpacking: `a, b = f()`, `a, b = b, a`, `return a, b`, `for k, v in m.items()`. Tuples index, slice, compare, iterate, are map keys, and are immutable (`conformance/tuples/`). `m.items()` and `enumerate` now return tuples. Open: element/attribute targets (`xs[i], xs[j] = ...`), nested and `*rest` targets, tuple patterns in `match`, compiled-mode support (the HLIR path reports the statement as unsupported).
 - [ ] **Slices** `a[1..3]`, `s[1..]`, plus string indexing and negative-index rules, for strings, arrays and ranges.
 - [ ] **Ranges as values**: stepped `0..10 step 2` (or `range(0, 10, 2)`), inclusive vs. exclusive, and ranges stored in variables.
 - [ ] **Default and keyword arguments** at call sites, variadics (`*args`), and argument-count errors with a clear message.
@@ -313,7 +313,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 110 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 117 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.

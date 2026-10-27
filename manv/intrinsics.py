@@ -358,6 +358,8 @@ def infer_runtime_type_name(value: Any) -> str:
         return "bytes"
     if isinstance(value, list):
         return "array"
+    if isinstance(value, tuple):
+        return "tuple"
     if isinstance(value, dict):
         return "map"
     return "object"
@@ -635,14 +637,14 @@ def _core_enumerate(args: list[Any], **_: Any) -> list[Any]:
     _ensure_arity("core_enumerate", args, min_n=1, max_n=2)
     _expect_type("core_enumerate", args[0], "array")
     start = int(args[1]) if len(args) > 1 else 0
-    return [[idx, value] for idx, value in enumerate(args[0], start=start)]
+    return [(idx, value) for idx, value in enumerate(args[0], start=start)]
 
 
 def _core_zip(args: list[Any], **_: Any) -> list[Any]:
     _ensure_arity("core_zip", args, min_n=1)
     for value in args:
         _expect_type("core_zip", value, "array")
-    return [list(row) for row in zip(*args)]
+    return [tuple(row) for row in zip(*args)]
 
 
 def _core_int(args: list[Any], **_: Any) -> int:
@@ -673,6 +675,8 @@ def format_value(value: Any, *, nested: bool = False) -> str:
         return repr(value) if nested else value
     if isinstance(value, list):
         return "[" + ", ".join(format_value(v, nested=True) for v in value) + "]"
+    if isinstance(value, tuple):
+        return "(" + ", ".join(format_value(v, nested=True) for v in value) + ("," if len(value) == 1 else "") + ")"
     if isinstance(value, dict):
         return "{" + ", ".join(f"{format_value(k, nested=True)}: {format_value(v, nested=True)}" for k, v in value.items()) + "}"
     return str(value)

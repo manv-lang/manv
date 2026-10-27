@@ -186,7 +186,7 @@ class BuiltinMethods:
 
     @staticmethod
     def _m_items(self: "BuiltinMethods", m: dict, args: tuple, span: Any) -> list:
-        return [[k, v] for k, v in m.items()]
+        return [(k, v) for k, v in m.items()]
 
     @staticmethod
     def _m_get(self: "BuiltinMethods", m: dict, args: tuple, span: Any) -> Any:
