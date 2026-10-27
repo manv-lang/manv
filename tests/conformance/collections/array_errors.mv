@@ -1,0 +1,20 @@
+fn main() -> int:
+    array xs = [1, 2]
+    try:
+        array empty = []
+        empty.pop()
+    except IndexError:
+        print("pop on empty")
+    try:
+        xs.remove(99)
+    except ValueError:
+        print("remove missing")
+    try:
+        xs.index(99)
+    except ValueError:
+        print("index missing")
+    try:
+        xs.append()
+    except TypeError:
+        print("wrong argument count")
+    return 0

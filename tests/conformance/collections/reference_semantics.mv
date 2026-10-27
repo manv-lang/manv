@@ -1,0 +1,19 @@
+fn grow(xs):
+    xs.append(0)
+
+fn main() -> int:
+    array a = [1, 2]
+    array alias = a
+    alias.append(3)
+    print(len(a))
+    grow(a)
+    print(len(a))
+    array c = a.copy()
+    c.append(9)
+    print(len(a))
+    print(len(c))
+    map m = {"k": 1}
+    map same = m
+    same["j"] = 2
+    print(len(m.keys()))
+    return 0

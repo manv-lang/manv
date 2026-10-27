@@ -1,0 +1,15 @@
+fn main() -> int:
+    print("hello"[0])
+    print("hello"[-1])
+    print("hello"[1..4])
+    print("hello"[3..100])
+    print("hello"[-3..5])
+    print(len("hello"[2..2]))
+    print(len("héllo"))
+    for ch in "abc":
+        print(ch)
+    try:
+        print("hello"[10])
+    except IndexError:
+        print("caught IndexError")
+    return 0

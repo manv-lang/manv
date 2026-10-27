@@ -1,0 +1,20 @@
+fn main() -> int:
+    map m = {"a": 1, "b": 2}
+    print(len(m.keys()))
+    print(m.values())
+    print(m.get("a"))
+    print(m.get("z"))
+    print(m.get("z", 7))
+    print(m.has("a"))
+    print(m.has("z"))
+    m.remove("a")
+    print(len(m.keys()))
+    map nums = {1: 10, 2: 20}
+    print(nums.items())
+    try:
+        m.remove("nope")
+    except KeyError:
+        print("caught KeyError")
+    m.clear()
+    print(len(m.keys()))
+    return 0

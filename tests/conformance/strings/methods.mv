@@ -1,0 +1,17 @@
+fn main() -> int:
+    str s = "  Hello World  "
+    print(s.strip())
+    print(s.strip().upper())
+    print(s.strip().lower())
+    print(s.lstrip() + "|")
+    print("|" + s.rstrip())
+    print(len("a,b,c".split(",")))
+    print(len("a b  c".split()))
+    print("-".join(["x", "y", "z"]))
+    print("banana".replace("an", "AN"))
+    print("hello".find("ll"))
+    print("hello".find("z"))
+    print("hello".startswith("he"))
+    print("hello".endswith("lo"))
+    print("hello".contains("ell"))
+    return 0

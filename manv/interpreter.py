@@ -51,6 +51,7 @@ from .intrinsics import (
 from .runtime import unsupported_feature
 from .semantics import SemanticAnalyzer
 from .semantics_core import eval_binary, eval_unary
+from .builtin_methods import BuiltinMethods
 
 
 class ReturnSignal(Exception):
@@ -144,6 +145,7 @@ class Interpreter:
         self.heap = Heap(deterministic_gc=deterministic_gc, gc_stress=gc_stress, max_objects=heap_max_objects)
         self.heap.register_root_provider(self._gc_roots)
         self._bootstrap_runtime_types()
+        self._builtin_methods = BuiltinMethods(self)
 
     def _bootstrap_runtime_types(self) -> None:
         object_t = self.heap.allocate("Type", TypeObject(name="object"))
@@ -570,6 +572,10 @@ class Interpreter:
                 return None
             else:
                 iterable = self.eval_expr(stmt.iterable, env)
+                if isinstance(iterable, str):
+                    iterable = list(iterable)
+                elif isinstance(iterable, dict):
+                    iterable = list(iterable.keys())
                 if isinstance(iterable, list):
                     items = list(iterable)
                     broke = False
@@ -893,9 +899,18 @@ class Interpreter:
 
         if isinstance(expr, ast.IndexExpr):
             target = self.eval_expr(expr.value, env)
+            if isinstance(expr.index, ast.RangeExpr):
+                return self._slice(target, expr.index, env, expr.span)
             index = self.eval_expr(expr.index, env)
             if isinstance(target, list):
                 idx = self._normalize_list_index(target, index, expr.span)
+                return target[idx]
+            if isinstance(target, str):
+                if not isinstance(index, int) or isinstance(index, bool):
+                    self._raise_runtime("TypeError", "string index must be int", expr.span)
+                idx = index + len(target) if index < 0 else index
+                if idx < 0 or idx >= len(target):
+                    self._raise_runtime("IndexError", f"string index out of range: {index}", expr.span)
                 return target[idx]
             if isinstance(target, dict):
                 self._assert_hashable(index, expr.span)
@@ -1076,6 +1091,8 @@ class Interpreter:
             # Python callables registered by extern declarations or other host bindings.
             try:
                 return callee(*args)
+            except RaiseSignal:
+                raise
             except Exception as exc:
                 self._raise_runtime("RuntimeError", str(exc), span)
         self._raise_runtime("TypeError", "call target is not callable", span)
@@ -1169,6 +1186,10 @@ class Interpreter:
         return None
 
     def _lookup_attr(self, base: Any, attr: str, span: Any) -> Any:
+        if isinstance(base, (str, list, dict)):
+            bound = self._builtin_methods.lookup(base, attr, span)
+            if bound is not None:
+                return bound
         if isinstance(base, SuperProxy):
             # Start lookup from start_type in MRO
             start = base.start_type
@@ -1273,6 +1294,18 @@ class Interpreter:
             target.exports[attr] = value
             return
         self._raise_runtime("TypeError", "attribute assignment target must be an object instance", span)
+
+    def _slice(self, target: Any, rng: "ast.RangeExpr", env: Environment, span: Any) -> Any:
+        """`xs[a..b]` / `s[a..b]`: a new array or string with the items from a up to (not including) b.
+        Negative bounds count from the end, and bounds outside the sequence are clamped."""
+        if not isinstance(target, (list, str)):
+            self._raise_runtime("TypeError", "only arrays and strings can be sliced", span)
+        start = self.eval_expr(rng.start, env)
+        stop = self.eval_expr(rng.stop, env)
+        for bound in (start, stop):
+            if not isinstance(bound, int) or isinstance(bound, bool):
+                self._raise_runtime("TypeError", "slice bounds must be integers", span)
+        return target[start:stop]
 
     def _normalize_list_index(self, target: list[Any], index: Any, span: Any) -> int:
         if not isinstance(index, int):

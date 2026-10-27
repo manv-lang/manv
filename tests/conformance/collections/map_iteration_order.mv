@@ -1,0 +1,6 @@
+fn main() -> int:
+    map m = {"first": 1, "second": 2}
+    m["third"] = 3
+    for k in m:
+        print(k)
+    return 0
