@@ -12,7 +12,7 @@ Every construct is marked with its status. The statuses were checked against the
 
 > **Scope.** There is no standard library for now (it is parked until the interpreter works and the syntax is settled), so this document describes the core language and its native builtins only.
 >
-> **Declarations are being redesigned.** `let` is removed and `const` is added ([§5.1](#51-declarations)). This document describes the **new** design. The interpreter still implements the old one: it accepts `let` and has no `const`, so everything in §5.1 about `const`, inferred `name = value` declarations and the all-types type prefix is 🧭 until the migration in [TODO.md](TODO.md) (Phase 3a) lands. Examples in `examples/` and the stdlib still use `let` and have not been migrated.
+> **Declarations.** `let` is gone and `const` exists ([§5.1](#51-declarations)). Using `let` is the error `E1015`. The `tools/migrate_let.py` script rewrites old code.
 
 The file `main.mv` and the programs in `examples/` are the working reference. The authoritative grammar is [manv/parser.py](manv/parser.py) and [manv/lexer.py](manv/lexer.py). When this document and those files disagree, the files win. Please fix this document.
 
@@ -114,20 +114,19 @@ Notes:
 
 | Literal | Examples | Status |
 |---------|----------|--------|
-| Integer | `0`, `42`, `9223372036854` | ✅ decimal only |
-| Float | `3.14`, `1.0`, `0.5` | ✅ decimal only, requires a digit before and after `.` |
+| Integer | `0`, `42`, `1_000_000`, `0xFF`, `0o17`, `0b101` | ✅ decimal, hex, octal, binary; `_` between digits |
+| Float | `3.14`, `1.0`, `1e3`, `2.5e-3` | ✅ decimal, optional exponent; `_` between digits |
 | Boolean | `true`, `false` | ✅ |
 | None | `none` | ✅ |
 | String | `"hi"`, `'hi'` | ✅ single-line only (see escapes below) |
 | Array | `[1, 2, 3]` | ✅ may span lines |
 | Map | `{"a": 1, "b": 2}` | ✅ may span lines |
-| Hex/octal/binary, `1_000`, `1e3` | `0xFF`, `0b101`, `1_000`, `1e3` | 🧭 |
 | Tuple | `(1, 2)` | 🧭 |
 | f-string / interpolation | `f"x={x}"` | 🧭 |
 
 **Strings.** Either quote character works. Escape sequences are interpreted (✅): `\n` `\t` `\r` `\0` `\\` `\"` `\'`, `\xNN` (two hex digits) and `\uNNNN` (four hex digits). Any other escape, or a malformed `\x`/`\u`, is `E0006`. A string cannot contain a raw line break; use `\n`.
 
-**Number edge.** `0..5` lexes as `0`, `..`, `5` (a range), not as a float.
+**Numbers.** A malformed number (`0x` with no digits, `0b102`, `1__0`, `100_`, `1e+`, or letters right after digits such as `12abc`) is `E0008`. A float too large to represent is also `E0008`. `0..5` lexes as `0`, `..`, `5` (a range), not as a float.
 
 ### 2.5 Operators and punctuation ✅
 
@@ -156,13 +155,13 @@ No bitwise (`& | ^ ~ << >>`), no exponent (`**`) and no ternary (`x if c else y`
 |------|---------|--------------------------------------|
 | `int` | integer | ✅ |
 | `i32`, `u8`, `usize` | fixed-width integers | ✅ |
-| `i64` | 64-bit integer | ✅ (🧭 today: needs `let x: i64`) |
+| `i64` | 64-bit integer | ✅ |
 | `float`, `f32` | floating point | ✅ |
 | `bool` | boolean | ✅ |
 | `str` | string | ✅ |
 | `array` | ordered, growable sequence | ✅ |
 | `map` | key-to-value dictionary | ✅ |
-| `ptr` | raw pointer (for FFI) | ✅ (🧭 today: needs `let p: ptr`) |
+| `ptr` | raw pointer (for FFI) | ✅ |
 | `void` | no value (return type only) | n/a |
 | `none` | the single "no value" value | n/a |
 
@@ -206,7 +205,7 @@ Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a cha
 - ✅ `%` takes the sign of the divisor: `-7 % 3` is `2`.
 - ✅ `+` concatenates two strings. `"a" + 1` is a `TypeError`, so convert with `str(1)`.
 - ✅ Strings compare lexicographically with `<`, `==` and so on.
-- ⚠️ `and` / `or` do **not** short-circuit today: in `false and f()` the call to `f()` still happens. They are meant to (the right operand is evaluated only when it can change the result). Tracked in [TODO.md](TODO.md) Phase 1 and covered by `tests/conformance/basics/short_circuit`.
+- ✅ `and` / `or` short-circuit: the right operand is evaluated only when it can change the result. The result is always a `bool`. The HLIR (compiled-mode) interpreter does the same.
 
 ### 4.3 Calls, members and indexing ✅
 
@@ -214,6 +213,7 @@ Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a cha
 f(1, 2)          # call
 obj.field        # attribute
 obj.method(x)    # method call
+e.type           # a reserved word is fine after the dot (also on the left of `=`)
 a[0]             # index (negative indices count from the end)
 m["key"]         # map lookup
 shapes.area(r)   # member of an included module
@@ -283,16 +283,16 @@ const MAX_RETRIES = 5
 const float PI = 3.14159
 ```
 
-**Typed declarations (🧭 for `i64`, `ptr`, user types; ✅ for the rest).** `T name = value` declares `name` with type `T`, and the value is checked against `T` (`int x = "s"` gives `E2002`). It works for every type in [§3.1](#31-built-in-types) and for user-defined types. Today the interpreter accepts it only for `int i32 str array map u8 usize float f32 bool`.
+**Typed declarations (✅).** `T name = value` declares `name` with type `T`, and the value is checked against `T` (`int x = "s"` gives `E2002`). It works for every type in [§3.1](#31-built-in-types) and for user-defined types. Today the interpreter accepts it only for `int i32 str array map u8 usize float f32 bool`.
 
-**Inferred declarations (🧭).** `name = value` is a *declaration* if `name` is not already bound in an enclosing scope, and an *assignment* if it is. Its type is inferred from the value. This is the replacement for `let x = ...`.
+**Inferred declarations (✅).** `name = value` is a *declaration* if `name` is not already bound in an enclosing scope, and an *assignment* if it is. Its type is inferred from the value. This is the replacement for `let x = ...`.
 
-**Constants (🧭).**
+**Constants (✅).**
 
-- `const` requires a value. `const x` alone is an error.
+- `const` requires a value. `const x` alone is `E1016`.
 - The type is optional: `const MAX = 5` and `const int MAX = 5` are both legal.
-- Reassigning a constant (`MAX = 6`, `MAX += 1`) is a **compile-time** error, even in interpreter mode. Redeclaring it in the same scope is also an error.
-- A constant cannot be mutated *through its name* either: `ITEMS[0] = 1`, `CONFIG["k"] = v` and `ORIGIN.x = 1` are rejected where the target is a constant. This is a static check on the name. It does not track aliases. See Decision 2a in [TODO.md](TODO.md).
+- Reassigning a constant (`MAX = 6`, `MAX += 1`) is the compile-time error `E2064`, even in interpreter mode. Redeclaring it in the same scope is `E2007`.
+- A constant cannot be mutated *through its name* either: `ITEMS[0] = 1`, `CONFIG["k"] = v` and `ORIGIN.x = 1` are rejected with `E2065` where the target is a constant. This is a static check on the name. It does not track aliases. See Decision 2a in [TODO.md](TODO.md).
 - `const` is allowed at file level, inside functions and inside `type` bodies. File-level constants are the intended way to share configuration and magic numbers, and they are the natural fit for GPU kernels, since a constant is known at compile time.
 - Naming convention: `UPPER_SNAKE_CASE`. This is a convention, not a rule.
 
@@ -301,16 +301,16 @@ const float PI = 3.14159
 - Declaring a name twice in the same scope is an error (`int x = 1` followed by `int x = 2`). Assign instead: `x = 2`.
 - A declaration without a value (`int x`) parses. Semantic analysis decides whether it is legal.
 - Reading a name that was never declared is `E2010`, as today.
-- Block scoping and shadowing rules are not final. See Decision 2b in [TODO.md](TODO.md).
+- Scope is by block. A name first assigned inside an `if`, loop body or function is local to that block and gone after it (using it later is `E2010`). Assigning to a name that is already bound in an enclosing scope assigns to that variable; it never creates a shadowing one. This is the recommendation of Decision 2b in [TODO.md](TODO.md), still open to change.
 
 **The typo hazard.** Because `name = value` declares, a misspelled name on the left (`totl = total + 1`) silently creates a new variable instead of failing. Keep this in view. The linter is expected to flag variables that are assigned and never read (TODO Phase 6). Typed declarations (`int total = ...`) are the explicit, typo-proof form.
 
-**Today.** The interpreter still uses `let name`, `let name: T = value` and `let mut name`. `let mut` is accepted and `mut` ignored. `let` bindings are mutable, so `let x = 1; x = 2` is legal.
+**Types.** A typed declaration accepts any type name: a builtin (`int`, `i64`, `ptr`, ...), a user-defined `type` (`Point p = Point(1, 2)`), or a type with `[]` suffixes (`f32[] xs = [1.0, 2.0]`). The REPL has no semantic pass, so it tracks constants itself and reports the same `E2064`.
 
 ### 5.2 Assignment
 
 ```manv
-x = 5            # ✅ variable (🧭 declares it if unbound, see §5.1)
+x = 5            # ✅ assigns, or declares the variable if it is not bound yet (§5.1)
 obj.field = 5    # ✅ attribute
 a[i] = 5         # ✅ element
 x += 1           # ✅ augmented assignment (also p.x += 1 and a[i] += 1)
@@ -369,7 +369,7 @@ try:
     risky()
 except ValueError:
     print("bad value")
-except IndexError as e:     # `as e` parses; reading e.message is ⚠️ not yet supported
+except IndexError as e:     # `as e` binds the exception; `e.message` is its text, `e.type` its type name
     raise                   # bare raise re-raises the active exception
 else:
     print("no exception")   # runs only if the try body did not raise
@@ -497,12 +497,12 @@ type Rectangle(Shape):              # inheritance; several bases allowed: (A, B)
     fn area(self) -> float: ...
 ```
 
-- A type body contains an optional docstring, then fields, `const` members and `fn` methods. Anything else is `E1006`. Fields are written like declarations: `int x = 0`, or `x = 0` for an inferred type. (🧭 The interpreter currently spells fields `let x: int = 0`.)
+- A type body contains an optional docstring, then fields, `const` members and `fn` methods. Anything else is `E1006`. Fields are written like declarations: `int x = 0`, or `x = 0` for an inferred type.
 - Fields require `= default`. `const` members are read through the type or an instance (`Point.DIMENSIONS`) and cannot be assigned.
 - The first parameter of a method is `self`. Methods are called as `p.translate(1, -1)`.
 - `__init__` is the constructor and is invoked as `Point(3, 4)`.
 - `isinstance(x, Type)` tests membership.
-- ⚠️ `print(p)` does not call `__repr__` yet. It prints the interpreter's internal object representation.
+- `print(p)` and `str(p)` use `__str__` if the type defines it, otherwise `__repr__`, otherwise `<Point x=3, y=4>`. Objects inside an array or map are shown with `__repr__`.
 
 ### 8.2 `impl` ✅
 
@@ -577,16 +577,17 @@ Available without an `include`. With no standard library, these native builtins 
 
 | Group | Names |
 |-------|-------|
-| I/O | `print` |
+| I/O | `print` (any number of values, written separated by spaces) |
 | Conversion | `int`, `float`, `str`, `bool` |
 | Collections | `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values` |
 | Types | `type`, `isinstance` |
 | Introspection | `help` |
 | FFI | `c_str`, `ptr_null`, `ptr_is_null`, `ptr_add` |
 
+How values are written by `print` and `str()`: `true`, `false` and `none`; numbers as usual; a string as itself (but quoted inside an array or map); arrays as `[1, 2]`; maps as `{'k': 1}`. Written text for strings inside collections is not final.
+
 Known quirks that are bugs, not design:
 
-- `print(true)` prints `True`, and `print(none)` prints `None`. These are Python spellings leaking through.
 - `zip` takes one argument, an array of arrays: `zip([a, b])`. Its output is wrong at the moment.
 - Strings have no methods or indexing, and arrays have no methods. Use the helper functions above.
 

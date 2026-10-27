@@ -16,7 +16,7 @@ One feature per program, grouped by area:
 | `collections/` | arrays and maps |
 | `types/` | `type`, `impl`, inheritance, accessors |
 | `exceptions/` | `try` / `except` / `else` / `finally`, `raise` |
-| `declarations/` | `T x = ...`, `x = ...`, `const` (the redesign in [syntax.md §5.1](../../syntax.md)) |
+| `declarations/` | `T x = ...`, `x = ...`, `const` ([syntax.md §5.1](../../syntax.md)) |
 | `errors/` | programs that must be rejected, with a specific diagnostic code |
 
 Next to `name.mv` there is a sidecar for each thing the run is expected to do:
@@ -35,7 +35,7 @@ A program needs `.expected` or `.error` (or both: an erroring program may still 
 1. **Write the expected output by hand, from the language rules** in [syntax.md](../../syntax.md). Never copy it from what an implementation printed, or the test only proves the implementation agrees with itself.
 2. **Only pin what is decided.** If the behaviour is an open question (see the decisions table in [TODO.md](../../TODO.md)), leave it out of the suite. Examples: integer `/`, how `array_append` treats its argument, the order of `map_keys`, how a collection of strings prints.
 3. **Keep each case small and about one thing**, so a failure points at one feature.
-4. **Prefer syntax that survives the planned changes.** The typed form `int x = 1` stays valid after `let` is removed. Avoid `let` in new cases. Cases that need the new declaration syntax live in `declarations/` and are marked `.xfail` until that work lands.
+4. **Prefer syntax that is settled.** `let` no longer exists. The declaration forms (`T x = v`, `x = v`, `const`) are covered in `declarations/`, and their error codes in `errors/`.
 
 ## Known gaps (`.xfail`)
 

@@ -14,8 +14,12 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - A GitHub Actions workflow that runs the tests on Linux, macOS and Windows (not yet run).
 
 ### Changed
+- **Declarations:** `let` is removed (using it is `E1015`). A typed declaration `T name = v` now works for every type, including `i64`, `ptr`, user-defined types and `f32[]`. `name = v` declares the variable when the name is not bound yet (scope is by block). `const [T] NAME = v` declares a constant: assigning it is `E2064`, changing it through its name (`C[i] = v`, `C.f = v`) is `E2065`, and a missing value is `E1016`. Type bodies declare fields as `int x = 0`.
+- `tools/migrate_let.py` rewrites old code (including programs embedded in Python test strings) to the new syntax. It was run over `examples/` and `tests/`.
+- The REPL decides declare-or-assign against its own globals and tracks constants itself, since it has no semantic pass.
 - String escape sequences are interpreted (`\n \t \r \0 \\ \" \' \xNN \uNNNN`); an unknown escape is `E0006`. Before, a backslash was silently dropped, so `"\n"` printed `n`.
 - Array, map and call literals can span lines, with comments and blank lines inside. An unclosed bracket is `E0007`. Block lambdas inside a call keep working.
+- Number literals: hex (`0xFF`), octal (`0o17`), binary (`0b101`), `_` digit separators (`1_000`) and float exponents (`1e-3`). A malformed number is `E0008`.
 - Augmented assignment (`+=` and friends), `match`/`case` and nested functions are accepted by the semantic pass. The interpreter already implemented them.
 - The CLI uses `argparse` instead of Typer. Options that default to on (`--cuda-jit`, `--optimize`) now also accept `--no-<flag>`, and option abbreviations are rejected. The console script is now `manv.cli:main`, so editable installs must be reinstalled.
 - The interpreter no longer puts the installed `std` package on its module search path. Programs resolve modules from the project root, `MANV_PATH`, and dependencies added with `manv add`.
@@ -27,6 +31,12 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - Compiled Python files and test build artifacts that were committed despite `.gitignore`.
 
 ### Fixed
+- `print` and `str()` wrote Python's spellings (`True`, `None`); they now write `true`, `false` and `none`, also inside arrays and maps. `print(obj)` and `str(obj)` use the type's `__str__` or `__repr__` instead of dumping interpreter internals.
+- `and` / `or` evaluated both operands; they now short-circuit, in the interpreter and in HLIR lowering.
+- `e.message` and `e.type` can be read on a caught exception. A reserved word is allowed as an attribute name after `.`.
+- `print` with more than one argument was rejected by the semantic pass (`E2021`) although the runtime supported it; it now accepts any number of values.
+- The HLIR interpreter printed `True`/`None`; it shares the interpreter's formatter now.
+- Output printed before an uncaught error was discarded; `manv run` now prints it before the diagnostic.
 - `case x if cond:` never parsed: the guard `if` is a keyword token but the parser looked for an identifier.
 - The `else:` body of a `while` loop was skipped by the semantic pass, so undefined names in it went unreported.
 - A `while` loop failed with `loop iteration guard exceeded` after 1,000,000 iterations. The cap is removed.

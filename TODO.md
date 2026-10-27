@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **271 passed, 12 skipped (with stated reasons), 10 expected failures, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **315 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is still not a language you could write a real program in. Still missing: string indexing and methods, `elif`, slices, tuples, hex/exponent number literals, `print` of an object with a `__repr__`, and the declaration redesign (Phase 3a). Details in the phases below.
+**Not yet true of the interpreter:** it is still not a language you could write a real program in. Still missing: string indexing and methods, `elif`, slices, tuples, hex/exponent number literals, and `print` of an object with a `__repr__`. Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
@@ -80,34 +80,36 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 
 > **Where to fix these.** Items about *what the language means* (output text, escapes, exceptions, integer behavior) get a conformance test with a hand-written `.expected` file first (Phase 7). The fix itself belongs in the C engine, not the Python tree-walker, which is going to be replaced (Decision 11). Lexer-level and semantic-pass fixes are shared by both and are done in Python as usual.
 
-- [ ] **`print` of booleans and none.** `print(true)` prints `True` and `print(none)` prints `None`. Define the canonical text (`true`, `false`, `none`) and apply it everywhere a value is rendered (`print`, `str()`, `repr`, collection printing).
-- [ ] **`print(obj)` ignores `__repr__`.** It dumps the internal `InstanceObject(type_obj=TypeObject(...))`. Honor `__repr__` (and `__str__` if adopted), with a sane default such as `<Point>`. Never leak interpreter internals.
+- [x] **`print` of booleans and none.** `true`, `false` and `none` everywhere a value is written (`print`, `str()`, inside arrays and maps). One function, `Interpreter._to_text`, does it for both. (`conformance/basics/bool_and_none_printing`, `printing_values`)
+- [x] **`print(obj)` and `str(obj)`** use `__str__`, then `__repr__`, then `<Type field=value, ...>`; objects inside collections use `__repr__`. No interpreter internals leak. (`conformance/types/repr_*`)
 - [x] **String escapes.** `\n \t \r \0 \\ \" \' \xNN \uNNNN` are interpreted in the lexer. Any other escape or a malformed `\x`/`\u` is `E0006`. (`conformance/basics/string_escapes*`)
 - [ ] **`zip`.** It takes `zip([a, b])` (one array of arrays) and returns the wrong shape (`[['x','y','z']]`). Decide the signature (`zip(a, b)` is the obvious one), fix it and fix example 05.
 - [ ] **Fixed-width integers.** `i32` does not wrap or trap (`2147483647 + 1` gives `2147483648`). Pick wrap vs. trap vs. checked per type, and implement it. This matters later for compiler parity.
 - [ ] **`/` on two ints gives a float.** Intentional or not, decide it ([§Decisions](#decisions-needed-from-you)). Adding an integer-division operator or function is part of the answer.
-- [ ] **Exception values.** `except ValueError as e: print(e)` prints an internal object. Support `e.message`, `str(e)`, `e.type`, and a traceback-ish location. Define the exception hierarchy (`Exception` → `ValueError`, `IndexError`, `TypeError`, `RuntimeError`, `OverflowError`, `AttributeError`, `KeyError`, `ZeroDivisionError`, ...).
+- [~] **Exception values.** `e.message` and `e.type` (the type's name) work (`conformance/exceptions/`), and `print(e)` shows `ValueError(msg)`. Reserved words are now allowed as attribute names after `.`, which is what makes `e.type` parse. Still open: a traceback-ish location and the full exception hierarchy (`ZeroDivisionError`, ...).
 - [ ] **Division by zero, bad index, missing key**: each should raise a catchable, typed exception with a precise message. Check each.
 - [ ] **Immutability is not enforced anywhere today** (`let x = 1; x = 2` is accepted, and `let mut` is parsed then ignored). This is closed by `const` in [Phase 3a](#phase-3a--declarations-remove-let-add-const).
-- [ ] **Uncaught exception output.** Currently `error[E3900]: ValueError: boom`. Add the source line, a call stack, and exit code 1.
+- [~] **Uncaught exception output.** Output printed before the error is now kept (`conformance/errors/output_before_uncaught_exception`). Still open: the source line, a call stack, and the exit code is 1 already.
 - [ ] Audit `None` vs. `none` vs. `void` return behavior (what does `print(f())` print for a function with no return?).
 - [ ] Fix the stale comments in `examples/` that describe behavior that is no longer true or never was (02, 04, 05, 06, 07). Each should match the golden output.
 - [x] **`while` had a hard cap of 1,000,000 iterations** (`RuntimeError: loop iteration guard exceeded`), so a legitimate long loop failed. Removed; `conformance/control_flow/while_beyond_one_million` covers it. The same arbitrary cap still exists for user-defined iterators (`iterator guard exceeded`).
-- [ ] **`and` / `or` do not short-circuit.** `false and f()` and `true or f()` still call `f()`. Case: `conformance/basics/short_circuit` (xfail).
-- [ ] **Output printed before an uncaught error is lost.** The CLI only prints the program's output when the run succeeds, so `print("before"); raise ...` shows nothing. Case: `conformance/errors/output_before_uncaught_exception` (xfail).
+- [x] **`and` / `or` short-circuit** in the interpreter and in HLIR lowering, which now branches instead of emitting a plain binary op (`conformance/basics/short_circuit*`, `tests/test_hlir_parity.py`). Native LLVM output has not been re-checked.
+- [x] **Output printed before an uncaught error was lost**: the CLI only printed it on success. Fixed in `manv run`.
+- [x] **`print` takes any number of values**, written separated by spaces. The semantic pass used to reject more than one argument (`E2021`) although the runtime accepted them. The native LLVM lowering still accepts exactly one argument (`io_print expects one argument`).
+- [x] **The HLIR interpreter printed Python spellings too** (`True`, `None`); `print` and `str()` now share one formatter (`format_value` in `intrinsics.py`) across the AST and HLIR interpreters.
 - [ ] **`array_append` mutates its argument**, although `examples/05_collections.mv` documents it as returning a new array and leaving the original unchanged. Decide the semantics (Decision 9), then make the code, the example and [syntax.md](syntax.md) agree. No conformance case pins it until then.
 - [ ] `for x in a..b` builds the whole range as a list before looping (memory, and slow for large ranges). Fix in the engine, not the tree-walker.
 
 ## Phase 2 — Lexer
 
-- [ ] Number literals: hex `0xFF`, octal `0o17`, binary `0b101`, digit separators `1_000`, float exponent `1e-3`, and a leading-dot or trailing-dot policy.
+- [x] Number literals: hex `0xFF`, octal `0o17`, binary `0b101`, digit separators `1_000`, and float exponents `1e-3`; malformed ones are `E0008`. (Still open: a leading-dot `.5` or trailing-dot policy.)
 - [x] Multi-line **bracketed** expressions: arrays, maps and call arguments continue across lines inside `( ) [ ] { }`, with comments and blank lines allowed. Layout is suppressed inside brackets except for block lambdas (a line ending in `:` that contains `fn` still opens an indented body, so the existing `)`-on-the-next-line style works). An unclosed bracket is `E0007`, reported at the opener. (`conformance/collections/multiline_*`, `functions/multiline_*`, `functions/block_lambda_in_multiline_call`)
 - [ ] Explicit line continuation with `\` (if wanted).
 - [ ] Multi-line (triple-quoted) strings as ordinary expressions, not just docstrings (`E0005` today).
 - [ ] Raw strings (`r"..."`) and string interpolation, per the decision (f-string, `"${x}"`, or none).
 - [ ] Operators: bitwise `& | ^ ~ << >>`, exponent `**`, integer division, and decide the `&&`/`||`/`!` aliases vs. `and`/`or`/`not` only.
 - [ ] Unicode: the lexer accepts any Unicode letter in identifiers (it uses `str.isalpha`) without that being a decision. Decide the policy (allowed identifier characters, normalization) and the source encoding (UTF-8), and test non-ASCII text in strings.
-- [ ] Windows line endings (`\r\n`) in the indentation logic. Add a test.
+- [x] Windows line endings (`\r\n`) lex identically to `\n` (`tests/test_lexer.py`).
 - [ ] Golden tests for diagnostic spans (line, column, end column).
 - [x] A line indented with only tabs was reported as `E0004 unexpected character '\t'`; it is now `E0001 tabs are not allowed for indentation`, and a line containing only whitespace and tabs is treated as blank. (`conformance/errors/tab_indentation`)
 
@@ -142,35 +144,35 @@ Spec: [syntax.md §5.1](syntax.md#51-declarations). Do this **before** the rest 
 Footprint today: 23 `let` uses in `examples/`, the e2e fixtures, 22 sites in the compiler (`LetStmt`, `TypeAttrDecl`, `"let"`), and the tree-sitter grammar in `tree-sitter-manv/`. The roughly 384 uses in `stdlib/src` (and `libc/src/main.mv`, which is treated as library code) are **deliberately out of scope**: the stdlib is parked and will be rewritten in the new syntax rather than migrated.
 
 **Front end**
-- [ ] Lexer/tokens: add `const` as a keyword. Keep `let` reserved, so using it raises a targeted migration error (`E1015: 'let' was removed — write 'x = ...' or 'T x = ...'; use 'const' for constants`). Drop the `mut` special case.
-- [ ] Parser: allow the type prefix for **every** type. The `C_DECL_TYPES` allow-list in `parser.py` goes away. Disambiguate `IDENT IDENT` (typed declaration) from an expression statement. Support `i64`, `ptr`, user types and `f32[]`-style annotated types as prefixes.
-- [ ] Parser: `const [T] NAME = expr` at file level, in function bodies, and in type bodies. The value is required (`E1016`).
-- [ ] Parser: type-body fields in the form `int x = 0` / `x = 0` instead of `let x: int = 0`. Update `_parse_type_block` and `TypeAttrDecl`.
-- [ ] AST: replace `LetStmt` with a single declaration node carrying `declared_type`, `is_const` and `is_inferred`. Do not keep both.
+- [x] Lexer/tokens: `const` is a keyword. `let` stays reserved, so using it raises `E1015` with the migration hint. The `mut` special case is gone.
+- [x] Parser: the type prefix works for every type: builtins (the allow-list gained `i64` and `ptr`), user types (`Point p = ...`) and `[]` suffixes (`f32[] xs = ...`). `IDENT IDENT` at the start of a statement is a typed declaration.
+- [x] Parser: `const [T] NAME = expr` at file level, in function bodies and in type bodies. A missing value is `E1016`.
+- [x] Parser: type-body fields are `int x = 0` / `x = 0` / `const int X = 0`. (`let` there is `E1015`.)
+- [~] AST: `LetStmt` stays the single declaration node and gained `is_const`; `AssignStmt` gained `declares` (set by semantic analysis when `x = v` introduces a name). Renaming `LetStmt` to something like `DeclStmt` would touch 22 sites for no behaviour change, so it is deferred.
 
 **Semantics**
-- [ ] Inferred declaration: `name = value` declares when `name` is unbound and assigns when it is bound. Define the scope it lands in (Decision 2b).
-- [ ] Reject redeclaration in the same scope (`int x = 1` twice) with a clear error.
-- [ ] Constant enforcement: reject `=`, augmented assignment, and re-declaration of a `const` name. Reject index and attribute assignment whose root is a `const` name (Decision 2a). Give each its own error code.
-- [ ] Reject use-before-declaration and `const` without a value.
-- [ ] Constants are compile-time known where possible. Record that in the AST so the compiler can fold them and GPU kernels can capture them later.
-- [ ] Type-checking of typed declarations for the newly allowed types (`i64`, `ptr`, user types) with the same `E2002` mismatch behavior as `int`.
+- [x] Inferred declaration: `name = value` declares when `name` is unbound and assigns when it is bound. Scope is by block and assignment never shadows (Decision 2b's recommendation, implemented; still open to change).
+- [x] Reject redeclaration in the same scope (`E2007`), including a typed redeclaration of a constant.
+- [x] Constant enforcement: `=`, augmented assignment (`E2064`), and index/attribute assignment through a constant name (`E2065`, Decision 2a option (b)). Aliases are not tracked (`y = ITEMS; y[0] = 1` is accepted).
+- [x] Reject use-before-declaration (`y = y + 1` for an unbound `y` is `E2010`) and `const` without a value (`E1016`).
+- [ ] Constants are compile-time known where possible. Record that in the AST so the compiler can fold them and GPU kernels can capture them later. (Not started; `LetStmt.is_const` is the hook.)
+- [x] Typed declarations of `i64`, `ptr` and user types go through the same checks as `int` (`E2002` on a mismatch).
 
 **Interpreter / runtime**
-- [ ] Bind constants in the environment with a read-only flag, as a second line of defence. Static checks must catch everything first.
-- [ ] Module-level constants: evaluate once, in dependency order, and make them importable with `include`.
+- [ ] Bind constants in the interpreter's environment with a read-only flag, as a second line of defence. (Not done: the static checks already catch every by-name assignment. The REPL, which has no semantic pass, tracks constants itself.)
+- [~] Module-level constants: file-level `const` works in the interpreter (evaluated once, in source order, visible to every function). Dependency ordering and importing them with `include` are not done.
 
 **Migration**
-- [ ] Write a mechanical rewriter (`manv fmt --migrate-let`, or a script) with these rules: `let x: T = v` becomes `T x = v`; `let x = v` becomes `x = v`; `let mut` becomes `x = v`; type-body `let` fields become typed fields. Run it over `examples/`, the e2e fixtures and any `.mv` embedded in Python tests. Keep the tool: it is the template for every future syntax migration (see [Parked: the standard library](#parked-the-standard-library)).
-- [ ] Identify bindings that were *meant* to be constant (never reassigned after `let`) and convert them to `const` by hand or with the rewriter's `--infer-const` option.
-- [ ] Update `tree-sitter-manv/grammar.js` (and regenerate `src/`) and the LSP completions/semantic tokens: remove `let`, add `const`.
-- [ ] Update the `compile_mut_unsupported` fixture: its premise changes with `mut`.
-- [ ] Update `README.md`, the `examples/` header comments, and the website docs.
+- [x] Write a mechanical rewriter: `tools/migrate_let.py` (also rewrites programs embedded in Python test strings). Run over `examples/` and `tests/`: 80 declarations rewritten, none left for manual review. Kept as the template for future syntax migrations.
+- [ ] Identify bindings that were *meant* to be constant (never reassigned after `let`) and convert them to `const` by hand. (The migration left everything as a plain mutable declaration.)
+- [ ] Update `tree-sitter-manv/grammar.js` (and regenerate `src/`) and the LSP: remove `let`, add `const`, accept `T name = v` for any type and typed fields. **Not done**: that grammar lives in a separate repository, and the LSP's symbol collection does not yet see `x = v` declarations.
+- [x] The `compile_mut_unsupported` fixture lost its premise with `mut`; renamed to `compile_inferred_declaration`.
+- [x] Update the `examples/` header comments (also fixed the stale notes about augmented assignment, `match`, nested functions and multi-line arrays). The README and website docs do not mention `let`; nothing to change there.
 
 **Tests**
-- [ ] Cases for each form (typed, inferred, const, typed const, each of the newly allowed types).
-- [ ] Negative cases: reassigning a const, mutating through a const name, const without a value, redeclaration, use of removed `let` (checks the migration message).
-- [ ] The whole existing suite must pass after the migration. Output must be byte-identical, since this is a pure syntax change.
+- [x] Cases for each form (typed, inferred, const, typed const, `i64`, user types, `f32[]`, type fields and const members): `conformance/declarations/`.
+- [x] Negative cases: reassigning a const, augmented assignment, mutating through a const name (index and attribute), const without a value, redeclaration, a name leaking out of its block, use before assignment, and the removed `let` (checks the migration message): `conformance/errors/`.
+- [x] The whole existing suite passes after the migration. (Output was identical on every existing test; the `repl` needed a small change because it has no semantic pass.)
 
 ---
 
@@ -310,9 +312,9 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 69 cases: 60 pass, 9 are strict xfails that mark known gaps. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 96 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
-- [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 23 cases). Locations (line/column) are not asserted yet.
+- [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
 - [ ] Fuzz the lexer and parser (random bytes must never crash with a Python exception; only `ManvError`).
 - [ ] Property tests for arithmetic, conversion and collection semantics.
