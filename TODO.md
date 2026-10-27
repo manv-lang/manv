@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **315 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **322 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -180,9 +180,9 @@ Footprint today: 23 `let` uses in `examples/`, the e2e fixtures, 22 sites in the
 
 With no stdlib, **the builtins are the standard library**. Everything in this phase is implemented natively in the C engine, and the list below is the complete core surface until the stdlib redesign. Keep it small and deliberate: whatever lands here is hard to take back out later.
 
-- [ ] **Strings:** indexing, slicing, `len` in characters (decide bytes vs. code points), `+`, `*`, comparison, `in`, and methods or functions: `upper`, `lower`, `strip`, `split`, `join`, `replace`, `find`, `startswith`, `endswith`, `format`, `ord`, `chr`.
-- [ ] **Arrays:** methods or functions for append (mutating), insert, remove, pop, extend, reverse, sort, index, contains, copy, and clear. Settle value-vs-reference semantics and document them. Right now `array_append` is pure and `a[i] = v` mutates.
-- [ ] **Maps:** iterate keys, values and items, `in`/contains, delete, `get` with a default, and `len`. A deterministic iteration order (insertion order is the usual answer).
+- [~] **Strings:** indexing, negative indexing, slicing (`s[a..b]`), `len` in code points, `+`, comparison, iteration, and the methods `upper lower strip lstrip rstrip split join replace find startswith endswith contains` (`conformance/strings/`). Open: `*`, `in`, `ord`, `chr`, `format`, and a byte-string type (Decision 8).
+- [~] **Arrays:** `append pop insert extend remove index contains count reverse sort copy clear` and slicing (`conformance/collections/array_*`). Reference semantics with an explicit `copy()` is in place and pinned by `collections/reference_semantics` (Decision 9's recommendation, so that file is the one to change if you decide otherwise). `array_append` still mutates; keep or remove it once the methods are final.
+- [~] **Maps:** `keys values items get has remove copy clear`, iteration over keys, and insertion order (`conformance/collections/map_*`). Open: `in`, maps keyed by more than strings and ints, and equality/hashing of user types.
 - [ ] **Equality, hashing and ordering** for all built-in types, and user-defined `__eq__`, `__hash__`, `__lt__`. Allow maps keyed by more than strings.
 - [ ] **Operator overloading** protocol for user types (`__add__`, `__index__`, `__len__`, `__iter__`, ...), so `for x in my_collection` works.
 - [ ] **Type conversions**: define and test the full matrix (`int("x")`, `float("1e3")`, `bool("")`, `str(array)`, ...). Raise `ValueError` consistently.
@@ -191,6 +191,7 @@ With no stdlib, **the builtins are the standard library**. Everything in this ph
 - [ ] **Closures:** captured variable semantics (by reference vs. by value) and loop-variable capture. Add tests for each.
 - [ ] **Recursion limit** with a clean error rather than a Python `RecursionError`. Tail-call policy.
 - [ ] **Write down the final builtin list** (name, signature, semantics, error behavior) as a table in the language reference, and mark each builtin "core" or "may move to the stdlib later". Today the set is spread across `print`, `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values`, `type`, `isinstance`, `help` and the `ptr_*` / `c_str` family.
+- [ ] **Compiled mode lags the interpreter**: the HLIR and native paths know none of the builtin methods, slicing, string indexing or iteration over strings and maps. Parity belongs to §9.1 and the C engine.
 - [ ] Performance work does **not** happen here. Do not tune the Python tree-walker. See Phase 5.
 - [ ] **`input()` / stdin**, `args` / `argv`, `exit(code)`, and environment access.
 
@@ -312,7 +313,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 96 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 103 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.

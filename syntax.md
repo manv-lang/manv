@@ -247,9 +247,34 @@ for i in 0..5:                # ✅ range: 0,1,2,3,4 (end is exclusive)
     print(i)
 ```
 
-- `a .. b` is a half-open range. It is accepted in `for ... in` ✅. Elsewhere it parses but is not a runtime value ⚠️, so `a[0..2]` fails.
-- Missing 🧭: slices `a[1..3]`, stepped ranges `0..10..2`, map iteration `for k in m`, and indexing into strings `s[1]`.
-- Collections are managed values. `a[i] = v` mutates in place. ⚠️ `array_append(a, x)` also mutates `a` in place (and returns it), although `examples/05_collections.mv` describes it as returning a new array. Which one is intended is an open decision (Decision 9 in [TODO.md](TODO.md)), so don't rely on either: write `a = array_append(a, x)`, which behaves the same under both.
+- `a .. b` is a half-open range. It is accepted in `for ... in` ✅ and as an index, where it slices (§4.6).
+- Missing 🧭: open-ended slices (`a[1..]`), stepped ranges `0..10..2`, and `in` as an operator.
+- `for` also iterates the characters of a string and the keys of a map (in insertion order).
+- Arrays and maps are reference values: assigning or passing one shares it, and `a.copy()` makes an independent shallow copy. `a[i] = v` mutates in place. ⚠️ `array_append(a, x)` also mutates `a` in place (and returns it), although `examples/05_collections.mv` used to describe it as returning a new array; write `a = array_append(a, x)` or, better, `a.append(x)`. Decision 9 in [TODO.md](TODO.md) records these as the recommended defaults.
+
+### 4.6 Strings, indexing, slicing and methods ✅
+
+Strings are sequences of Unicode code points (`len("h\u00e9llo")` is 5) and are immutable.
+
+```manv
+s = "hello"
+s[1]            # "e"           negative indexes count from the end: s[-1] is "o"
+s[1..4]         # "ell"         a..b slices; works on arrays too
+s[3..100]       # "lo"          bounds outside the sequence are clamped, not an error
+s[10]           # IndexError
+```
+
+Methods are called with a dot, like methods of your own types. A mutating method changes the receiver and returns `none`. Calling one with the wrong number of arguments is a `TypeError`.
+
+| Type | Methods |
+|------|---------|
+| string | `upper()` `lower()` `strip()` `lstrip()` `rstrip()` `split([sep])` `join(items)` `replace(old, new)` `find(sub)` (index, or -1) `startswith(p)` `endswith(p)` `contains(sub)` |
+| array | `append(x)` `pop([i])` `insert(i, x)` `extend(items)` `remove(x)` `index(x)` `contains(x)` `count(x)` `reverse()` `sort()` `copy()` `clear()` |
+| map | `keys()` `values()` `items()` (an array of `[key, value]` pairs) `get(key[, default])` `has(key)` `remove(key)` `copy()` `clear()` |
+
+`remove` and `index` on a missing value are `ValueError`; `pop` on an empty array and an out-of-range `pop(i)` are `IndexError`; `remove` of a missing map key is `KeyError`. A map entry whose key is a method name (`{"keys": 1}`) is reached with `m["keys"]`, since `m.keys` is the method.
+
+Not there yet 🧭: `ord`/`chr`, string formatting, `in`, sorting with a key function, and the same methods in compiled mode (the HLIR and native paths know none of them).
 
 ---
 
@@ -589,7 +614,7 @@ How values are written by `print` and `str()`: `true`, `false` and `none`; numbe
 Known quirks that are bugs, not design:
 
 - `zip` takes one argument, an array of arrays: `zip([a, b])`. Its output is wrong at the moment.
-- Strings have no methods or indexing, and arrays have no methods. Use the helper functions above.
+- `ord`, `chr`, string formatting and the `in` operator do not exist yet.
 
 ---
 
