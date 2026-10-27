@@ -1,0 +1,12 @@
+fn main() -> int:
+    print(ord("A"))
+    print(ord("a") - ord("A"))
+    print(chr(72) + chr(105))
+    print(chr(ord("a") + 2))
+    print(ord("é"))
+    print(chr(233))
+    try:
+        ord("ab")
+    except TypeError as e:
+        print("TypeError")
+    return 0

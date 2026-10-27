@@ -77,6 +77,8 @@ class StdNamespace:
 BUILTIN_ALIASES: dict[str, str] = {
     "print": "io_print",
     "len": "core_len",
+    "ord": "core_ord",
+    "chr": "core_chr",
     "repr": "core_repr",
     "hash": "core_hash",
     "min": "core_min",
@@ -548,6 +550,23 @@ def _path_is_abs(args: list[Any], **_: Any) -> bool:
 def _core_len(args: list[Any], **_: Any) -> int:
     _ensure_arity("core_len", args, min_n=1, max_n=1)
     return len(args[0])
+
+
+def _core_ord(args: list[Any], **_: Any) -> int:
+    _ensure_arity("core_ord", args, min_n=1, max_n=1)
+    if not isinstance(args[0], str) or len(args[0]) != 1:
+        raise TypeError("ord() needs a string of exactly one character")
+    return ord(args[0])
+
+
+def _core_chr(args: list[Any], **_: Any) -> str:
+    _ensure_arity("core_chr", args, min_n=1, max_n=1)
+    code = args[0]
+    if isinstance(code, bool) or not isinstance(code, int):
+        raise TypeError("chr() needs an int")
+    if not 0 <= code <= 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+        raise ValueError(f"chr() argument is not a Unicode code point: {code}")
+    return chr(code)
 
 
 def _core_repr(args: list[Any], **_: Any) -> str:
@@ -1474,6 +1493,8 @@ def _register_defaults() -> None:
     register_intrinsic(
         IntrinsicSpec("core_len", [ANY_T], "int", {Effect.PURE}, may_throw=True, deterministic=True, pure_for_kernel=False)
     )
+    register_intrinsic(IntrinsicSpec("core_ord", [ANY_T], "int", {Effect.PURE}, may_throw=True))
+    register_intrinsic(IntrinsicSpec("core_chr", [ANY_T], "str", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_repr", [ANY_T], "str", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_hash", [ANY_T], "int", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_min", ["array"], ANY_T, {Effect.PURE}, may_throw=True))
@@ -1618,6 +1639,8 @@ def _register_defaults() -> None:
     register_intrinsic(IntrinsicSpec("gpu_dispatch", ["map", "str", "str", "map", "map"], "map", gpufx, may_throw=True))
 
     register_intrinsic_handler("core_len", _core_len)
+    register_intrinsic_handler("core_ord", _core_ord)
+    register_intrinsic_handler("core_chr", _core_chr)
     register_intrinsic_handler("core_repr", _core_repr)
     register_intrinsic_handler("core_hash", _core_hash)
     register_intrinsic_handler("core_min", _core_min)

@@ -863,10 +863,16 @@ class Interpreter:
                         result, found = self._try_dunder(right, "contains", [left])
                     if found:
                         return bool(result)
-                try:
-                    return eval_binary(expr.op, left, right)
-                except Exception:
-                    self._raise_runtime("TypeError", f"unsupported binary operator '{expr.op}'", expr.span)
+                if isinstance(right, list):
+                    return any(self._equals(item, left, expr.span) for item in right)
+                if isinstance(right, dict):
+                    self._assert_hashable(left, expr.span)
+                    return left in right
+                if isinstance(right, str):
+                    if not isinstance(left, str):
+                        self._raise_runtime("TypeError", "'in <string>' needs a string on the left", expr.span)
+                    return left in right
+                self._raise_runtime("TypeError", "'in' needs an array, map or string on the right", expr.span)
             # All other binary operators: try dunder on left operand
             DUNDER_MAP = {
                 "+": ("__add__", "add"), "-": ("__sub__", "sub"), "*": ("__mul__", "mul"),
@@ -1304,10 +1310,10 @@ class Interpreter:
         Negative bounds count from the end, and bounds outside the sequence are clamped."""
         if not isinstance(target, (list, str)):
             self._raise_runtime("TypeError", "only arrays and strings can be sliced", span)
-        start = self.eval_expr(rng.start, env)
-        stop = self.eval_expr(rng.stop, env)
+        start = None if rng.start is None else self.eval_expr(rng.start, env)
+        stop = None if rng.stop is None else self.eval_expr(rng.stop, env)
         for bound in (start, stop):
-            if not isinstance(bound, int) or isinstance(bound, bool):
+            if bound is not None and (not isinstance(bound, int) or isinstance(bound, bool)):
                 self._raise_runtime("TypeError", "slice bounds must be integers", span)
         return target[start:stop]
 

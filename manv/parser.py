@@ -871,7 +871,7 @@ class Parser:
     def _parse_range(self) -> object:
         expr = self._parse_or()
         if self._match_op(".."):
-            right = self._parse_or()
+            right = None if self._is_op("]") else self._parse_or()
             return ast.RangeExpr(start=expr, stop=right, span=self._span_from_expr(expr))
         return expr
 
@@ -884,12 +884,19 @@ class Parser:
         return expr
 
     def _parse_and(self) -> object:
-        expr = self._parse_equality()
+        expr = self._parse_not()
         while self._match_logic_op("and"):
             op = self._prev().lexeme
-            right = self._parse_equality()
+            right = self._parse_not()
             expr = ast.BinaryExpr(left=expr, op=op, right=right, span=self._span_from_expr(expr))
         return expr
+
+    def _parse_not(self) -> object:
+        """`not x` is looser than comparison: `not a in b` is `not (a in b)`."""
+        if self._match_keyword("not"):
+            op_tok = self._prev()
+            return ast.UnaryExpr(op="not", expr=self._parse_not(), span=self._span(op_tok))
+        return self._parse_equality()
 
     def _parse_equality(self) -> object:
         expr = self._parse_comparison()
@@ -915,6 +922,15 @@ class Parser:
                 op = self._prev().lexeme
             elif self._match_op(">="):
                 op = self._prev().lexeme
+            elif self._match_keyword("in"):
+                op = "in"
+            elif self._is("KEYWORD") and self._current().lexeme == "not" and self._peek(1).lexeme == "in":
+                self._advance()
+                self._advance()
+                right = self._parse_term()
+                inner = ast.BinaryExpr(left=expr, op="in", right=right, span=self._span_from_expr(expr))
+                expr = ast.UnaryExpr(op="not", expr=inner, span=self._span_from_expr(expr))
+                continue
             else:
                 break
             right = self._parse_term()
@@ -958,10 +974,6 @@ class Parser:
             op_tok = self._prev()
             right = self._parse_unary()
             return ast.UnaryExpr(op="!", expr=right, span=self._span(op_tok))
-        if self._match_keyword("not"):
-            op_tok = self._prev()
-            right = self._parse_unary()
-            return ast.UnaryExpr(op="not", expr=right, span=self._span(op_tok))
         return self._parse_postfix()
 
     def _parse_postfix(self) -> object:
@@ -997,7 +1009,7 @@ class Parser:
                 expr = ast.CallExpr(callee=expr, args=args, span=self._span(close))
                 continue
             if self._match_op("["):
-                idx = self._parse_expression()
+                idx = self._parse_index()
                 close = self._expect_op("]")
                 expr = ast.IndexExpr(value=expr, index=idx, span=self._span(close))
                 continue
@@ -1007,6 +1019,14 @@ class Parser:
                 continue
             break
         return expr
+
+    def _parse_index(self) -> object:
+        """The inside of `[...]`: an expression or a slice `a..b`; either bound may be left out."""
+        if self._is_op(".."):
+            tok = self._advance()
+            stop = None if self._is_op("]") else self._parse_or()
+            return ast.RangeExpr(start=None, stop=stop, span=self._span(tok))
+        return self._parse_expression()
 
     def _parse_primary(self) -> object:
         tok = self._current()

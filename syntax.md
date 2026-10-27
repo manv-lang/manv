@@ -133,7 +133,9 @@ Notes:
 ```
 +  -  *  /  %                 arithmetic
 == != <  <= >  >=             comparison
+in   not in                   membership (§4.6): substring, array element, map key
 and or not   &&  ||  !        logic (word forms and symbol forms are interchangeable)
+                              precedence, loosest first: if/else, .., or, and, not, comparison/in/==, + -, * / %, unary -
 =                             assignment
 += -= *= /= %=                augmented assignment (§5.2)
 ..                            range
@@ -250,7 +252,7 @@ for i in 0..5:                # ✅ range: 0,1,2,3,4 (end is exclusive)
 ```
 
 - `a .. b` is a half-open range. It is accepted in `for ... in` ✅ and as an index, where it slices (§4.6).
-- Missing 🧭: open-ended slices (`a[1..]`), stepped ranges `0..10..2`, and `in` as an operator.
+- Open-ended slices work: `a[1..]`, `a[..2]`, `a[..]`. Missing 🧭: stepped ranges `0..10..2`. Note that `..` binds tighter than `if/else`, so write `a[(x if c else y)..]`.
 - `for` also iterates the characters of a string and the keys of a map (in insertion order).
 - Arrays and maps are reference values: assigning or passing one shares it, and `a.copy()` makes an independent shallow copy. `a[i] = v` mutates in place. ⚠️ `array_append(a, x)` also mutates `a` in place (and returns it), although `examples/05_collections.mv` used to describe it as returning a new array; write `a = array_append(a, x)` or, better, `a.append(x)`. Decision 9 in [TODO.md](TODO.md) records these as the recommended defaults.
 
@@ -276,7 +278,9 @@ Methods are called with a dot, like methods of your own types. A mutating method
 
 `remove` and `index` on a missing value are `ValueError`; `pop` on an empty array and an out-of-range `pop(i)` are `IndexError`; `remove` of a missing map key is `KeyError`. A map entry whose key is a method name (`{"keys": 1}`) is reached with `m["keys"]`, since `m.keys` is the method.
 
-Not there yet 🧭: `ord`/`chr`, string formatting, `in`, sorting with a key function, and the same methods in compiled mode (the HLIR and native paths know none of them).
+`x in s` is substring search when `s` is a string (the left side must be a string too), element search (with `==`) for an array, and key lookup for a map. `x not in s` is `not (x in s)`. `ord("A")` is 65 and `chr(65)` is `"A"` (code points; a non-single-character string or a non-code-point int is an error).
+
+Not there yet 🧭: string formatting, sorting with a key function, and the same methods in compiled mode (the HLIR and native paths know none of them).
 
 ---
 
@@ -627,7 +631,8 @@ How values are written by `print` and `str()`: `true`, `false` and `none`; numbe
 Known quirks that are bugs, not design:
 
 - `zip` takes one argument, an array of arrays: `zip([a, b])`. Its output is wrong at the moment.
-- `ord`, `chr`, string formatting and the `in` operator do not exist yet.
+- String formatting does not exist yet.
+- `not` used to bind tighter than comparison (`not a == b` meant `(not a) == b`). It is now looser, as in Python.
 
 ---
 

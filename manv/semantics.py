@@ -839,7 +839,7 @@ class SemanticAnalyzer:
             right = self._analyze_expr(expr.right, scope, as_callee=False)
             if expr.op in {"and", "or", "&&", "||"}:
                 return "bool"
-            if expr.op in {"==", "!=", "<", "<=", ">", ">="}:
+            if expr.op in {"==", "!=", "<", "<=", ">", ">=", "in"}:
                 return "bool"
             if left and right and left != right and left in {"int", "float"} and right in {"int", "float"}:
                 return "f32"
@@ -852,8 +852,8 @@ class SemanticAnalyzer:
             return then_type if then_type == else_type else None
 
         if isinstance(expr, ast.RangeExpr):
-            start_type = self._analyze_expr(expr.start, scope, as_callee=False)
-            stop_type = self._analyze_expr(expr.stop, scope, as_callee=False)
+            start_type = None if expr.start is None else self._analyze_expr(expr.start, scope, as_callee=False)
+            stop_type = None if expr.stop is None else self._analyze_expr(expr.stop, scope, as_callee=False)
             if start_type and not self._type_compatible("int", start_type):
                 self._add_error("E2036", f"range start must be int-compatible, got {start_type}", expr.span.line, expr.span.column)
             if stop_type and not self._type_compatible("int", stop_type):

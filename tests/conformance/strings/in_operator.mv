@@ -1,0 +1,16 @@
+fn main() -> int:
+    print("ell" in "hello")
+    print("xyz" in "hello")
+    print("" in "hello")
+    print(3 in [1, 2, 3])
+    print(4 in [1, 2, 3])
+    print("a" in ["a", "b"])
+    print("k" in {"k": 1})
+    print("v" in {"k": "v"})
+    print(4 not in [1, 2, 3])
+    print("ell" not in "hello")
+    if 2 in [1, 2] and not 5 in [1, 2]:
+        print("both")
+    for c in "ab":
+        print(c in "bcd")
+    return 0

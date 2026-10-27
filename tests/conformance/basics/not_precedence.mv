@@ -1,0 +1,9 @@
+fn main() -> int:
+    print(not 1 == 2)
+    print(not 3 > 2)
+    print(not true and false)
+    print(not (true and false))
+    print(not not true)
+    print(true and not false)
+    print(1 < 2 or not 1 < 2)
+    return 0
