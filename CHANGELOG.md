@@ -5,6 +5,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- `elif`, and the conditional expression `a if cond else b` (the missing `else` is `E1017`).
 - `syntax.md`: the language's philosophy and syntax, with every construct marked as working, parsed-but-unsupported, or planned.
 - `TODO.md`: the roadmap to a working interpreter, then the compiler.
 - Test markers `stdlib` and `needs_clang`, and a `--run-stdlib` option (see `conftest.py`). Tests that need something missing are skipped with a stated reason instead of failing.

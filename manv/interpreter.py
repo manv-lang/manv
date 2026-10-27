@@ -840,6 +840,10 @@ class Interpreter:
             except Exception:
                 self._raise_runtime("TypeError", f"unsupported unary operator '{expr.op}'", expr.span)
 
+        if isinstance(expr, ast.CondExpr):
+            chosen = expr.then_expr if self.eval_expr(expr.condition, env) else expr.else_expr
+            return self.eval_expr(chosen, env)
+
         if isinstance(expr, ast.BinaryExpr):
             left = self.eval_expr(expr.left, env)
             if expr.op in {"and", "&&"}:

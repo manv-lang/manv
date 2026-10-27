@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **322 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **327 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is still not a language you could write a real program in. Still missing: string indexing and methods, `elif`, slices, tuples, hex/exponent number literals, and `print` of an object with a `__repr__`. Details in the phases below.
+**Not yet true of the interpreter:** it is still not a language you could write a real program in. Still missing: tuples, open-ended slices, hex/exponent number literals, and `print` of an object with a `__repr__`. Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
@@ -119,12 +119,12 @@ The target: nothing that parses is rejected later with a generic `E2099`.
 
 - [x] **Augmented assignment** `+= -= *= /= %=` on names, attributes and elements. The interpreter and HLIR lowering already handled it; the semantic pass now accepts it (undefined target is `E2003`).
 - [x] **`match` / `case`** with literal, wildcard `_`, binding and guard patterns. Two fixes were needed: the semantic pass rejected the statement, and the parser never recognised a guard (`if` is a keyword token, but the parser looked for an identifier). Still open: array, tuple, type and alternative patterns, and exhaustiveness checking.
-- [ ] **`elif`** (pending the decision). Cheap to add and removes a lot of nesting.
+- [x] **`elif`**: parsed as an `else` holding one nested `if`, so every later stage already handled it (`conformance/control_flow/elif_chain`).
 - [x] **Nested functions**: declared in a function body, visible from the declaration on, can read the enclosing scope and recurse. A duplicate name in one scope is `E2007`. Capture semantics for *mutating* an enclosing variable are still undecided (Phase 4, closures).
 - [x] The semantic pass skipped the `else:` body of `while` entirely, so an undefined name there went unreported. It is analysed now. (`conformance/errors/while_else_undefined_name`)
 - [ ] **Single-expression lambdas** (`fn(x): x * 2`), pending the decision.
 - [ ] **`with` statement** and a context-manager protocol (`__enter__` / `__exit__`), or remove `with` from the grammar.
-- [ ] **Conditional expression** (`a if cond else b`).
+- [x] **Conditional expression** (`a if cond else b`), right-associative, lowest precedence, `else` required (`E1017`). Only the chosen branch runs, in the interpreter and in HLIR lowering (`conformance/control_flow/conditional_expression`, `tests/test_hlir_parity.py`). Native LLVM output has not been checked.
 - [ ] **Tuples** and destructuring: `a, b = f()`, `for k, v in ...`, multiple return values.
 - [ ] **Slices** `a[1..3]`, `s[1..]`, plus string indexing and negative-index rules, for strings, arrays and ranges.
 - [ ] **Ranges as values**: stepped `0..10 step 2` (or `range(0, 10, 2)`), inclusive vs. exclusive, and ranges stored in variables.
@@ -313,7 +313,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 103 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 106 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
@@ -340,7 +340,7 @@ These shape the language, so they are yours to make. Each blocks specific items 
 | ~~2~~ | ~~Mutability~~ **Decided:** `let` is removed. `T name = v` and `name = v` are mutable declarations. `const` is the one immutable form. See 2a and 2b for what is left open. | n/a | n/a |
 | 2a | **How immutable is a `const`?** (a) only the name can't be rebound, `ITEMS[0] = 1` still works, or (b) the name can't be rebound **and** it can't be mutated through (index/attribute assignment is rejected). | (b), as a static check on the name. It matches what `const` promises and it needs no runtime cost. It cannot see aliases (`x = ITEMS; x[0] = 1`), so true deep immutability would need frozen values or the ownership model later. Document that limit. [syntax.md §5.1](syntax.md#51-declarations) currently assumes (b). | P3a |
 | 2b | **Where does `name = v` declare, and what is the scope?** (a) function-wide like Python, (b) block-scoped like C. Also: may an inner scope shadow an outer name, or does assignment always reach the outer one? | Block scope, and assignment to an already-bound outer name assigns to it (no accidental shadowing). It is stricter, it matches the typed `int x = 0` form that already exists, and it keeps names from leaking out of `if`/`for` bodies. Also decide whether to warn on the typo hazard (`totl = total + 1`). | P3a |
-| 3 | `elif` or only nested `else: if`? | Add `elif`. Nesting 4 deep for a simple chain works against readability. | P3 |
+| 3 | `elif` or only nested `else: if`? | **Done:** `elif` added. Nesting 4 deep for a simple chain works against readability. | P3 |
 | 4 | String interpolation: `f"x={x}"`, `"${x}"`, or a native `format` builtin only? | f-strings. | P2, P4 |
 | 5 | Integer model: arbitrary precision, 64-bit, or per-type fixed width with wrap/trap? | Per-type fixed width, with `int` as a 64-bit trap-on-overflow default. This keeps engine and compiler identical, and trap-on-overflow is cheap in C (`__builtin_add_overflow`). Arbitrary precision would make every `int` operation a possible allocation and undo the typed-code speedups. | P1, P4, P5, §9 |
 | 6 | Script mode: may a file be just statements with no `main`? | Yes for `manv run`, with the semantics "implicit main", so `manv run x.mv` works for small programs. | P3 |

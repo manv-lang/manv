@@ -13,7 +13,7 @@ from manv.hlir_interpreter import HLIRInterpreter
 from manv.hlir_lowering import lower_ast_to_hlir
 
 CONFORMANCE = Path(__file__).parent / "conformance"
-PROGRAMS = ["basics/short_circuit", "basics/short_circuit_nested", "basics/bool_and_none_printing", "basics/print_multiple_arguments"]
+PROGRAMS = ["basics/short_circuit", "basics/short_circuit_nested", "basics/bool_and_none_printing", "basics/print_multiple_arguments", "control_flow/elif_chain", "control_flow/conditional_expression"]
 
 
 @pytest.mark.parametrize("name", PROGRAMS)

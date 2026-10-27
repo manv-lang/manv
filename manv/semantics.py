@@ -845,6 +845,12 @@ class SemanticAnalyzer:
                 return "f32"
             return left or right
 
+        if isinstance(expr, ast.CondExpr):
+            self._analyze_expr(expr.condition, scope, as_callee=False)
+            then_type = self._analyze_expr(expr.then_expr, scope, as_callee=False)
+            else_type = self._analyze_expr(expr.else_expr, scope, as_callee=False)
+            return then_type if then_type == else_type else None
+
         if isinstance(expr, ast.RangeExpr):
             start_type = self._analyze_expr(expr.start, scope, as_callee=False)
             stop_type = self._analyze_expr(expr.stop, scope, as_callee=False)

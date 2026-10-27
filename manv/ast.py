@@ -411,6 +411,16 @@ class BinaryExpr:
 
 
 @dataclass
+class CondExpr:
+    """`then_expr if condition else else_expr`: only the chosen branch is evaluated."""
+
+    condition: Any
+    then_expr: Any
+    else_expr: Any
+    span: Span
+
+
+@dataclass
 class RangeExpr:
     """Half-open source range used by `for ... in a..b` syntax."""
 

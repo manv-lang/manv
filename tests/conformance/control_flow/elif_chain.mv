@@ -1,0 +1,22 @@
+fn grade(score: int) -> str:
+    if score >= 90:
+        return "A"
+    elif score >= 80:
+        return "B"
+    elif score >= 70:
+        return "C"
+    else:
+        return "F"
+
+fn main() -> int:
+    print(grade(95))
+    print(grade(85))
+    print(grade(70))
+    print(grade(10))
+    n = 5
+    if n > 10:
+        print("big")
+    elif n > 3:
+        print("medium")
+    print("done")
+    return 0

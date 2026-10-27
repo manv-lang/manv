@@ -143,7 +143,9 @@ and or not   &&  ||  !        logic (word forms and symbol forms are interchange
 ( ) [ ] { }                   grouping, call, index, collection literals
 ```
 
-No bitwise (`& | ^ ~ << >>`), no exponent (`**`) and no ternary (`x if c else y`) operators exist yet 🧭.
+No bitwise (`& | ^ ~ << >>`) and no exponent (`**`) operators exist yet 🧭.
+
+**Conditional expression** ✅: `a if cond else b` evaluates `cond` first and then only the chosen branch. It is the loosest operator and right-associative, so `"neg" if x < 0 else "zero" if x == 0 else "pos"` chains without parentheses. The `else` is required (`E1017`). In a `match` pattern the `if` starts the guard, not a conditional.
 
 ---
 
@@ -352,7 +354,18 @@ else:
     print("non-neg")
 ```
 
-There is no `elif` or `else if`. Chain by nesting an `if` in the `else` block. Whether to add `elif` is an open decision 🧭.
+`elif` ✅ chains conditions without nesting:
+
+```manv
+if score >= 90:
+    print("A")
+elif score >= 80:
+    print("B")
+else:
+    print("F")
+```
+
+`elif` is reserved. `else if` on one line is not accepted; use `elif`.
 
 ### 5.4 Loops ✅
 

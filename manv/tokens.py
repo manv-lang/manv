@@ -41,6 +41,7 @@ KEYWORDS = {
     "bool",
     "void",
     "if",
+    "elif",
     "else",
     "while",
     "for",

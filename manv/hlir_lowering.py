@@ -775,6 +775,30 @@ class HLIRLowerer:
         state.emit(HInstruction(op="load_var", dest=result, args=[var], effects=["reads_memory"]), node=expr)
         return result
 
+    def _lower_conditional(self, state: _LowerState, expr: ast.CondExpr) -> str:
+        """`a if c else b`: branch, and carry the chosen value through a hidden variable (no phi nodes)."""
+        then_label = state.new_label("ce_then")
+        else_label = state.new_label("ce_else")
+        end_label = state.new_label("ce_end")
+        var = "__" + end_label
+
+        state.emit(HInstruction(op="declare_var", attrs={"name": var, "type": "dynamic"}, effects=["writes_memory"]), node=expr)
+        state.declared_vars.add(var)
+
+        cond = self._lower_expr(state, expr.condition)
+        state.terminate("cbr", [cond, then_label, else_label], node=expr)
+
+        for label, branch in ((then_label, expr.then_expr), (else_label, expr.else_expr)):
+            state.set_block(label)
+            value = self._lower_expr(state, branch)
+            state.emit(HInstruction(op="store_var", args=[var, value], effects=["writes_memory"]), node=expr)
+            state.terminate("br", [end_label], node=expr)
+
+        state.set_block(end_label)
+        result = state.new_temp()
+        state.emit(HInstruction(op="load_var", dest=result, args=[var], effects=["reads_memory"]), node=expr)
+        return result
+
     def _lower_if(self, state: _LowerState, stmt: ast.IfStmt) -> None:
         cond = self._lower_expr(state, stmt.condition)
         then_label = state.new_label("if_then")
@@ -1189,6 +1213,9 @@ class HLIRLowerer:
 
         if isinstance(expr, ast.BinaryExpr) and expr.op in {"and", "&&", "or", "||"}:
             return self._lower_short_circuit(state, expr)
+
+        if isinstance(expr, ast.CondExpr):
+            return self._lower_conditional(state, expr)
 
         if isinstance(expr, ast.BinaryExpr):
             left = self._lower_expr(state, expr.left)

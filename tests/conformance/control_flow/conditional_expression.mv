@@ -1,0 +1,22 @@
+fn boom() -> int:
+    raise ValueError("evaluated")
+
+fn pick(n: int) -> str:
+    return "even" if n % 2 == 0 else "odd"
+
+fn main() -> int:
+    print(pick(4))
+    print(pick(7))
+    x = 3
+    sign = "neg" if x < 0 else "zero" if x == 0 else "pos"
+    print(sign)
+    y = 1 if true else boom()
+    z = boom() if false else 2
+    print(y, z)
+    print(1 + (10 if x > 2 else 20))
+    match x:
+        case 3 if x > 1:
+            print("guard ok")
+        case _:
+            print("no")
+    return 0

@@ -223,6 +223,13 @@ def _expr_to_hir(expr: object | None) -> Any:
             "left": _expr_to_hir(expr.left),
             "right": _expr_to_hir(expr.right),
         }
+    if isinstance(expr, ast.CondExpr):
+        return {
+            "kind": "cond",
+            "condition": _expr_to_hir(expr.condition),
+            "then": _expr_to_hir(expr.then_expr),
+            "else": _expr_to_hir(expr.else_expr),
+        }
     if isinstance(expr, ast.RangeExpr):
         return {
             "kind": "range",

@@ -758,7 +758,11 @@ class Parser:
         self._expect_op(":")
         then_body = self._parse_block()
         else_body: list[object] = []
-        if self._match_keyword("else"):
+        if self._is("KEYWORD") and self._current().lexeme == "elif":
+            # `elif` is an `else` whose body is one nested `if`.
+            self._advance()
+            else_body = [self._parse_if_stmt()]
+        elif self._match_keyword("else"):
             self._expect_op(":")
             else_body = self._parse_block()
         return ast.IfStmt(condition=condition, then_body=then_body, else_body=else_body, span=self._span(if_tok))
@@ -850,7 +854,19 @@ class Parser:
         return result
 
     def _parse_expression(self) -> object:
-        return self._parse_range()
+        return self._parse_conditional()
+
+    def _parse_conditional(self) -> object:
+        """`a if cond else b` (right-associative, the loosest operator)."""
+        expr = self._parse_range()
+        if self._is("KEYWORD") and self._current().lexeme == "if":
+            self._advance()
+            condition = self._parse_or()
+            if not self._match_keyword("else"):
+                self._error("E1017", "expected 'else' in conditional expression", self._current())
+            other = self._parse_conditional()
+            return ast.CondExpr(condition=condition, then_expr=expr, else_expr=other, span=self._span_from_expr(expr))
+        return expr
 
     def _parse_range(self) -> object:
         expr = self._parse_or()
@@ -1256,7 +1272,7 @@ class Parser:
             if not (self._is("IDENT") and self._current().lexeme == "case"):
                 self._error("E1014", "expected 'case' clause inside match block", self._current())
             case_tok = self._advance()
-            pattern = self._parse_expression()
+            pattern = self._parse_range()
             guard: object | None = None
             if self._match_keyword("if"):
                 guard = self._parse_expression()
