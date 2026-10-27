@@ -44,6 +44,7 @@ from .intrinsics import (
     IntrinsicNamespace,
     StdCallable,
     StdNamespace,
+    format_field,
     invoke_intrinsic,
     resolve_call_alias_name,
     std_namespace_attr,
@@ -916,6 +917,23 @@ class Interpreter:
 
         if isinstance(expr, ast.TupleExpr):
             return tuple(self.eval_expr(e, env) for e in expr.elements)
+
+        if isinstance(expr, ast.FStringExpr):
+            pieces: list[str] = []
+            for part in expr.parts:
+                if isinstance(part, str):
+                    pieces.append(part)
+                    continue
+                field, spec = part
+                value = self.eval_expr(field, env)
+                text = self._to_text(value)
+                if spec:
+                    try:
+                        text = format_field(value, text, spec)
+                    except ValueError as exc:
+                        self._raise_runtime("ValueError", str(exc), expr.span)
+                pieces.append(text)
+            return "".join(pieces)
 
         if isinstance(expr, ast.MapExpr):
             out: dict[object, object] = {}

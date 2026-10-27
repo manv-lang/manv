@@ -457,6 +457,14 @@ class ArrayExpr:
 
 
 @dataclass
+class FStringExpr:
+    """`f"a {x} b {y:>5}"`. `parts` holds literal strings and `(expression, format_spec)` pairs."""
+
+    parts: list[Any]
+    span: Span
+
+
+@dataclass
 class TupleExpr:
     """`(a, b)`, `(a,)` or `()`: a fixed-size, immutable sequence."""
 

@@ -1,0 +1,3 @@
+fn main() -> int:
+    print(f"a } b")
+    return 0

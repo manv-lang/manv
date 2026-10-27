@@ -934,6 +934,12 @@ class SemanticAnalyzer:
                 self._analyze_expr(e, scope, as_callee=False)
             return "tuple"
 
+        if isinstance(expr, ast.FStringExpr):
+            for part in expr.parts:
+                if not isinstance(part, str):
+                    self._analyze_expr(part[0], scope, as_callee=False)
+            return "str"
+
         if isinstance(expr, ast.SyscallExpr):
             target_type = self._analyze_expr(expr.target, scope, as_callee=False)
             if target_type and target_type not in {"str", "int"}:

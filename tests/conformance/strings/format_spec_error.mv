@@ -1,0 +1,6 @@
+fn main() -> int:
+    try:
+        print(f"{'text':.2f}")
+    except ValueError as e:
+        print("ValueError")
+    return 0

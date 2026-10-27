@@ -170,6 +170,12 @@ class Lexer:
                 i += 1
                 continue
 
+            is_fstring = False
+            if ch == "f" and i + 1 < len(line) and line[i + 1] in {'"', "'"}:
+                is_fstring = True  # f"text {expr}": the quote follows the prefix
+                i += 1
+                ch = line[i]
+
             if ch == '"' or ch == "'":
                 if line[i : i + 3] == ch * 3:
                     raise ManvError(
@@ -212,7 +218,7 @@ class Lexer:
                     )
                 out.append(
                     Token(
-                        "STRING",
+                        "FSTRING" if is_fstring else "STRING",
                         "".join(value_chars),
                         line_no,
                         col,

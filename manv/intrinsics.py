@@ -682,6 +682,25 @@ def format_value(value: Any, *, nested: bool = False) -> str:
     return str(value)
 
 
+def format_field(value: Any, text: str, spec: str) -> str:
+    """Apply a format spec (`>8`, `.2f`, `05d`, `x`, ...) as in an f-string field.
+
+    Numbers use the spec directly. Every other value is formatted as its text (`text`), so
+    width, fill and alignment work on anything but a numeric type code on a non-number is an error.
+    """
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return format(value, spec)
+        return format(text, spec)
+    except (ValueError, TypeError):
+        raise ValueError(f"invalid format spec '{spec}' for a value of type {infer_runtime_type_name(value)}") from None
+
+
+def _core_format(args: list[Any], **_: Any) -> str:
+    _ensure_arity("core_format", args, min_n=2, max_n=2)
+    return format_field(args[0], format_value(args[0]), str(args[1]))
+
+
 def _core_str(args: list[Any], **_: Any) -> str:
     _ensure_arity("core_str", args, min_n=1, max_n=1)
     return format_value(args[0])
@@ -1514,6 +1533,7 @@ def _register_defaults() -> None:
     register_intrinsic(IntrinsicSpec("core_float", [ANY_T], "float", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_bool", [ANY_T], "bool", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_str", [ANY_T], "str", {Effect.PURE}, may_throw=True))
+    register_intrinsic(IntrinsicSpec("core_format", [ANY_T, "str"], "str", {Effect.PURE}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_iter", [ANY_T], ANY_T, {Effect.READS_MEMORY}, may_throw=True))
     register_intrinsic(IntrinsicSpec("core_next", [ANY_T], ANY_T, {Effect.READS_MEMORY}, may_throw=True))
     mathfx = {Effect.PURE}
@@ -1660,6 +1680,7 @@ def _register_defaults() -> None:
     register_intrinsic_handler("core_float", _core_float)
     register_intrinsic_handler("core_bool", _core_bool)
     register_intrinsic_handler("core_str", _core_str)
+    register_intrinsic_handler("core_format", _core_format)
     register_intrinsic_handler("core_iter", _core_iter)
     register_intrinsic_handler("core_next", _core_next)
     register_intrinsic_handler("abs_int", _abs_int)

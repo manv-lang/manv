@@ -1,0 +1,20 @@
+fn describe(n: int) -> str:
+    return f"n={n}"
+
+fn main() -> int:
+    name = "ManV"
+    n = 42
+    print(f"hello {name}!")
+    print(f"{n} + 1 = {n + 1}")
+    print(f"{{literal}} {n}")
+    print(f"{[1, 2]} {true} {none} {'s'}")
+    print(f"{'big' if n > 10 else 'small'}")
+    print(f"{ {'a': 1}['a'] }")
+    print(f"{describe(7)}")
+    print(f"no fields")
+    print(f'single {n}')
+    print(f"{name}{name}")
+    print(f"{len(name) * 2}")
+    s = f"{n}"
+    print(s + "!")
+    return 0

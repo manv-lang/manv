@@ -5,6 +5,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- f-strings with format specs: `f"{name}: {value:.2f}"` (syntax errors are `E1018`).
 - Tuples `(a, b)` and unpacking (`a, b = f()`, `for k, v in ...`, `return a, b`).
 - The `in` / `not in` operators, open-ended slices (`a[1..]`, `a[..2]`), and the builtins `ord` and `chr`.
 - `elif`, and the conditional expression `a if cond else b` (the missing `else` is `E1017`).

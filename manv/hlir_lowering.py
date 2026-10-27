@@ -775,6 +775,44 @@ class HLIRLowerer:
         state.emit(HInstruction(op="load_var", dest=result, args=[var], effects=["reads_memory"]), node=expr)
         return result
 
+    def _lower_fstring(self, state: _LowerState, expr: ast.FStringExpr) -> str:
+        """Each field becomes core_str / core_format; the pieces are joined with `+`."""
+
+        def intrinsic(name: str, args: list[str]) -> str:
+            out = state.new_temp()
+            state.emit(
+                HInstruction(
+                    op="intrinsic_call",
+                    dest=out,
+                    type_name="str",
+                    args=args,
+                    attrs={"name": name, "signature_id": name, "callsite_id": state.next_callsite_id(), "pure_for_kernel": False},
+                    effects=["may_throw"],
+                ),
+                node=expr,
+            )
+            return out
+
+        def const_str(value: str) -> str:
+            out = state.new_temp()
+            state.emit(HInstruction(op="const", dest=out, type_name="str", attrs={"value": value}), node=expr)
+            return out
+
+        pieces: list[str] = []
+        for part in expr.parts:
+            if isinstance(part, str):
+                pieces.append(const_str(part))
+                continue
+            field, spec = part
+            value = self._lower_expr(state, field)
+            pieces.append(intrinsic("core_format", [value, const_str(spec)]) if spec else intrinsic("core_str", [value]))
+        result = pieces[0] if pieces else const_str("")
+        for piece in pieces[1:]:
+            joined = state.new_temp()
+            state.emit(HInstruction(op="binop", dest=joined, args=[result, piece], attrs={"op": "+"}), node=expr)
+            result = joined
+        return result
+
     def _lower_conditional(self, state: _LowerState, expr: ast.CondExpr) -> str:
         """`a if c else b`: branch, and carry the chosen value through a hidden variable (no phi nodes)."""
         then_label = state.new_label("ce_then")
@@ -1216,6 +1254,9 @@ class HLIRLowerer:
 
         if isinstance(expr, ast.CondExpr):
             return self._lower_conditional(state, expr)
+
+        if isinstance(expr, ast.FStringExpr):
+            return self._lower_fstring(state, expr)
 
         if isinstance(expr, ast.BinaryExpr):
             left = self._lower_expr(state, expr.left)

@@ -122,7 +122,7 @@ Notes:
 | Array | `[1, 2, 3]` | ✅ may span lines |
 | Map | `{"a": 1, "b": 2}` | ✅ may span lines |
 | Tuple | `(1, 2)`, `(1,)`, `()` | ✅ see §4.7 |
-| f-string / interpolation | `f"x={x}"` | 🧭 |
+| f-string | `f"x={x}"` | ✅ see §4.8 |
 
 **Strings.** Either quote character works. Escape sequences are interpreted (✅): `\n` `\t` `\r` `\0` `\\` `\"` `\'`, `\xNN` (two hex digits) and `\uNNNN` (four hex digits). Any other escape, or a malformed `\x`/`\u`, is `E0006`. A string cannot contain a raw line break; use `\n`.
 
@@ -281,7 +281,7 @@ Methods are called with a dot, like methods of your own types. A mutating method
 
 `x in s` is substring search when `s` is a string (the left side must be a string too), element search (with `==`) for an array, and key lookup for a map. `x not in s` is `not (x in s)`. `ord("A")` is 65 and `chr(65)` is `"A"` (code points; a non-single-character string or a non-code-point int is an error).
 
-Not there yet 🧭: string formatting, sorting with a key function, and the same methods in compiled mode (the HLIR and native paths know none of them).
+Not there yet 🧭: sorting with a key function, and the same methods in compiled mode (the HLIR and native paths know none of them). For building text see f-strings in §4.8.
 
 ### 4.7 Tuples and unpacking ✅
 
@@ -317,6 +317,39 @@ for k, v in m.items():       # also: for i, x in enumerate(xs)
 - `m.items()` and `enumerate` now give tuples (they gave two-element arrays before).
 
 Not there yet 🧭: unpacking into attributes or elements (`xs[i], xs[j] = xs[j], xs[i]`), nested targets (`(a, b), c = ...`), a `*rest` target, tuple patterns in `match`, and tuples in compiled mode.
+
+### 4.8 f-strings ✅
+
+`f"..."` (or `f'...'`) builds a string from text and `{expression}` fields. Each field is evaluated in order and written the way `print` writes it, so `str`, collections, `true`/`false`/`none` and a type's `__str__` all apply.
+
+```manv
+name = "ManV"
+n = 42
+f"hello {name}"              # hello ManV
+f"{n} + 1 = {n + 1}"         # any expression: 42 + 1 = 43
+f"{'big' if n > 9 else 'small'}"
+f"{{not a field}}"           # {not a field}  ('{{' and '}}' are literal braces)
+```
+
+After a `:` a field takes a **format spec**, the same mini-language as Python's: `[[fill]align][sign][#][0][width][,][.precision][type]`.
+
+| Spec | Example | Result |
+|------|---------|--------|
+| `.2f` | `f"{3.14159:.2f}"` | `3.14` |
+| `5d`, `<5`, `^6`, `>6` | `f"[{42:>6}]"` | `[    42]` |
+| `05` | `f"{42:05}"` | `00042` |
+| `x` `X` `b` `#x` | `f"{255:x}"` | `ff` |
+| `,` | `f"{1234567:,}"` | `1,234,567` |
+| `.0%` | `f"{0.25:.0%}"` | `25%` |
+| `*<7` | `f"{'ManV':*<7}"` | `ManV***` |
+
+Numbers use the spec directly. Any other value is turned into its text first, so width, fill and alignment work on it, but a numeric type code on a non-number (`f"{'text':.2f}"`) is a `ValueError`.
+
+Rules and limits:
+- Use the other kind of quote inside a field (`f"{d['k']}"`): a field ends the string at the first matching quote like any string literal.
+- A `:` inside brackets does not start a spec, so `{ {'a': 1}['a'] }` works.
+- Syntax errors in an f-string (`E1018`): an unterminated `{`, an empty `{}`, a lone `}`, or text after the expression.
+- Not there yet 🧭: nested specs (`{n:>{width}}`), `!r`, `{x=}`, multi-line and triple-quoted f-strings, and a `format()` method or `%` formatting.
 
 ---
 
@@ -667,7 +700,7 @@ How values are written by `print` and `str()`: `true`, `false` and `none`; numbe
 Known quirks that are bugs, not design:
 
 - `zip` takes one argument, an array of arrays: `zip([a, b])`. Its output is wrong at the moment.
-- String formatting does not exist yet.
+- Runtime errors are reported at `1:1` instead of the real line and column; the diagnostics for them are not wired to source positions yet.
 - `not` used to bind tighter than comparison (`not a == b` meant `(not a) == b`). It is now looser, as in Python.
 
 ---

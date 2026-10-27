@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **338 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **347 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is not yet a language you could write a real program in. Still missing: string formatting, default and keyword arguments, `with`, classes' inheritance details and the builtins in the stdlib's place. Details in the phases below.
+**Not yet true of the interpreter:** it is not yet a language you could write a real program in. Still missing: default and keyword arguments, `with`, inheritance details, source positions on runtime errors and the builtins in the stdlib's place. Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
@@ -180,7 +180,7 @@ Footprint today: 23 `let` uses in `examples/`, the e2e fixtures, 22 sites in the
 
 With no stdlib, **the builtins are the standard library**. Everything in this phase is implemented natively in the C engine, and the list below is the complete core surface until the stdlib redesign. Keep it small and deliberate: whatever lands here is hard to take back out later.
 
-- [~] **Strings:** indexing, negative indexing, slicing (`s[a..b]`), `len` in code points, `+`, comparison, iteration, and the methods `upper lower strip lstrip rstrip split join replace find startswith endswith contains` (`conformance/strings/`). Also `in`, `not in`, open-ended slices (`s[1..]`), `ord`, `chr`. Open: `*`, `format`, and a byte-string type (Decision 8).
+- [~] **Strings:** indexing, negative indexing, slicing (`s[a..b]`), `len` in code points, `+`, comparison, iteration, and the methods `upper lower strip lstrip rstrip split join replace find startswith endswith contains` (`conformance/strings/`). Also `in`, `not in`, open-ended slices (`s[1..]`), `ord`, `chr`, and f-strings with format specs (`conformance/strings/fstrings`, `format_specs`). Open: `*`, nested specs, a `format` method, and a byte-string type (Decision 8).
 - [~] **Arrays:** `append pop insert extend remove index contains count reverse sort copy clear` and slicing (`conformance/collections/array_*`). Reference semantics with an explicit `copy()` is in place and pinned by `collections/reference_semantics` (Decision 9's recommendation, so that file is the one to change if you decide otherwise). `array_append` still mutates; keep or remove it once the methods are final.
 - [~] **Maps:** `keys values items get has remove copy clear`, iteration over keys, and insertion order (`conformance/collections/map_*`). `k in m` works. Open: maps keyed by more than strings and ints, and equality/hashing of user types.
 - [ ] **Equality, hashing and ordering** for all built-in types, and user-defined `__eq__`, `__hash__`, `__lt__`. Allow maps keyed by more than strings.
@@ -313,7 +313,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 117 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 124 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
@@ -341,7 +341,7 @@ These shape the language, so they are yours to make. Each blocks specific items 
 | 2a | **How immutable is a `const`?** (a) only the name can't be rebound, `ITEMS[0] = 1` still works, or (b) the name can't be rebound **and** it can't be mutated through (index/attribute assignment is rejected). | (b), as a static check on the name. It matches what `const` promises and it needs no runtime cost. It cannot see aliases (`x = ITEMS; x[0] = 1`), so true deep immutability would need frozen values or the ownership model later. Document that limit. [syntax.md §5.1](syntax.md#51-declarations) currently assumes (b). | P3a |
 | 2b | **Where does `name = v` declare, and what is the scope?** (a) function-wide like Python, (b) block-scoped like C. Also: may an inner scope shadow an outer name, or does assignment always reach the outer one? | Block scope, and assignment to an already-bound outer name assigns to it (no accidental shadowing). It is stricter, it matches the typed `int x = 0` form that already exists, and it keeps names from leaking out of `if`/`for` bodies. Also decide whether to warn on the typo hazard (`totl = total + 1`). | P3a |
 | 3 | `elif` or only nested `else: if`? | **Done:** `elif` added. Nesting 4 deep for a simple chain works against readability. | P3 |
-| 4 | String interpolation: `f"x={x}"`, `"${x}"`, or a native `format` builtin only? | f-strings. | P2, P4 |
+| 4 | String interpolation: `f"x={x}"`, `"${x}"`, or a native `format` builtin only? | f-strings. **Done.** | P2, P4 |
 | 5 | Integer model: arbitrary precision, 64-bit, or per-type fixed width with wrap/trap? | Per-type fixed width, with `int` as a 64-bit trap-on-overflow default. This keeps engine and compiler identical, and trap-on-overflow is cheap in C (`__builtin_add_overflow`). Arbitrary precision would make every `int` operation a possible allocation and undo the typed-code speedups. | P1, P4, P5, §9 |
 | 6 | Script mode: may a file be just statements with no `main`? | Yes for `manv run`, with the semantics "implicit main", so `manv run x.mv` works for small programs. | P3 |
 | 7 | Single-expression lambdas: `fn(x): x * 2`? | Yes. Block-only lambdas make `map`/`filter` noisy. | P3 |

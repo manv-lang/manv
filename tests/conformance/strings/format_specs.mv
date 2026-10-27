@@ -1,0 +1,17 @@
+fn main() -> int:
+    pi = 3.14159
+    n = 42
+    name = "ManV"
+    print(f"[{pi:.2f}]")
+    print(f"[{n:5d}]")
+    print(f"[{n:<5}]")
+    print(f"[{n:^6}]")
+    print(f"[{name:>6}]")
+    print(f"[{name:*<7}]")
+    print(f"[{n:05}]")
+    print(f"[{255:x}] [{255:X}] [{5:b}] [{255:#x}]")
+    print(f"[{1234567:,}]")
+    print(f"[{0.25:.0%}]")
+    print(f"[{true:>6}]")
+    print(f"[{[1, 2]:>8}]")
+    return 0

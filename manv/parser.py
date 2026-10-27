@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from . import ast
 from .diagnostics import ManvError, Span, diag
+from .lexer import Lexer
 from .tokens import Token
 
 C_DECL_TYPES = {"int", "i32", "i64", "str", "array", "map", "u8", "usize", "float", "f32", "bool", "ptr"}
@@ -1083,6 +1084,8 @@ class Parser:
             return ast.LiteralExpr(value=int(tok.lexeme), literal_type="int", span=self._span(tok))
         if self._match("STRING"):
             return ast.LiteralExpr(value=tok.lexeme, literal_type="str", span=self._span(tok), raw_value=tok.raw_lexeme)
+        if self._match("FSTRING"):
+            return self._parse_fstring(tok)
         if self._match_keyword("true") or self._match_keyword("True"):
             return ast.LiteralExpr(value=True, literal_type="bool", span=self._span(tok))
         if self._match_keyword("false") or self._match_keyword("False"):
@@ -1138,6 +1141,82 @@ class Parser:
             return self._parse_lambda_expr()
         self._error("E1002", "expected expression", tok)
         return ast.LiteralExpr(value=None, literal_type="none", span=self._span(tok))
+
+    def _parse_fstring(self, tok: Token) -> object:
+        """Split `f"..."` into literal text and `{expression[:spec]}` fields. `{{` and `}}` are literal braces."""
+        text = tok.lexeme
+        parts: list[object] = []
+        buf: list[str] = []
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if c == "}":
+                if text[i + 1 : i + 2] != "}":
+                    self._error("E1018", "single '}' in f-string (write '}}' for a literal brace)", tok)
+                buf.append("}")
+                i += 2
+                continue
+            if c != "{":
+                buf.append(c)
+                i += 1
+                continue
+            if text[i + 1 : i + 2] == "{":
+                buf.append("{")
+                i += 2
+                continue
+            end, colon = self._scan_fstring_field(text, i + 1, tok)
+            expr_text = text[i + 1 : colon if colon >= 0 else end].strip()
+            spec = text[colon + 1 : end] if colon >= 0 else ""
+            if not expr_text:
+                self._error("E1018", "empty expression in f-string", tok)
+            if buf:
+                parts.append("".join(buf))
+                buf = []
+            parts.append((self._parse_fstring_expr(expr_text, tok), spec))
+            i = end + 1
+        if buf:
+            parts.append("".join(buf))
+        if all(isinstance(p, str) for p in parts):
+            return ast.LiteralExpr(value="".join(parts), literal_type="str", span=self._span(tok))
+        return ast.FStringExpr(parts=parts, span=self._span(tok))
+
+    def _scan_fstring_field(self, text: str, start: int, tok: Token) -> tuple[int, int]:
+        """Return (index of the closing '}', index of the top-level ':' or -1) for a field starting at `start`."""
+        depth = 0
+        quote: str | None = None
+        colon = -1
+        j = start
+        while j < len(text):
+            d = text[j]
+            if quote is not None:
+                if d == quote:
+                    quote = None
+            elif d in {'"', "'"}:
+                quote = d
+            elif d in "([{":
+                depth += 1
+            elif d in ")]":
+                depth -= 1
+            elif d == "}":
+                if depth == 0:
+                    return j, colon
+                depth -= 1
+            elif d == ":" and depth == 0 and colon < 0:
+                colon = j
+            j += 1
+        self._error("E1018", "unterminated '{' in f-string", tok)
+        return -1, -1
+
+    def _parse_fstring_expr(self, expr_text: str, tok: Token) -> object:
+        # Pad with newlines so errors and runtime failures report the f-string's own line.
+        source = "\n" * (tok.line - 1) + expr_text
+        sub = Parser(Lexer(source, self.file).tokenize(), self.file, source.splitlines())
+        sub._consume_newlines()
+        expr = sub._parse_expression()
+        sub._consume_newlines()
+        if not sub._is("EOF"):
+            self._error("E1018", f"unexpected text after the expression '{expr_text}' in f-string", tok)
+        return expr
 
     def _parse_lambda_expr(self) -> ast.LambdaExpr:
         """Parse ``fn(params) -> return_type: body`` as an expression."""
