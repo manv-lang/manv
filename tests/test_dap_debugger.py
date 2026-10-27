@@ -229,9 +229,9 @@ def test_dap_reports_gpu_execution_and_serves_generated_cuda_source(tmp_path: Pa
         "        out[i] = a[i] + b[i]\n"
         "\n"
         "fn main() -> int:\n"
-        "    let a: f32[] = [1.0, 2.0]\n"
-        "    let b: f32[] = [3.0, 4.0]\n"
-        "    let out: f32[] = [0.0, 0.0]\n"
+        "    f32[] a = [1.0, 2.0]\n"
+        "    f32[] b = [3.0, 4.0]\n"
+        "    f32[] out = [0.0, 0.0]\n"
         "    add(a, b, out)\n"
         "    return 0\n",
         encoding="utf-8",

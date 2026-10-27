@@ -1,0 +1,4 @@
+fn main() -> int:
+    const xs = [1, 2]
+    xs[0] = 5
+    return 0

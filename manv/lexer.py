@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from .diagnostics import ManvError, diag
 from .tokens import DOUBLE_CHAR_OPS, KEYWORDS, SINGLE_CHAR_OPS, Token
 
 
+_NUMBER_SHAPE = re.compile(r"\d+(_\d+)*(\.(\d+(_\d+)*)?)?([eE][+-]?\d+(_\d+)*)?")
 _SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "\\": "\\", '"': '"', "'": "'"}
 
 
@@ -221,32 +224,8 @@ class Lexer:
                 i += 1
                 continue
 
-            if ch.isdigit():
-                start = i
-                has_dot = False
-                while i < len(line):
-                    if line[i].isdigit():
-                        i += 1
-                        continue
-                    if (
-                        line[i] == "."
-                        and not has_dot
-                        and (i + 1 >= len(line) or line[i + 1] != ".")
-                    ):
-                        has_dot = True
-                        i += 1
-                        continue
-                    break
-                out.append(
-                    Token(
-                        "NUMBER",
-                        line[start:i],
-                        line_no,
-                        indent + start + 1,
-                        end_line=line_no,
-                        end_column=indent + i,
-                    )
-                )
+            if ch in "0123456789":
+                i = self._lex_number(line, i, line_no, indent, out)
                 continue
 
             if ch.isalpha() or ch == "_":
@@ -277,6 +256,71 @@ class Lexer:
                     line,
                 )
             )
+
+    def _lex_number(self, line: str, i: int, line_no: int, indent: int, out: list[Token]) -> int:
+        """Lex a number starting at line[i] and return the index after it.
+
+        Forms: decimal ints and floats, `_` between digits (`1_000`), exponents (`1e3`, `2.5e-3`),
+        and `0x` / `0o` / `0b` ints. The token's lexeme is the normalized decimal text (what the
+        parser converts) and raw_lexeme keeps the source spelling.
+        """
+        n = len(line)
+        col = indent + i + 1
+
+        def fail(message: str) -> None:
+            raise ManvError(diag("E0008", message, self.file, line_no, col, line))
+
+        radix_names = {"x": (16, "hexadecimal", "0123456789abcdefABCDEF"), "o": (8, "octal", "01234567"), "b": (2, "binary", "01")}
+        if line[i] == "0" and i + 1 < n and line[i + 1].lower() in radix_names:
+            base, name, allowed = radix_names[line[i + 1].lower()]
+            j = i + 2
+            while j < n and (line[j] in allowed or line[j] == "_"):
+                j += 1
+            body = line[i + 2 : j]
+            if not body or body.startswith("_") or body.endswith("_") or "__" in body:
+                fail(f"invalid {name} literal")
+            text = str(int(body.replace("_", ""), base))
+        else:
+            j = i
+            while j < n and (line[j] in "0123456789_"):
+                j += 1
+            if j < n and line[j] == "." and not (j + 1 < n and line[j + 1] == "."):
+                j += 1
+                while j < n and (line[j] in "0123456789_"):
+                    j += 1
+            if j < n and line[j] in "eE":
+                k = j + 1
+                if k < n and line[k] in "+-":
+                    k += 1
+                    if not (k < n and line[k] in "0123456789"):
+                        fail("exponent has no digits")
+                if k < n and line[k] in "0123456789":
+                    while k < n and (line[k] in "0123456789_"):
+                        k += 1
+                    j = k
+            raw = line[i:j]
+            if not _NUMBER_SHAPE.fullmatch(raw):
+                fail(f"invalid number literal '{raw}'")
+            text = raw.replace("_", "")
+            if "." in text or "e" in text or "E" in text:
+                value = float(text)
+                if value in (float("inf"), float("-inf")):
+                    fail("float literal is out of range")
+                text = repr(value)
+        if j < n and (line[j].isalnum() or line[j] == "_"):
+            fail(f"invalid character '{line[j]}' after number")
+        out.append(
+            Token(
+                "NUMBER",
+                text,
+                line_no,
+                col,
+                end_line=line_no,
+                end_column=indent + j,
+                raw_lexeme=line[i:j],
+            )
+        )
+        return j
 
     def _decode_escape(self, line: str, i: int, line_no: int, indent: int) -> tuple[str, int]:
         """Decode the escape sequence starting at line[i] (a backslash). Returns (text, width)."""

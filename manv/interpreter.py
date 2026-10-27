@@ -382,6 +382,9 @@ class Interpreter:
 
         if isinstance(stmt, ast.AssignStmt):
             value = self.eval_expr(stmt.value, env)
+            if stmt.declares:
+                env.define(stmt.name, value)
+                return None
             try:
                 env.assign(stmt.name, value)
             except KeyError:
@@ -833,6 +836,11 @@ class Interpreter:
 
         if isinstance(expr, ast.BinaryExpr):
             left = self.eval_expr(expr.left, env)
+            if expr.op in {"and", "&&"}:
+                # The right operand is only evaluated when it can change the result.
+                return bool(left) and bool(self.eval_expr(expr.right, env))
+            if expr.op in {"or", "||"}:
+                return bool(left) or bool(self.eval_expr(expr.right, env))
             right = self.eval_expr(expr.right, env)
             if expr.op in {"==", "!="}:
                 eq = self._equals(left, right, expr.span)
@@ -984,7 +992,9 @@ class Interpreter:
                 alias = self._resolve_unshadowed_call_alias(expr.callee, env)
                 if alias is not None:
                     if alias == "io_print":
-                        return self._invoke_intrinsic(alias, [args], expr.span)
+                        return self._invoke_intrinsic(alias, [[self._to_text(a) for a in args]], expr.span)
+                    if alias == "core_str" and len(args) == 1:
+                        return self._to_text(args[0])
                     return self._invoke_intrinsic(alias, args, expr.span)
 
             callee = self.eval_expr(expr.callee, env)
@@ -1099,20 +1109,7 @@ class Interpreter:
                     self._raise_runtime("ValueError", f"cannot convert {val!r} to int", span)
             return None
         if name == "str":
-            if isinstance(val, str):
-                return val
-            if isinstance(val, InstanceObject):
-                result, found = self._try_dunder(val, "__str__", [])
-                if not found:
-                    result, found = self._try_dunder(val, "str_", [])
-                if not found:
-                    result, found = self._try_dunder(val, "__repr__", [])
-                if not found:
-                    result, found = self._try_dunder(val, "repr_", [])
-                if found:
-                    return str(result)
-                return f"<{val.type_obj.name} object>"
-            return str(val)
+            return self._to_text(val)
         if name == "bool":
             if isinstance(val, bool):
                 return val
@@ -1244,6 +1241,11 @@ class Interpreter:
             if attr in base:
                 return base[attr]
             self._raise_runtime("AttributeError", f"map has no attribute '{attr}'", span)
+        if isinstance(base, ExceptionObject):
+            if attr == "message":
+                return base.message
+            if attr == "type":
+                return base.type_obj.name
         self._raise_runtime("AttributeError", f"attribute access not supported for '{attr}'", span)
 
     def _lookup_class_attr(self, type_obj: TypeObject, attr: str) -> Any | None:
@@ -1731,6 +1733,37 @@ class Interpreter:
             seen.add(key)
             out.append(root)
         return out
+
+    def _to_text(self, value: Any, *, nested: bool = False) -> str:
+        """How a value is written by print() and str(): `true`/`false`/`none`, a type's
+        __repr__ when it defines one, and collections of the same. Strings are quoted only
+        when they sit inside a collection."""
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        if value is None:
+            return "none"
+        if isinstance(value, str):
+            return repr(value) if nested else value
+        if isinstance(value, InstanceObject):
+            # print(obj) and str(obj) prefer __str__; objects inside a collection use __repr__.
+            hooks = ("__repr__", "repr_") if nested else ("__str__", "str_", "__repr__", "repr_")
+            for hook in hooks:
+                result, found = self._try_dunder(value, hook, [])
+                if found:
+                    return str(result)
+            return self._stringify(value)
+        if isinstance(value, list):
+            return "[" + ", ".join(self._to_text(v, nested=True) for v in value) + "]"
+        if isinstance(value, dict):
+            items = list(value.items())
+            if self.stable_debug_format:
+                items.sort(key=lambda kv: repr(kv[0]))
+            return "{" + ", ".join(f"{self._to_text(k, nested=True)}: {self._to_text(v, nested=True)}" for k, v in items) + "}"
+        if isinstance(value, (ExceptionObject, ModuleObject)):
+            return self._stringify(value)
+        return str(value)
 
     def _stringify(self, value: Any) -> str:
         if isinstance(value, InstanceObject):

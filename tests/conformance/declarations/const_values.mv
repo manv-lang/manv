@@ -1,0 +1,11 @@
+const NAMES = ["a", "b", "c"]
+const COUNT = 3
+
+fn total() -> int:
+    return COUNT * 2
+
+fn main() -> int:
+    print(NAMES[1])
+    print(len(NAMES))
+    print(total())
+    return 0

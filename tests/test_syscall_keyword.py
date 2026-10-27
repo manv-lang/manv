@@ -42,7 +42,7 @@ def test_syscall_expression_form(tmp_path: Path) -> None:
     src.write_text(
         (
             "fn main() -> int:\n"
-            "    let r = syscall(\"getpid\")\n"
+            "    r = syscall(\"getpid\")\n"
             "    print(r[\"ok\"])\n"
             "    return 0\n"
         ),

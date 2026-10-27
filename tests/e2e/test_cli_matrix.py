@@ -266,7 +266,7 @@ def test_run_core_language_features(tmp_path: Path) -> None:
     project = _copy_fixture(tmp_path, "run_core_features")
     result = invoke(["run", str(project)])
     assert result.exit_code == 0
-    for expected in ["15", "10", "8", "9", "True"]:
+    for expected in ["15", "10", "8", "9", "true"]:
         assert expected in result.stdout
 
 
@@ -430,7 +430,7 @@ def test_compile_rejects_project_root_and_points_to_build(tmp_path: Path) -> Non
 
 
 def test_repl_command() -> None:
-    script = "let x = 2\nx + 3\n:q\n"
+    script = "x = 2\nx + 3\n:q\n"
     result = invoke(["repl"], input=script)
     assert result.exit_code == 0
     assert "5" in result.stdout
@@ -444,7 +444,7 @@ def test_test_command_runs_fixture_suite() -> None:
     assert "summary: passed=" in result.stdout
 
 def test_repl_does_not_reexecute_previous_input() -> None:
-    script = "let x = 1\nx + 1\nx + 2\n:q\n"
+    script = "x = 1\nx + 1\nx + 2\n:q\n"
     result = invoke(["repl"], input=script)
     assert result.exit_code == 0
 

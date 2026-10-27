@@ -222,9 +222,20 @@ class Scope:
     def __init__(self, parent: "Scope | None" = None):
         self.parent = parent
         self.symbols: dict[str, str | None] = {}
+        self.consts: set[str] = set()
 
-    def define(self, name: str, type_name: str | None) -> None:
+    def define(self, name: str, type_name: str | None, *, const: bool = False) -> None:
         self.symbols[name] = type_name
+        if const:
+            self.consts.add(name)
+        else:
+            self.consts.discard(name)
+
+    def is_const(self, name: str) -> bool:
+        """True when the nearest binding of `name` is a constant."""
+        if name in self.symbols:
+            return name in self.consts
+        return self.parent.is_const(name) if self.parent is not None else False
 
     def has_local(self, name: str) -> bool:
         return name in self.symbols
@@ -490,7 +501,7 @@ class SemanticAnalyzer:
             if stmt.array_size is not None and value_type is None:
                 value_type = "array"
             declared_type = normalize_type_name(stmt.type_name) or normalize_type_name(value_type)
-            scope.define(stmt.name, declared_type)
+            scope.define(stmt.name, declared_type, const=stmt.is_const)
             if stmt.type_name and value_type and not self._type_compatible(stmt.type_name, value_type):
                 self._add_error("E2002", f"type mismatch for '{stmt.name}': expected {stmt.type_name}, got {value_type}", stmt.span.line, stmt.span.column)
             return
@@ -511,10 +522,13 @@ class SemanticAnalyzer:
         if isinstance(stmt, ast.AugAssignStmt):
             if not scope.contains(stmt.name):
                 self._add_error("E2003", f"undefined variable '{stmt.name}'", stmt.span.line, stmt.span.column)
+            elif scope.is_const(stmt.name):
+                self._add_error("E2064", f"cannot assign to constant '{stmt.name}'", stmt.span.line, stmt.span.column)
             self._analyze_expr(stmt.value, scope, as_callee=False)
             return
 
         if isinstance(stmt, ast.AugAssignAttrStmt):
+            self._check_not_const_target(stmt.target, scope, stmt)
             self._analyze_expr(stmt.target, scope, as_callee=False)
             if isinstance(stmt.target, ast.IdentifierExpr) and stmt.target.name in self.type_attrs:
                 if stmt.attr in self.type_attrs.get(stmt.target.name, {}):
@@ -523,6 +537,7 @@ class SemanticAnalyzer:
             return
 
         if isinstance(stmt, ast.AugAssignIndexStmt):
+            self._check_not_const_target(stmt.target, scope, stmt)
             target_type = self._analyze_expr(stmt.target, scope, as_callee=False)
             self._analyze_expr(stmt.index, scope, as_callee=False)
             self._analyze_expr(stmt.value, scope, as_callee=False)
@@ -565,15 +580,22 @@ class SemanticAnalyzer:
             return
 
         if isinstance(stmt, ast.AssignStmt):
-            current = scope.lookup(stmt.name)
             if not scope.contains(stmt.name):
-                self._add_error("E2003", f"undefined variable '{stmt.name}'", stmt.span.line, stmt.span.column)
+                # First assignment to a new name declares it (type inferred from the value).
+                value_type = self._analyze_expr(stmt.value, scope, as_callee=False)
+                stmt.declares = True
+                scope.define(stmt.name, normalize_type_name(value_type))
+                return
+            current = scope.lookup(stmt.name)
+            if scope.is_const(stmt.name):
+                self._add_error("E2064", f"cannot assign to constant '{stmt.name}'", stmt.span.line, stmt.span.column)
             value_type = self._analyze_expr(stmt.value, scope, as_callee=False)
             if current and value_type and not self._type_compatible(current, value_type):
                 self._add_error("E2004", f"type mismatch in assignment to '{stmt.name}': expected {current}, got {value_type}", stmt.span.line, stmt.span.column)
             return
 
         if isinstance(stmt, ast.SetAttrStmt):
+            self._check_not_const_target(stmt.target, scope, stmt)
             self._analyze_expr(stmt.target, scope, as_callee=False)
             if isinstance(stmt.target, ast.IdentifierExpr) and stmt.target.name in self.type_attrs:
                 if stmt.attr in self.type_attrs.get(stmt.target.name, {}):
@@ -582,6 +604,7 @@ class SemanticAnalyzer:
             return
 
         if isinstance(stmt, ast.SetIndexStmt):
+            self._check_not_const_target(stmt.target, scope, stmt)
             target_type = self._analyze_expr(stmt.target, scope, as_callee=False)
             index_type = self._analyze_expr(stmt.index, scope, as_callee=False)
             self._analyze_expr(stmt.value, scope, as_callee=False)
@@ -690,6 +713,16 @@ class SemanticAnalyzer:
 
         self._add_error("E2099", f"unsupported statement '{type(stmt).__name__}'", 1, 1)
 
+    def _check_not_const_target(self, target: object, scope: Scope, stmt: object) -> None:
+        """`C[i] = v` and `C.f = v` change the value behind the name, so a constant `C` forbids them."""
+        if isinstance(target, ast.IdentifierExpr) and scope.is_const(target.name):
+            self._add_error(
+                "E2065",
+                f"cannot modify constant '{target.name}'",
+                stmt.span.line,
+                stmt.span.column,
+            )
+
     def _analyze_intrinsic_call(
         self,
         intrinsic_name: str,
@@ -709,6 +742,12 @@ class SemanticAnalyzer:
 
         if enforce_std_only and spec.std_only and not self.is_std_source:
             self._add_error("E2022", f"intrinsic '{intrinsic_name}' is restricted to std sources", line, col)
+
+        if intrinsic_name == "io_print":
+            # print takes any number of values and writes them separated by spaces.
+            for arg in args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return None
 
         got_types: list[str | None] = [self._analyze_expr(arg, scope, as_callee=False) for arg in args]
         expected = spec.arg_types

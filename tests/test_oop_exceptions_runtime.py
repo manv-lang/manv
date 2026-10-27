@@ -122,7 +122,7 @@ def test_oop_class_methods_inheritance_and_dynamic_attrs(tmp_path: Path) -> None
         "        return self.x + y\n"
         "\n"
         "fn main() -> int:\n"
-        "    let c = Child(5)\n"
+        "    c = Child(5)\n"
         "    c.z = 99\n"
         "    print(c.value())\n"
         "    print(c.add(2))\n"
@@ -145,8 +145,8 @@ def test_class_keyword_and_dual_init_alias(tmp_path: Path) -> None:
         "        self.x = x + 1\n"
         "\n"
         "fn main() -> int:\n"
-        "    let c = C(4)\n"
-        "    let d = D(4)\n"
+        "    c = C(4)\n"
+        "    d = D(4)\n"
         "    print(c.x)\n"
         "    print(d.x)\n"
         "    return 0\n"
@@ -169,17 +169,17 @@ def test_object_equality_identity_default_and_dunder_eq(tmp_path: Path) -> None:
         "        return self.x == other.x\n"
         "\n"
         "fn main() -> int:\n"
-        "    let a = P(1)\n"
-        "    let b = P(1)\n"
-        "    let q1 = Q(2)\n"
-        "    let q2 = Q(2)\n"
+        "    a = P(1)\n"
+        "    b = P(1)\n"
+        "    q1 = Q(2)\n"
+        "    q2 = Q(2)\n"
         "    print(a == b)\n"
         "    print(q1 == q2)\n"
         "    return 0\n"
     )
     code, out = _run_source(tmp_path, source)
     assert code == 0
-    assert out.strip().splitlines() == ["False", "True"]
+    assert out.strip().splitlines() == ["false", "true"]
 
 
 def test_reflection_builtins_type_isinstance_issubclass_and_id(tmp_path: Path) -> None:
@@ -193,8 +193,8 @@ def test_reflection_builtins_type_isinstance_issubclass_and_id(tmp_path: Path) -
         "        self.x = 2\n"
         "\n"
         "fn main() -> int:\n"
-        "    let c = Child()\n"
-        "    let t = type(c)\n"
+        "    c = Child()\n"
+        "    t = type(c)\n"
         "    print(isinstance(c, Child))\n"
         "    print(isinstance(c, Base))\n"
         "    print(issubclass(Child, Base))\n"
@@ -204,14 +204,14 @@ def test_reflection_builtins_type_isinstance_issubclass_and_id(tmp_path: Path) -
     )
     code, out = _run_source(tmp_path, source)
     assert code == 0
-    assert out.strip().splitlines() == ["True", "True", "True", "Child", "True"]
+    assert out.strip().splitlines() == ["true", "true", "true", "Child", "true"]
 
 
 def test_import_and_from_import_executes_module_code(tmp_path: Path) -> None:
     util = tmp_path / "util.mv"
     util.write_text(
         (
-            "let VALUE = 9\n"
+            "VALUE = 9\n"
             "fn add(x, y) -> int:\n"
             "    return x + y + VALUE\n"
         ),
@@ -234,7 +234,7 @@ def test_import_module_cache_single_initialization(tmp_path: Path) -> None:
     util = tmp_path / "util.mv"
     util.write_text(
         (
-            "let INIT_COUNT = 0\n"
+            "INIT_COUNT = 0\n"
             "INIT_COUNT = INIT_COUNT + 1\n"
             "fn count() -> int:\n"
             "    return INIT_COUNT\n"
@@ -252,7 +252,7 @@ def test_import_module_cache_single_initialization(tmp_path: Path) -> None:
     )
     code, out = _run_source(tmp_path, source)
     assert code == 0
-    assert out.strip().splitlines() == ["1", "1", "True"]
+    assert out.strip().splitlines() == ["1", "1", "true"]
 
 
 def test_relative_from_import_inside_package(tmp_path: Path) -> None:
@@ -262,8 +262,8 @@ def test_relative_from_import_inside_package(tmp_path: Path) -> None:
     # pkg/mod.mv imports both via relative forms
     pkg = tmp_path / "pkg"
     pkg.mkdir(parents=True, exist_ok=True)
-    (pkg / "__init__.mv").write_text("let CONST = 5\n", encoding="utf-8")
-    (pkg / "helpers.mv").write_text("let VALUE = 7\n", encoding="utf-8")
+    (pkg / "__init__.mv").write_text("CONST = 5\n", encoding="utf-8")
+    (pkg / "helpers.mv").write_text("VALUE = 7\n", encoding="utf-8")
     (pkg / "mod.mv").write_text(
         (
             "include CONST from .\n"
@@ -307,7 +307,7 @@ def test_relative_from_import_parent_package_resolution(tmp_path: Path) -> None:
     sub.mkdir(parents=True, exist_ok=True)
     (pkg / "__init__.mv").write_text("", encoding="utf-8")
     (sub / "__init__.mv").write_text("", encoding="utf-8")
-    (pkg / "common.mv").write_text("let V = 40\n", encoding="utf-8")
+    (pkg / "common.mv").write_text("V = 40\n", encoding="utf-8")
     (sub / "mod.mv").write_text(
         (
             "include V from ..common\n"
@@ -331,14 +331,14 @@ def test_import_cycle_returns_partial_module_objects(tmp_path: Path) -> None:
     (tmp_path / "a.mv").write_text(
         (
             "include b\n"
-            "let A = 1\n"
+            "A = 1\n"
         ),
         encoding="utf-8",
     )
     (tmp_path / "b.mv").write_text(
         (
             "include a\n"
-            "let B = 2\n"
+            "B = 2\n"
         ),
         encoding="utf-8",
     )
@@ -359,8 +359,8 @@ def test_import_search_path_prefers_project_over_manv_path(tmp_path: Path, monke
     # Search order must be deterministic: project root first, then MANV_PATH.
     lib = tmp_path / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "util.mv").write_text("let VALUE = 10\n", encoding="utf-8")
-    (lib / "util.mv").write_text("let VALUE = 99\n", encoding="utf-8")
+    (tmp_path / "util.mv").write_text("VALUE = 10\n", encoding="utf-8")
+    (lib / "util.mv").write_text("VALUE = 99\n", encoding="utf-8")
     monkeypatch.setenv("MANV_PATH", str(lib))
 
     source = (
@@ -378,7 +378,7 @@ def test_import_search_path_uses_manv_path_fallback(tmp_path: Path, monkeypatch:
     # When project root misses, MANV_PATH should be used before bundled std.
     lib = tmp_path / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    (lib / "util.mv").write_text("let VALUE = 55\n", encoding="utf-8")
+    (lib / "util.mv").write_text("VALUE = 55\n", encoding="utf-8")
     monkeypatch.setenv("MANV_PATH", str(lib))
 
     source = (
@@ -433,7 +433,7 @@ def test_oop_missing_attribute_raises(tmp_path: Path) -> None:
         "        self.x = 1\n"
         "\n"
         "fn main() -> int:\n"
-        "    let t = T()\n"
+        "    t = T()\n"
         "    print(t.missing)\n"
         "    return 0\n"
     )
@@ -478,7 +478,7 @@ def test_interpreter_compiled_equivalence_for_oop_exceptions(tmp_path: Path) -> 
         "        self.x = x\n"
         "\n"
         "fn main() -> int:\n"
-        "    let c = C(4)\n"
+        "    c = C(4)\n"
         "    try:\n"
         "        print(c.x)\n"
         "        raise ValueError(\"e\")\n"

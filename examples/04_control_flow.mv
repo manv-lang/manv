@@ -10,9 +10,7 @@
 # no `else if` keyword. Use a nested `if` inside the `else` block
 # to express chained conditions.
 #
-# Note: `match` / `case` is parsed and executed by the interpreter
-# but is not yet accepted by the semantic analysis pass, so it is
-# not included here.
+# `match` / `case` is covered in tests/conformance/control_flow/.
 # ---
 
 fn classify(n: int) -> str:

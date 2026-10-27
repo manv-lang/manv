@@ -28,26 +28,26 @@ extern "c":
 fn main() -> int:
 
     # --- c_str: turn a ManV string into a C char* ---
-    let hello: ptr = c_str("Hello, FFI!")   # ptr — no C-style keyword yet; use let + annotation
+    ptr hello = c_str("Hello, FFI!")
 
     # --- Call the C strlen to measure it ---
     int length = strlen(hello)
     print(length)   # 11 (bytes in "Hello, FFI!")
 
     # --- ptr_null and ptr_is_null ---
-    let null_ptr: ptr = ptr_null()     # ptr — no C-style keyword yet; use let + annotation
+    ptr null_ptr = ptr_null()
     if ptr_is_null(null_ptr):
         print("pointer is null")       # always prints
 
     # --- malloc / free: allocate a raw 64-byte buffer ---
-    let buf: ptr = malloc(64)
+    ptr buf = malloc(64)
     if ptr_is_null(buf):
         print("malloc failed")
         return 1
     print("malloc succeeded, buffer is non-null")
 
     # --- ptr_add: advance pointer by an offset (bytes) ---
-    let offset_ptr: ptr = ptr_add(buf, 8)   # pointer 8 bytes into the buffer
+    ptr offset_ptr = ptr_add(buf, 8)   # pointer 8 bytes into the buffer
     if ptr_is_null(offset_ptr):
         print("offset ptr is null")
     else:

@@ -1,0 +1,7 @@
+fn main() -> int:
+    try:
+        raise IndexError("out of range")
+    except IndexError as e:
+        print(e.message)
+        print("caught: " + e.message)
+    return 0

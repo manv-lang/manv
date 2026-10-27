@@ -27,7 +27,8 @@ class Token:
 
 KEYWORDS = {
     "fn",
-    "let",
+    "let",  # removed from the language: kept reserved so old code gets a clear error (E1015)
+    "const",
     "int",
     "i32",
     "str",

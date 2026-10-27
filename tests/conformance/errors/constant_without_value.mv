@@ -1,0 +1,3 @@
+fn main() -> int:
+    const x
+    return 0

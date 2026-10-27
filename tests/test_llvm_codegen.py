@@ -34,11 +34,11 @@ def test_llvm_lowering_supports_classes_syscall_and_required_gpu_stub() -> None:
         "        print(self.name)\n"
         "\n"
         "fn main() -> none:\n"
-        "    let user = User(\"x\")\n"
+        "    user = User(\"x\")\n"
         "    user.repr()\n"
-        "    let r = syscall(\"getpid\")\n"
+        "    r = syscall(\"getpid\")\n"
         "    print(r[\"ok\"])\n"
-        "    let out = add(1.0, 2.0)\n"
+        "    out = add(1.0, 2.0)\n"
         "    print(out)\n"
     )
 
@@ -61,7 +61,7 @@ def test_llvm_lowering_supports_arrays_maps_and_core_len() -> None:
         "fn main() -> none:\n"
         "    array xs[3] = [1, 2]\n"
         "    xs[2] = 9\n"
-        "    let m = {\"ok\": 1}\n"
+        "    m = {\"ok\": 1}\n"
         "    m[\"next\"] = xs[2]\n"
         "    print(__intrin.core_len(xs))\n"
         "    print(m[\"ok\"])\n"
@@ -86,7 +86,7 @@ def test_llvm_lowering_supports_arrays_maps_and_core_len() -> None:
 def test_llvm_lowering_reports_remaining_unsupported_surface() -> None:
     source = (
         "fn main() -> none:\n"
-        "    let xs = [1, 2.0]\n"
+        "    xs = [1, 2.0]\n"
         "    print(xs)\n"
     )
 

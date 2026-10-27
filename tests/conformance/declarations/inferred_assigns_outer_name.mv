@@ -1,0 +1,7 @@
+fn main() -> int:
+    total = 0
+    for i in 0..3:
+        total = total + i
+        step = i * 10
+    print(total)
+    return 0

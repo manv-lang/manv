@@ -14,7 +14,7 @@ from . import ast
 from .diagnostics import ManvError, Span, diag
 from .tokens import Token
 
-C_DECL_TYPES = {"int", "i32", "str", "array", "map", "u8", "usize", "float", "f32", "bool"}
+C_DECL_TYPES = {"int", "i32", "i64", "str", "array", "map", "u8", "usize", "float", "f32", "bool", "ptr"}
 MODULE_SEGMENT_KEYWORDS = {"str", "int", "float", "bool", "type", "array", "map"}
 
 
@@ -172,11 +172,18 @@ class Parser:
             if decorators:
                 self._error("E1012", "decorators are only supported on functions", self._current())
             if self._match_keyword("let"):
-                attrs.append(self._parse_type_attr_decl())
+                self._error(
+                    "E1015",
+                    "'let' was removed: write 'int x = 0' or 'x = 0' for a field, 'const X = 0' for a constant",
+                    self._prev(),
+                )
+            self._match_keyword("const")  # a const member is stored like a field; type attributes are immutable
+            if self._is_c_declaration_start() or (self._is("IDENT") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "="):
+                attrs.append(self._parse_field_decl())
                 self._consume_required_newline("expected newline after type attribute")
                 first_item = False
                 continue
-            self._error("E1006", f"expected 'fn' or 'let' inside {owner} block", self._current())
+            self._error("E1006", f"expected 'fn' or a field declaration inside {owner} block", self._current())
         self._expect("DEDENT", message="expected dedent")
         return docstring, attrs, methods
 
@@ -243,8 +250,14 @@ class Parser:
             self._consume_required_newline("expected newline after declaration")
             return stmt
         if self._match_keyword("let"):
-            stmt = self._parse_let_stmt()
-            self._consume_required_newline("expected newline after let statement")
+            self._error(
+                "E1015",
+                "'let' was removed: write 'x = ...' or 'T x = ...'; use 'const' for constants",
+                self._prev(),
+            )
+        if self._match_keyword("const"):
+            stmt = self._parse_const_stmt()
+            self._consume_required_newline("expected newline after const declaration")
             return stmt
         if self._match_keyword("return"):
             stmt = self._parse_return_stmt()
@@ -329,37 +342,44 @@ class Parser:
         self._consume_required_newline("expected newline after expression")
         return ast.ExprStmt(expr=expr, span=self._span_from_expr(expr))
 
-    def _parse_let_stmt(self) -> ast.LetStmt:
-        let_tok = self._prev()
-        if self._is("IDENT") and self._current().lexeme == "mut" and self._peek(1).kind == "IDENT":
-            self._advance()  # consume 'mut', treat as regular let
-        name_tok = self._expect("IDENT", message="expected variable name")
-        type_name = None
-        value = None
-        if self._match_op(":"):
-            type_name = self._parse_type(stop_ops={"=", "\n"})
-        if self._match_op("="):
-            value = self._parse_expression()
+    def _parse_const_stmt(self) -> ast.LetStmt:
+        """`const NAME = value` or `const T NAME = value`; the value is required."""
+        const_tok = self._prev()
+        type_name = self._parse_decl_type() if self._is_c_declaration_start() else None
+        name_tok = self._expect("IDENT", message="expected constant name")
+        if not self._is_op("="):
+            self._error("E1016", f"constant '{name_tok.lexeme}' needs a value: 'const {name_tok.lexeme} = ...'", name_tok)
+        self._advance()
+        value = self._parse_expression()
         return ast.LetStmt(
             name=name_tok.lexeme,
             type_name=type_name,
             value=value,
-            span=self._span(let_tok),
+            span=self._span(const_tok),
+            is_const=True,
         )
 
-    def _parse_type_attr_decl(self) -> ast.TypeAttrDecl:
-        let_tok = self._prev()
+    def _parse_field_decl(self) -> ast.TypeAttrDecl:
+        """A field or constant in a type body: `T name = value` or `name = value` (after any `const`)."""
+        start = self._current()
+        type_name = self._parse_decl_type() if self._is_c_declaration_start() else None
         name_tok = self._expect("IDENT", message="expected attribute name")
-        type_name = None
-        if self._match_op(":"):
-            type_name = self._parse_type(stop_ops={"="})
         self._expect_op("=")
         value = self._parse_expression()
-        return ast.TypeAttrDecl(name=name_tok.lexeme, type_name=type_name, value=value, span=self._span(let_tok))
+        return ast.TypeAttrDecl(name=name_tok.lexeme, type_name=type_name, value=value, span=self._span(start))
+
+    def _parse_decl_type(self) -> str:
+        """Consume the type in `T name`: a type word, optionally followed by `[]` pairs (`f32[]`)."""
+        type_name = self._advance().lexeme
+        while self._is_op("[") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "]":
+            self._advance()
+            self._advance()
+            type_name += "[]"
+        return type_name
 
     def _parse_c_decl_stmt(self) -> ast.LetStmt:
-        type_tok = self._advance()
-        type_name = type_tok.lexeme
+        type_tok = self._current()
+        type_name = self._parse_decl_type()
         name_tok = self._expect("IDENT", message="expected variable name")
         array_size: object | None = None
 
@@ -966,7 +986,7 @@ class Parser:
                 expr = ast.IndexExpr(value=expr, index=idx, span=self._span(close))
                 continue
             if self._match_op("."):
-                attr = self._expect("IDENT", message="expected attribute name")
+                attr = self._expect_attr_name()
                 expr = ast.AttributeExpr(value=expr, attr=attr.lexeme, span=self._span(attr))
                 continue
             break
@@ -975,7 +995,7 @@ class Parser:
     def _parse_primary(self) -> object:
         tok = self._current()
         if self._match("NUMBER"):
-            if "." in tok.lexeme:
+            if "." in tok.lexeme or "e" in tok.lexeme:  # the lexer normalizes: floats have '.' or an exponent
                 return ast.LiteralExpr(value=float(tok.lexeme), literal_type="float", span=self._span(tok))
             return ast.LiteralExpr(value=int(tok.lexeme), literal_type="int", span=self._span(tok))
         if self._match("STRING"):
@@ -1120,9 +1140,19 @@ class Parser:
         return self._current().kind == kind
 
     def _is_c_declaration_start(self) -> bool:
+        """True at `T name` or `T[] name`: a type word (builtin or user-defined) then a name."""
         tok = self._current()
-        next_tok = self._peek(1)
-        return tok.kind == "KEYWORD" and tok.lexeme in C_DECL_TYPES and next_tok.kind == "IDENT"
+        if not (tok.kind == "IDENT" or (tok.kind == "KEYWORD" and tok.lexeme in C_DECL_TYPES)):
+            return False
+        offset = 1
+        while (
+            self._peek(offset).kind == "OP"
+            and self._peek(offset).lexeme == "["
+            and self._peek(offset + 1).kind == "OP"
+            and self._peek(offset + 1).lexeme == "]"
+        ):
+            offset += 2
+        return self._peek(offset).kind == "IDENT"
 
     def _match_logic_op(self, kind: str) -> bool:
         if kind == "and":
@@ -1136,7 +1166,7 @@ class Parser:
             self._is("IDENT")
             and self._peek(1).kind == "OP"
             and self._peek(1).lexeme == "."
-            and self._peek(2).kind == "IDENT"
+            and self._peek(2).kind in {"IDENT", "KEYWORD"}
             and self._peek(3).kind == "OP"
             and self._peek(3).lexeme == "="
         ):
@@ -1144,7 +1174,7 @@ class Parser:
         ident = self._advance()
         target = ast.IdentifierExpr(name=ident.lexeme, span=self._span(ident))
         self._expect_op(".")
-        attr = self._expect("IDENT", message="expected attribute name")
+        attr = self._expect_attr_name()
         assign_tok = self._expect_op("=")
         value = self._parse_expression()
         return ast.SetAttrStmt(target=target, attr=attr.lexeme, value=value, span=self._span(assign_tok))
@@ -1171,7 +1201,7 @@ class Parser:
             self._is("IDENT")
             and self._peek(1).kind == "OP"
             and self._peek(1).lexeme == "."
-            and self._peek(2).kind == "IDENT"
+            and self._peek(2).kind in {"IDENT", "KEYWORD"}
             and self._peek(3).kind == "OP"
             and self._peek(3).lexeme in aug_ops
         ):
@@ -1179,7 +1209,7 @@ class Parser:
         ident = self._advance()
         target = ast.IdentifierExpr(name=ident.lexeme, span=self._span(ident))
         self._expect_op(".")
-        attr = self._expect("IDENT", message="expected attribute name")
+        attr = self._expect_attr_name()
         op_tok = self._advance()
         value = self._parse_expression()
         return ast.AugAssignAttrStmt(target=target, attr=attr.lexeme, op=op_tok.lexeme, value=value, span=self._span(op_tok))
@@ -1235,6 +1265,12 @@ class Parser:
             cases.append(ast.CaseClause(pattern=pattern, guard=guard, body=body, span=self._span(case_tok)))
         self._expect("DEDENT", message="expected dedent after match block")
         return ast.MatchStmt(subject=subject, cases=cases, span=self._span(match_tok))
+
+    def _expect_attr_name(self) -> Token:
+        """An attribute name after `.`: any word, including reserved ones (`e.type`)."""
+        if self._is("KEYWORD"):
+            return self._advance()
+        return self._expect("IDENT", message="expected attribute name")
 
     def _is_op(self, op: str) -> bool:
         tok = self._current()

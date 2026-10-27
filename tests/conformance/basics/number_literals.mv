@@ -1,0 +1,14 @@
+fn main() -> int:
+    print(0xFF)
+    print(0b101)
+    print(0o17)
+    print(0xDEAD_BEEF)
+    print(1_000_000)
+    print(1e3)
+    print(2.5e-3)
+    print(1_0.5)
+    print(0x10 + 0b10 + 0o10)
+    for i in 0..3:
+        print(i)
+    print(7.0)
+    return 0

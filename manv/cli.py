@@ -215,6 +215,10 @@ def run(
             stable_debug_format=stable_debug_format,
         )
     except ManvError as err:
+        # Whatever the program printed before it failed is still output.
+        partial = out.getvalue()
+        if partial:
+            _echo(partial, nl=False)
         _fail(err)
     text = out.getvalue()
     if text:

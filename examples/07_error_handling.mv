@@ -9,8 +9,6 @@
 #   - Re-raise with bare raise
 #
 # Notes:
-#   - Nested function declarations (fn inside fn) are not supported;
-#     all helpers must be at the top level.
 #   - Accessing e.message on a caught exception is not yet supported
 #     by the interpreter.  Use `except ExceptionType:` (without `as e`)
 #     when you only need to branch on the type, not the content.

@@ -1,0 +1,5 @@
+const LIMIT = 10
+
+fn main() -> int:
+    LIMIT = 11
+    return 0

@@ -1,0 +1,8 @@
+type Box:
+    fn __init__(self):
+        self.n = 1
+
+fn main() -> int:
+    const b = Box()
+    b.n = 3
+    return 0

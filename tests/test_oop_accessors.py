@@ -31,7 +31,7 @@ def test_getter_and_setter_route_attribute_reads_and_writes(tmp_path: Path) -> N
         "        self._name = value\n"
         "\n"
         "fn main() -> int:\n"
-        "    let user = User(\"Ada\")\n"
+        "    user = User(\"Ada\")\n"
         "    print(user.name)\n"
         "    user.name = \"Grace\"\n"
         "    print(user.name)\n"

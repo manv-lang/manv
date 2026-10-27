@@ -1,0 +1,10 @@
+fn main() -> int:
+    try:
+        raise IndexError("out of range")
+    except IndexError as e:
+        print(e.type)
+    try:
+        raise ValueError("bad")
+    except Exception as e:
+        print(e.type + ": " + e.message)
+    return 0

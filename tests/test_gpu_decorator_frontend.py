@@ -26,9 +26,9 @@ def _source(header: str = "@gpu") -> str:
         "        out[i] = a[i] + b[i]\n"
         "\n"
         "fn main() -> int:\n"
-        "    let a: f32[] = [1.0, 2.0]\n"
-        "    let b: f32[] = [3.0, 4.0]\n"
-        "    let out: f32[] = [0.0, 0.0]\n"
+        "    f32[] a = [1.0, 2.0]\n"
+        "    f32[] b = [3.0, 4.0]\n"
+        "    f32[] out = [0.0, 0.0]\n"
         "    add(a, b, out)\n"
         "    print(out[0])\n"
         "    return 0\n"
@@ -165,7 +165,7 @@ def test_graph_mode_lowering_builds_multi_kernel_reduction_module() -> None:
     source = (
         '@gpu(mode="graph")\n'
         "fn reduce(a: i32[]) -> i32:\n"
-        "    let acc: i32 = 0\n"
+        "    i32 acc = 0\n"
         "    for i in 0..len(a):\n"
         "        acc = acc + a[i]\n"
         "    return acc\n"

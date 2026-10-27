@@ -1,0 +1,3 @@
+fn main() -> int:
+    print(100_)
+    return 0

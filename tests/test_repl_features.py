@@ -32,7 +32,7 @@ def test_repl_registers_type_declarations_and_exposes_them_to_completion() -> No
     session = ReplSession(out)
     session.execute_source(
         "class Math:\n"
-        "    let pi: f32 = 3.14\n"
+        "    f32 pi = 3.14\n"
         "    fn sqrt(self, x: f32) -> f32:\n"
         "        return x\n"
     )
@@ -57,7 +57,7 @@ def test_repl_executes_accessor_backed_properties() -> None:
         "        self._name = value\n"
     )
     session.execute_source(
-        "let user = User(\"Ada\")\n"
+        "user = User(\"Ada\")\n"
         "print(user.name)\n"
         "user.name = \"Grace\"\n"
         "print(user.name)\n"

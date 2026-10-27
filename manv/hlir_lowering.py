@@ -526,6 +526,12 @@ class HLIRLowerer:
 
         if isinstance(stmt, ast.AssignStmt):
             value = self._lower_expr(state, stmt.value)
+            if stmt.declares and stmt.name not in state.declared_vars:
+                state.emit(
+                    HInstruction(op="declare_var", attrs={"name": stmt.name, "type": None}, effects=["writes_memory"]),
+                    node=stmt,
+                )
+                state.declared_vars.add(stmt.name)
             state.emit(HInstruction(op="store_var", args=[stmt.name, value], effects=["writes_memory"]), node=stmt)
             return
 
@@ -732,6 +738,42 @@ class HLIRLowerer:
         else:
             value_temp = self._lower_expr(state, stmt.value)
         state.emit(HInstruction(op="store_var", args=[stmt.name, value_temp], effects=["writes_memory"]), node=stmt)
+
+    def _lower_short_circuit(self, state: _LowerState, expr: ast.BinaryExpr) -> str:
+        """`a and b` / `a or b`: evaluate `b` only when `a` does not already decide the result.
+
+        The bool result is carried through a hidden variable, because HLIR has no phi nodes.
+        """
+        is_and = expr.op in {"and", "&&"}
+        rhs_label = state.new_label("sc_rhs")
+        end_label = state.new_label("sc_end")
+        var = "__" + rhs_label
+
+        state.emit(HInstruction(op="declare_var", attrs={"name": var, "type": "bool"}, effects=["writes_memory"]), node=expr)
+        state.declared_vars.add(var)
+
+        def as_bool(value: str) -> str:
+            # `x and x` is bool(x) under the language's truthiness rules.
+            out = state.new_temp()
+            state.emit(HInstruction(op="binop", dest=out, args=[value, value], attrs={"op": "and"}), node=expr)
+            return out
+
+        left = as_bool(self._lower_expr(state, expr.left))
+        state.emit(HInstruction(op="store_var", args=[var, left], effects=["writes_memory"]), node=expr)
+        if is_and:
+            state.terminate("cbr", [left, rhs_label, end_label], node=expr)
+        else:
+            state.terminate("cbr", [left, end_label, rhs_label], node=expr)
+
+        state.set_block(rhs_label)
+        right = as_bool(self._lower_expr(state, expr.right))
+        state.emit(HInstruction(op="store_var", args=[var, right], effects=["writes_memory"]), node=expr)
+        state.terminate("br", [end_label], node=expr)
+
+        state.set_block(end_label)
+        result = state.new_temp()
+        state.emit(HInstruction(op="load_var", dest=result, args=[var], effects=["reads_memory"]), node=expr)
+        return result
 
     def _lower_if(self, state: _LowerState, stmt: ast.IfStmt) -> None:
         cond = self._lower_expr(state, stmt.condition)
@@ -1144,6 +1186,9 @@ class HLIRLowerer:
             out = state.new_temp()
             state.emit(HInstruction(op="unary", dest=out, args=[inner], attrs={"op": expr.op}), node=expr)
             return out
+
+        if isinstance(expr, ast.BinaryExpr) and expr.op in {"and", "&&", "or", "||"}:
+            return self._lower_short_circuit(state, expr)
 
         if isinstance(expr, ast.BinaryExpr):
             left = self._lower_expr(state, expr.left)

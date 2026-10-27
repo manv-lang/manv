@@ -60,7 +60,7 @@ fn main() -> int:
     # fn run_with_stdlib() -> int:
     #     # math module: constants and transcendental functions
     #     print(math.pi)                       # 3.14159...
-    #     let angle = math.pi / 4.0            # 45 degrees in radians
+    #     angle = math.pi / 4.0            # 45 degrees in radians
     #     print(math.sin(angle))               # ~0.7071
     #     print(math.cos(angle))               # ~0.7071
     #     print(math.sqrt(144.0))              # 12.0

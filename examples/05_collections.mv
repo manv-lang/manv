@@ -8,9 +8,10 @@
 #   - Map literals, key access, map_has_key, map_keys, map_values
 #   - Nested collections (array of maps built incrementally)
 #
-# Note: Array literals must be on a single line — multi-line array
-# literals are not currently supported. Build multi-element arrays
-# incrementally with array_append when elements are complex.
+# Note: array_append currently appends to the array it is given (and
+# returns it). Whether it should return a new array instead is an open
+# decision, so write `a = array_append(a, x)`, which means the same
+# either way.
 # ---
 
 fn main() -> int:
@@ -52,10 +53,10 @@ fn main() -> int:
     mutable[1] = 99      # replace element at index 1
     print(mutable)       # [1, 99, 3]
 
-    # --- array_append: returns a new array with item appended ---
+    # --- array_append: appends an item ---
     array extended = array_append(mutable, 4)
     print(extended)      # [1, 99, 3, 4]
-    print(mutable)       # [1, 99, 3] — original unchanged
+    print(mutable)       # currently also [1, 99, 3, 4]; see the note above
 
     # --- Map literals and key access ---
     map person = {"name": "Alice", "age": 30}

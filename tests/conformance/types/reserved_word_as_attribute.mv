@@ -1,0 +1,12 @@
+type Tag:
+    fn __init__(self, label: str):
+        self.type = label
+
+fn show(t):
+    t.type = t.type + "!"
+    print(t.type)
+
+fn main() -> int:
+    print(Tag("abc").type)
+    show(Tag("x"))
+    return 0

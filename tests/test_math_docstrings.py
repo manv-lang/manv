@@ -28,13 +28,13 @@ def test_parser_extracts_docstrings_and_type_attributes() -> None:
         "\n"
         "class Math:\n"
         '    "Scalar math utilities."\n'
-        "    let pi: f32 = 3.0\n"
+        "    f32 pi = 3.0\n"
         "    fn sqrt(x: f32) -> f32:\n"
         '        "Returns sqrt(x)."\n'
         "        return x\n"
         "\n"
         "fn main() -> int:\n"
-        "    let x = 1\n"
+        "    x = 1\n"
         '    "not a docstring"\n'
         "    return x\n"
     )

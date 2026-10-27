@@ -1,1 +1,0 @@
-TODO Phase 1: print(obj) ignores __repr__ and dumps the interpreter's internal InstanceObject

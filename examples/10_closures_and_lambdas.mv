@@ -10,7 +10,7 @@
 #
 # Note: Lambda bodies require a full indented block — single-expression
 # lambdas (fn(x): x * 2) are NOT supported. Always use:
-#   let f = fn(x: int) -> int:
+#   f = fn(x: int) -> int:
 #       return x * 2
 # ---
 
@@ -49,7 +49,7 @@ fn cube(x: int) -> int:
 fn main() -> int:
 
     # --- Basic anonymous function literal ---
-    let square = fn(x: int) -> int:
+    square = fn(x: int) -> int:
         return x * x
 
     print(square(5))   # 25
@@ -77,27 +77,27 @@ fn main() -> int:
     print(incremented)   # [11, 12, 13, 14, 15]
 
     # --- Closures: make_adder returns a function capturing n ---
-    let add5  = make_adder(5)
-    let add10 = make_adder(10)
+    add5 = make_adder(5)
+    add10 = make_adder(10)
 
     print(add5(3))    # 8   (3 + 5)
     print(add10(3))   # 13  (3 + 10)
     print(add5(add10(1)))  # add10(1)=11, then add5(11)=16
 
     # --- Closures: make_multiplier ---
-    let triple = make_multiplier(3)
-    let times7 = make_multiplier(7)
+    triple = make_multiplier(3)
+    times7 = make_multiplier(7)
 
     print(triple(4))   # 12
     print(times7(6))   # 42
 
     # --- Storing functions in an array ---
     # Define each function as a variable first, then collect them.
-    let add_one = fn(x: int) -> int:
+    add_one = fn(x: int) -> int:
         return x + 1
-    let times_two = fn(x: int) -> int:
+    times_two = fn(x: int) -> int:
         return x * 2
-    let squared = fn(x: int) -> int:
+    squared = fn(x: int) -> int:
         return x * x
 
     array transforms = [add_one, times_two, squared]   # array of callables

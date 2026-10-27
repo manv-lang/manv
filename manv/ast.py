@@ -168,18 +168,25 @@ class MacroCallExpr:
 
 @dataclass
 class LetStmt:
+    """A declaration: `T name = v`, or `const [T] name = v` when is_const is set."""
+
     name: str
     type_name: str | None
     value: Any | None
     span: Span
     array_size: Any | None = None
+    is_const: bool = False
 
 
 @dataclass
 class AssignStmt:
+    """`name = value`. When `name` was not bound yet, semantic analysis sets `declares`
+    and the statement introduces the variable (inferred type) instead of assigning."""
+
     name: str
     value: Any
     span: Span
+    declares: bool = False
 
 
 @dataclass

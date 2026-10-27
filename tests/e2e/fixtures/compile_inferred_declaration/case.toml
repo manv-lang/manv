@@ -1,4 +1,4 @@
-name = "compile_mut_unsupported"
+name = "compile_inferred_declaration"
 command = "compile"
 target = "."
 expect_exit = 0

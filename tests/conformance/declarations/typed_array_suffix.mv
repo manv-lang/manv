@@ -1,0 +1,6 @@
+fn main() -> int:
+    f32[] xs = [1.0, 2.0]
+    int[] ys = [1, 2, 3]
+    print(len(xs))
+    print(sum(ys))
+    return 0

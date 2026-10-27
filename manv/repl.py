@@ -22,6 +22,8 @@ class ReplSession:
     def __init__(self, out: TextIO):
         self.out = out
         self.interpreter = Interpreter(file="<repl>", stdout=out)
+        # The REPL has no semantic pass, so it tracks constants itself.
+        self.consts: set[str] = set()
 
     def execute_source(self, source: str) -> None:
         program = parse_program(source, "<repl>")
@@ -49,9 +51,25 @@ class ReplSession:
                 self.out.write(f"registered macro {decl.name}\n")
 
         for stmt in program.statements:
+            if isinstance(stmt, (ast.AssignStmt, ast.AugAssignStmt)) and stmt.name in self.consts:
+                self.out.write(f"error[E2064]: cannot assign to constant '{stmt.name}'\n")
+                continue
+            if isinstance(stmt, ast.AssignStmt) and not self._is_bound(stmt.name):
+                stmt.declares = True  # first assignment to a new name declares it
             value = self.interpreter.execute_stmt(stmt, self.interpreter.global_env)
+            if isinstance(stmt, ast.LetStmt) and stmt.is_const:
+                self.consts.add(stmt.name)
+            elif isinstance(stmt, ast.LetStmt):
+                self.consts.discard(stmt.name)
             if isinstance(stmt, ast.ExprStmt) and value is not None:
                 self.out.write(f"{value}\n")
+
+    def _is_bound(self, name: str) -> bool:
+        try:
+            self.interpreter.global_env.lookup(name)
+        except KeyError:
+            return False
+        return True
 
     def completion_words(self) -> list[str]:
         words = set(KEYWORDS)

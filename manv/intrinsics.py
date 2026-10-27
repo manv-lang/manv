@@ -641,9 +641,27 @@ def _core_bool(args: list[Any], **_: Any) -> bool:
     return bool(args[0])
 
 
+def format_value(value: Any, *, nested: bool = False) -> str:
+    """How print() and str() write a value: `true`/`false`/`none`, collections of the same, and a
+    string as itself (quoted when it sits inside a collection)."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "none"
+    if isinstance(value, str):
+        return repr(value) if nested else value
+    if isinstance(value, list):
+        return "[" + ", ".join(format_value(v, nested=True) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{format_value(k, nested=True)}: {format_value(v, nested=True)}" for k, v in value.items()) + "}"
+    return str(value)
+
+
 def _core_str(args: list[Any], **_: Any) -> str:
     _ensure_arity("core_str", args, min_n=1, max_n=1)
-    return str(args[0])
+    return format_value(args[0])
 
 
 def _core_iter(args: list[Any], **_: Any) -> Any:
@@ -1029,7 +1047,7 @@ def _io_print(args: list[Any], *, stdout_write: Callable[[str], None] | None = N
     parts = args
     if len(args) == 1 and isinstance(args[0], list):
         parts = args[0]
-    writer(" ".join(str(x) for x in parts) + "\n")
+    writer(" ".join(format_value(x) for x in parts) + "\n")
     return None
 
 

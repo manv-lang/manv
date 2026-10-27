@@ -143,7 +143,7 @@ def test_lsp_symbols_preserve_docstrings_and_type_constants(tmp_path: Path) -> N
         '"""Module docs."""\n'
         "class Math:\n"
         '    "Scalar math utilities."\n'
-        "    let pi: f32 = 3.14\n"
+        "    f32 pi = 3.14\n"
         "    fn sqrt(x: f32) -> f32:\n"
         '        "Returns sqrt(x)."\n'
         "        return x\n"

@@ -1,0 +1,8 @@
+type Grid:
+    const int SIZE = 4
+    int cells = 16
+
+fn main() -> int:
+    print(Grid().SIZE)
+    print(Grid().cells)
+    return 0

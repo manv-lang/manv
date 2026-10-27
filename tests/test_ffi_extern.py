@@ -144,7 +144,7 @@ class TestExternParser:
         src = (
             'fn main() -> int:\n'
             '    extern "c" fn strlen(s: ptr) -> int\n'
-            '    let n = strlen(c_str("hi"))\n'
+            '    n = strlen(c_str("hi"))\n'
             '    return n\n'
         )
         # Parse only — should not raise
@@ -280,7 +280,7 @@ class TestInterpreterLiveLibc:
             'extern "c" fn strlen(s: ptr) -> int\n'
             "\n"
             "fn main() -> int:\n"
-            '    let n = strlen(c_str("hello"))\n'
+            '    n = strlen(c_str("hello"))\n'
             "    print(n)\n"
             "    return 0\n"
         )
@@ -296,7 +296,7 @@ class TestInterpreterLiveLibc:
             "    fn free(p: ptr)\n"
             "\n"
             "fn main() -> int:\n"
-            "    let buf = malloc(64)\n"
+            "    buf = malloc(64)\n"
             "    print(ptr_is_null(buf))\n"
             "    free(buf)\n"
             "    return 0\n"
@@ -314,8 +314,8 @@ class TestInterpreterLiveLibc:
             "    fn free(p: ptr)\n"
             "\n"
             "fn main() -> int:\n"
-            '    let n = strlen(c_str("hi"))\n'
-            "    let buf = malloc(n)\n"
+            '    n = strlen(c_str("hi"))\n'
+            "    buf = malloc(n)\n"
             "    free(buf)\n"
             "    print(n)\n"
             "    return 0\n"
@@ -331,7 +331,7 @@ class TestInterpreterLiveLibc:
             'extern "c" fn c_len(s: ptr) -> int as "strlen"\n'
             "\n"
             "fn main() -> int:\n"
-            '    let n = c_len(c_str("hello!"))\n'
+            '    n = c_len(c_str("hello!"))\n'
             "    print(n)\n"
             "    return 0\n"
         )
@@ -367,7 +367,7 @@ class TestInterpreterLiveLibc:
     def test_ptr_null_in_interpreter(self, tmp_path):
         src = (
             "fn main() -> int:\n"
-            "    let p = ptr_null()\n"
+            "    p = ptr_null()\n"
             "    print(ptr_is_null(p))\n"
             "    return 0\n"
         )
@@ -382,8 +382,8 @@ class TestInterpreterLiveLibc:
             'extern "c" fn free(p: ptr)\n'
             "\n"
             "fn main() -> int:\n"
-            "    let buf = malloc(16)\n"
-            "    let p2 = ptr_add(buf, 8)\n"
+            "    buf = malloc(16)\n"
+            "    p2 = ptr_add(buf, 8)\n"
             "    print(ptr_is_null(p2))\n"
             "    free(buf)\n"
             "    return 0\n"
@@ -405,7 +405,7 @@ class TestStdlibLibc:
             "include strlen from libc\n"
             "\n"
             "fn main() -> int:\n"
-            '    let n = strlen(c_str("hello"))\n'
+            '    n = strlen(c_str("hello"))\n'
             "    print(n)\n"
             "    return 0\n"
         )
@@ -420,7 +420,7 @@ class TestStdlibLibc:
             "include malloc, free from libc\n"
             "\n"
             "fn main() -> int:\n"
-            "    let buf = malloc(128)\n"
+            "    buf = malloc(128)\n"
             "    print(ptr_is_null(buf))\n"
             "    free(buf)\n"
             "    return 0\n"
@@ -493,7 +493,7 @@ class TestHlirIntegration:
             'extern "c" fn strlen(s: ptr) -> int\n'
             "\n"
             "fn main() -> int:\n"
-            '    let n = strlen(c_str("hello"))\n'
+            '    n = strlen(c_str("hello"))\n'
             "    return n\n"
         )
         prog = parse_program(src, "test.mv")

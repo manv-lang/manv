@@ -1,0 +1,23 @@
+fn t(label: str) -> bool:
+    print(label)
+    return true
+
+fn f(label: str) -> bool:
+    print(label)
+    return false
+
+fn main() -> int:
+    if f("a") and t("b"):
+        print("no")
+    if t("c") or f("d"):
+        print("yes")
+    if f("e") or (t("g") and f("h")):
+        print("no")
+    if t("i") and (f("j") or t("k")):
+        print("yes2")
+    int n = 0
+    while n < 3 and t("loop"):
+        n = n + 1
+    print(true and false)
+    print(0 or 5)
+    return 0
