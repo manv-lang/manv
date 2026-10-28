@@ -38,6 +38,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - Compiled Python files and test build artifacts that were committed despite `.gitignore`.
 
 ### Fixed
+- Runtime errors (uncaught exceptions) were always reported at `1:1`; they now point at the line and column where the error happened (`tests/test_runtime_positions.py`).
 - `not` bound tighter than comparison, so `not a == b` meant `(not a) == b`; it is now looser than comparison.
 - `print` and `str()` wrote Python's spellings (`True`, `None`); they now write `true`, `false` and `none`, also inside arrays and maps. `print(obj)` and `str(obj)` use the type's `__str__` or `__repr__` instead of dumping interpreter internals.
 - `and` / `or` evaluated both operands; they now short-circuit, in the interpreter and in HLIR lowering.

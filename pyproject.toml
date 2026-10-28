@@ -2,7 +2,7 @@
 name = "manv"
 version = "0.1.0"
 description = "manv language toolchain MVP"
-authors = ["r0d <ramsy0dev@gmail.com>"]
+authors = ["thefr0gg <ramsy0dev@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]

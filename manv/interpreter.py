@@ -1498,11 +1498,11 @@ class Interpreter:
         if isinstance(value, ExceptionObject):
             raise RaiseSignal(value)
         if isinstance(value, InstanceObject) and self._is_type_or_subtype(value.type_obj, self.types["BaseException"]):
-            exc = self._ensure_exception_instance(value)
+            exc = self._ensure_exception_instance(value, span)
             raise RaiseSignal(exc)
         self._raise_runtime("TypeError", "raised value is not an exception instance", span)
 
-    def _ensure_exception_instance(self, value: InstanceObject) -> ExceptionObject:
+    def _ensure_exception_instance(self, value: InstanceObject, span: Any = None) -> ExceptionObject:
         message = value.attrs.get("message", "")
         if not isinstance(message, str):
             message = str(message)
@@ -1512,7 +1512,7 @@ class Interpreter:
                 code = int(code)
             except Exception:
                 code = None
-        stack = self._capture_stacktrace()
+        stack = self._capture_stacktrace(span)
         try:
             return self.heap.allocate(
                 "Exception",
@@ -1523,7 +1523,7 @@ class Interpreter:
 
     def _raise_runtime(self, type_name: str, message: str, span: Any, payload: Any = None, code: int | None = None) -> NoReturn:
         t = self.types.get(type_name) or self.types["RuntimeError"]
-        stack = self._capture_stacktrace()
+        stack = self._capture_stacktrace(span)
         try:
             exc = self.heap.allocate("Exception", ExceptionObject(type_obj=t, message=message, payload=payload, code=code, stacktrace=stack))
         except OutOfMemoryError as alloc_err:
@@ -1531,7 +1531,9 @@ class Interpreter:
             exc = ExceptionObject(type_obj=t2, message=str(alloc_err), payload=None, stacktrace=stack)
         raise RaiseSignal(exc)
 
-    def _capture_stacktrace(self) -> list[dict[str, Any]]:
+    def _capture_stacktrace(self, at: Any = None) -> list[dict[str, Any]]:
+        """The call stack, innermost last. `at` is where the error happened: it replaces the
+        innermost frame's position (a frame otherwise only knows where its function is declared)."""
         out: list[dict[str, Any]] = []
         for frame in self.call_stack:
             span = frame.get("span")
@@ -1545,6 +1547,13 @@ class Interpreter:
                     "hlir_id": frame.get("hlir_id"),
                 }
             )
+        line = getattr(at, "line", None)
+        if isinstance(line, int) and line > 0:
+            here = {"file": getattr(at, "file", self.file), "line": line, "column": getattr(at, "column", 1) or 1}
+            if out:
+                out[-1].update(here)
+            else:
+                out.append({"function": "<module>", "callsite_id": None, "hlir_id": None, **here})
         return out
 
     def _matches_exception(self, error: ExceptionObject, type_name: str) -> bool:

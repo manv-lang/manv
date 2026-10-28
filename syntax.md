@@ -700,7 +700,6 @@ How values are written by `print` and `str()`: `true`, `false` and `none`; numbe
 Known quirks that are bugs, not design:
 
 - `zip` takes one argument, an array of arrays: `zip([a, b])`. Its output is wrong at the moment.
-- Runtime errors are reported at `1:1` instead of the real line and column; the diagnostics for them are not wired to source positions yet.
 - `not` used to bind tighter than comparison (`not a == b` meant `(not a) == b`). It is now looser, as in Python.
 
 ---

@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **347 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **351 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is not yet a language you could write a real program in. Still missing: default and keyword arguments, `with`, inheritance details, source positions on runtime errors and the builtins in the stdlib's place. Details in the phases below.
+**Not yet true of the interpreter:** it is not yet a language you could write a real program in. Still missing: default and keyword arguments, `with`, inheritance details, the builtins in the stdlib's place. Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
