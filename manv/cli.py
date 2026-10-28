@@ -189,6 +189,7 @@ def run(
     deterministic_gc: bool,
     gc_stress: bool,
     stable_debug_format: bool,
+    program_args: list[str],
 ) -> None:
     del cuda, cuda_arch, cuda_dump_kernels, cuda_jit, cuda_aot
     reports = _requested_reports(report)
@@ -201,11 +202,14 @@ def run(
         )
     if "kernelize" in reports:
         _emit_kernelize_report(target, optimize=True, abi_target=abi_target)
-    out = io.StringIO()
+    # The interpreter streams its output as it runs (so a prompt shows before input() waits);
+    # compiled mode collects it and prints at the end.
+    out = sys.stdout if mode == "interpreter" else io.StringIO()
     try:
         code = run_target(
             target,
             stdout=out,
+            argv=list(program_args),
             mode=mode,
             target_name=abi_target,
             backend=backend,
@@ -216,13 +220,16 @@ def run(
         )
     except ManvError as err:
         # Whatever the program printed before it failed is still output.
-        partial = out.getvalue()
-        if partial:
-            _echo(partial, nl=False)
+        if out is not sys.stdout:
+            partial = out.getvalue()
+            if partial:
+                _echo(partial, nl=False)
         _fail(err)
-    text = out.getvalue()
-    if text:
-        _echo(text, nl=False)
+    if out is not sys.stdout:
+        text = out.getvalue()
+        if text:
+            _echo(text, nl=False)
+    sys.stdout.flush()
     raise _Exit(code)
 
 
@@ -661,6 +668,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = command("run", run, "run a program")
     p.add_argument("target", nargs="?", default=".", help="project directory or .mv file")
+    p.add_argument("program_args", nargs="*", metavar="ARG", help="arguments for the program (read with args()); put them after '--' if they start with '-'")
     p.add_argument("--mode", default="interpreter", help="execution mode: interpreter|compiled")
     p.add_argument("--target", dest="abi_target", metavar="TARGET", default="x86_64-sysv", help="cpu target ABI")
     p.add_argument("--backend", default="auto", help="runtime backend preference: auto,cuda,rocm,level0,vulkan-spv,directx,webgpu,cpu")

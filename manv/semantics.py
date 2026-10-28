@@ -18,8 +18,9 @@ from .intrinsics import (
 
 BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
 BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id", "help"})
-# Builtins that work on raw memory: name -> (fewest args, most args, result type).
-POINTER_BUILTINS: dict[str, tuple[int, int, str | None]] = {
+# Builtins implemented by the host: raw memory and the program's surroundings.
+# name -> (fewest args, most args, result type).
+HOST_BUILTINS: dict[str, tuple[int, int, str | None]] = {
     "malloc": (1, 1, "void*"),
     "calloc": (2, 2, "void*"),
     "realloc": (2, 2, "void*"),
@@ -30,8 +31,12 @@ POINTER_BUILTINS: dict[str, tuple[int, int, str | None]] = {
     "memcmp": (3, 3, "int"),
     "cstr": (1, 1, "u8*"),
     "str_from": (1, 2, "str"),
+    "input": (0, 1, "str"),
+    "exit": (0, 1, None),
+    "args": (0, 0, "array"),
+    "env": (1, 2, None),
 }
-BUILTIN_FUNCTIONS.update(POINTER_BUILTINS)
+BUILTIN_FUNCTIONS.update(HOST_BUILTINS)
 _POINTEE_ALIASES = {"int": "i64", "float": "f64", "usize": "u64", "ptr": "void*"}
 _INTEGER_FAMILY = {"int", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "usize", "bool"}
 _FLOAT_FAMILY = {"float", "f32", "f64"}
@@ -54,6 +59,9 @@ BUILTIN_TYPES = {
     "OutOfMemoryError",
     "PointerError",
     "NullPointerError",
+    "ZeroDivisionError",
+    "RecursionError",
+    "EOFError",
 }
 STUB_FEATURE_DECLS = ()
 STUB_FEATURE_STMTS = (ast.UnsupportedStmt, ast.ExternBlock)
@@ -868,6 +876,16 @@ class SemanticAnalyzer:
         if enforce_std_only and spec.std_only and not self.is_std_source:
             self._add_error("E2022", f"intrinsic '{intrinsic_name}' is restricted to std sources", line, col)
 
+        if intrinsic_name == "core_zip":
+            # zip takes any number of arrays: zip(a, b, c)
+            if not args:
+                self._add_error("E2021", "intrinsic 'core_zip' expects at least 1 array", line, col)
+            for arg in args:
+                got = self._analyze_expr(arg, scope, as_callee=False)
+                if got and got not in {"array"} and not got.startswith("array["):
+                    self._add_error("E2021", f"intrinsic 'core_zip' arguments must be arrays, got {got}", line, col)
+            return "array"
+
         if intrinsic_name == "io_print":
             # print takes any number of values and writes them separated by spaces.
             for arg in args:
@@ -1035,12 +1053,12 @@ class SemanticAnalyzer:
                 self._analyze_expr(arg, scope, as_callee=False)
             if (
                 isinstance(expr.callee, ast.IdentifierExpr)
-                and expr.callee.name in POINTER_BUILTINS
+                and expr.callee.name in HOST_BUILTINS
                 and expr.callee.name not in self.functions
                 and expr.callee.name not in self.extern_fns
                 and not scope.contains(expr.callee.name)
             ):
-                low, high, result = POINTER_BUILTINS[expr.callee.name]
+                low, high, result = HOST_BUILTINS[expr.callee.name]
                 if not low <= len(expr.args) <= high:
                     wanted = str(low) if low == high else f"{low} to {high}"
                     self._add_error("E2066", f"'{expr.callee.name}' takes {wanted} argument(s), got {len(expr.args)}", expr.span.line, expr.span.column)

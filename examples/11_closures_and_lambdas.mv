@@ -1,15 +1,16 @@
 # ---
-# 10_closures_and_lambdas.mv
+# 11_closures_and_lambdas.mv
 #
 # Demonstrates:
 #   - Anonymous function literals (lambda expressions)
-#   - Lambda syntax: fn(params) -> return_type: <newline> <indented body>
+#   - Lambda syntax: fn(params) -> return_type: <expression>, or a block body
 #   - Passing a lambda to a higher-order function
 #   - Returning a function from a function (closure over a captured value)
 #   - Storing functions in an array and iterating over them
 #
-# Note: Lambda bodies require a full indented block — single-expression
-# lambdas (fn(x): x * 2) are NOT supported. Always use:
+# A lambda is either a single expression (its value is the result):
+#   double = fn(x): x * 2
+# or a block with `return`:
 #   f = fn(x: int) -> int:
 #       return x * 2
 # ---

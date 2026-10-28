@@ -5,6 +5,8 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- `input([prompt])`, `exit([code])`, `args()` and `env(name[, default])`; `manv run prog.mv ARGS...`. `ZeroDivisionError`, `RecursionError` and `EOFError`. The interpreter streams output as it runs.
+- `zip(a, b, ...)` takes any number of arrays.
 - **C-style pointers**: `T*` types, `&x`, `*p`, `p[i]`, `p->f`, scaled pointer arithmetic, `null`, `as` casts, `sizeof`, `struct` (C layout, value semantics), C arrays (`int buf[16]`), and the checked memory builtins `malloc calloc realloc free memcpy memmove memset memcmp cstr str_from`. Memory errors raise `PointerError` / `NullPointerError`. Errors `E2070`-`E2077`, `E1021`, `E3011`. See `docs/pointers.md`.
 - Fixed-width integer types `i8 i16 u16 u32 u64` and `f64` (as pointee and field types).
 - Default argument values and keyword arguments at call sites (`E1019`, `E1020`, `E2066`-`E2069`).
@@ -46,6 +48,8 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - Compiled Python files and test build artifacts that were committed despite `.gitignore`.
 
 ### Fixed
+- `1 / 0` and `1 % 0` raised a misleading `TypeError: unsupported binary operator`; they raise `ZeroDivisionError`. Operand type errors name both types. Deep recursion (about 200 calls) crashed with a Python traceback; the limit is now 1000 calls with a catchable `RecursionError`. An internal interpreter failure prints `E3999` instead of a traceback.
+- `zip` returned the wrong shape for its documented one-array-of-arrays form; it now takes the arrays as separate arguments.
 - Runtime errors (uncaught exceptions) were always reported at `1:1`; they now point at the line and column where the error happened (`tests/test_runtime_positions.py`).
 - `not` bound tighter than comparison, so `not a == b` meant `(not a) == b`; it is now looser than comparison.
 - `print` and `str()` wrote Python's spellings (`True`, `None`); they now write `true`, `false` and `none`, also inside arrays and maps. `print(obj)` and `str(obj)` use the type's `__str__` or `__repr__` instead of dumping interpreter internals.

@@ -1,0 +1,8 @@
+fn main() -> int:
+    print(zip([1, 2, 3], ["a", "b", "c"]))
+    print(zip([1, 2, 3], ["a", "b"]))
+    print(zip([1, 2], [3, 4], [5, 6]))
+    for n, s in zip([1, 2], ["x", "y"]):
+        print(n, s)
+    print(zip([1, 2]))
+    return 0

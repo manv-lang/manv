@@ -9,9 +9,10 @@
 #   - Re-raise with bare raise
 #
 # Notes:
-#   - Accessing e.message on a caught exception is not yet supported
-#     by the interpreter.  Use `except ExceptionType:` (without `as e`)
-#     when you only need to branch on the type, not the content.
+#   - `except ExceptionType as e:` binds the exception. `e.message` is its text
+#     and `e.type` the name of its type.
+#   - Use `except ExceptionType:` (without `as e`) when you only need to branch
+#     on the type.
 # ---
 
 fn safe_divide(a: int, b: int) -> int:

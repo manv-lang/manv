@@ -1,0 +1,12 @@
+caught ValueError: division by zero
+5.0
+42
+parse succeeded without error
+caught negative number
+2.0
+finally block always runs
+caught divide by zero
+cleanup after divide-by-zero
+caught IndexError: bad index
+intercepted, re-raising...
+outer caught the re-raised ValueError

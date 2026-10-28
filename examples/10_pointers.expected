@@ -1,0 +1,7 @@
+2 1
+100
+20 1
+24 24
+Vec2(x=6.0, y=4.0)
+6
+use after free caught

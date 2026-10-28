@@ -1,0 +1,31 @@
+fn main() -> int:
+    try:
+        print(1 / 0)
+    except ZeroDivisionError as e:
+        print(e.type, e.message)
+    try:
+        print(5 % 0)
+    except ZeroDivisionError as e:
+        print(e.type, e.message)
+    x = 10
+    try:
+        x /= 0
+    except ZeroDivisionError as e:
+        print("augmented", e.message)
+    try:
+        print(1.5 / 0.0)
+    except ZeroDivisionError as e:
+        print("float", e.message)
+    try:
+        print("a" - 1)
+    except TypeError as e:
+        print(e.message)
+    try:
+        x += "s"
+    except TypeError as e:
+        print(e.message)
+    try:
+        print([1] * "x")
+    except TypeError as e:
+        print("TypeError")
+    return 0

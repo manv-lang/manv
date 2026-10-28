@@ -1,0 +1,6 @@
+11
+Hello, FFI!
+pointer is null
+malloc succeeded, buffer is not null
+8
+buffer freed

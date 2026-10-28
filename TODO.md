@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **392 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **417 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -51,7 +51,7 @@ None of them was fixed by changing what it tests; each is now skipped or expecte
 The interpreter is done when **all** of these are true. They are the exit criteria for Phases 0–8.
 
 - [ ] `pytest` is green on a machine with no `clang`, no GPU and **no standard library**. Compiler tests that need those, and tests that need the stdlib, are skipped with a stated reason, not failed.
-- [ ] Every program in `examples/` runs and its output matches a committed `.expected` file (golden test).
+- [x] Every program in `examples/` runs and its output matches a committed `.expected` file (`tests/test_examples.py`, hand-checked against the comments).
 - [ ] Every ✅ construct in [syntax.md](syntax.md) has a test. Every ⚠️ has been fixed or deliberately removed from the grammar. No construct parses and then dies with `E2099 unsupported statement`.
 - [ ] A fresh clone can build the engine and run a program with no network access, no hand-set environment variables, and no `stdlib/` directory.
 - [ ] A non-trivial program (about 300 lines: a text-processing tool, an expression evaluator, or a data-structure library) runs correctly using only the language and the native builtins.
@@ -83,15 +83,15 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 - [x] **`print` of booleans and none.** `true`, `false` and `none` everywhere a value is written (`print`, `str()`, inside arrays and maps). One function, `Interpreter._to_text`, does it for both. (`conformance/basics/bool_and_none_printing`, `printing_values`)
 - [x] **`print(obj)` and `str(obj)`** use `__str__`, then `__repr__`, then `<Type field=value, ...>`; objects inside collections use `__repr__`. No interpreter internals leak. (`conformance/types/repr_*`)
 - [x] **String escapes.** `\n \t \r \0 \\ \" \' \xNN \uNNNN` are interpreted in the lexer. Any other escape or a malformed `\x`/`\u` is `E0006`. (`conformance/basics/string_escapes*`)
-- [ ] **`zip`.** It takes `zip([a, b])` (one array of arrays) and returns the wrong shape (`[['x','y','z']]`). Decide the signature (`zip(a, b)` is the obvious one), fix it and fix example 05.
+- [x] **`zip(a, b, ...)`** takes any number of arrays and gives tuples (`conformance/collections/zip_function`).
 - [ ] **Fixed-width integers.** `i32` does not wrap or trap (`2147483647 + 1` gives `2147483648`). Pick wrap vs. trap vs. checked per type, and implement it. This matters later for compiler parity.
 - [ ] **`/` on two ints gives a float.** Intentional or not, decide it ([§Decisions](#decisions-needed-from-you)). Adding an integer-division operator or function is part of the answer.
 - [~] **Exception values.** `e.message` and `e.type` (the type's name) work (`conformance/exceptions/`), and `print(e)` shows `ValueError(msg)`. Reserved words are now allowed as attribute names after `.`, which is what makes `e.type` parse. Still open: a traceback-ish location and the full exception hierarchy (`ZeroDivisionError`, ...).
-- [ ] **Division by zero, bad index, missing key**: each should raise a catchable, typed exception with a precise message. Check each.
+- [x] **Division by zero, bad index, missing key**: `ZeroDivisionError` (`/` and `%`, also augmented), `IndexError` with the index and length, `KeyError`, and a `TypeError` naming both operand types (`conformance/exceptions/arithmetic_errors`, `lookup_errors`). A Python exception that escapes the interpreter is reported as `E3999` without a traceback (`MANV_DEBUG=1` shows it).
 - [ ] **Immutability is not enforced anywhere today** (`let x = 1; x = 2` is accepted, and `let mut` is parsed then ignored). This is closed by `const` in [Phase 3a](#phase-3a--declarations-remove-let-add-const).
 - [~] **Uncaught exception output.** Output printed before the error is now kept (`conformance/errors/output_before_uncaught_exception`). Still open: the source line, a call stack, and the exit code is 1 already.
-- [ ] Audit `None` vs. `none` vs. `void` return behavior (what does `print(f())` print for a function with no return?).
-- [ ] Fix the stale comments in `examples/` that describe behavior that is no longer true or never was (02, 04, 05, 06, 07). Each should match the golden output.
+- [x] Audit `None` vs. `none` vs. `void`: a function without a result gives `none` and prints as `none` (`conformance/functions/no_return_value`).
+- [x] The stale comments in `examples/` are fixed (05 was rewritten for slices, methods, tuples and `zip(a, b)`; 07 and the closures example no longer deny `e.message` and one-line lambdas). The closures example is now `11_closures_and_lambdas.mv`, because `10_pointers.mv` took number 10.
 - [x] **`while` had a hard cap of 1,000,000 iterations** (`RuntimeError: loop iteration guard exceeded`), so a legitimate long loop failed. Removed; `conformance/control_flow/while_beyond_one_million` covers it. The same arbitrary cap still exists for user-defined iterators (`iterator guard exceeded`).
 - [x] **`and` / `or` short-circuit** in the interpreter and in HLIR lowering, which now branches instead of emitting a plain binary op (`conformance/basics/short_circuit*`, `tests/test_hlir_parity.py`). Native LLVM output has not been re-checked.
 - [x] **Output printed before an uncaught error was lost**: the CLI only printed it on success. Fixed in `manv run`.
@@ -189,12 +189,12 @@ With no stdlib, **the builtins are the standard library**. Everything in this ph
 - [ ] **Numerics:** float formatting (shortest round-trip), `inf`/`nan`, integer size (arbitrary precision vs. 64-bit), and `math` coverage.
 - [ ] **Inheritance details:** `super`, method resolution order with multiple bases, class-level constants, `isinstance` against base types, and abstract-ish methods.
 - [ ] **Closures:** captured variable semantics (by reference vs. by value) and loop-variable capture. Add tests for each.
-- [ ] **Recursion limit** with a clean error rather than a Python `RecursionError`. Tail-call policy.
+- [x] **Recursion limit**: more than 1000 nested calls raise a catchable `RecursionError` instead of a Python `RecursionError` traceback (`conformance/exceptions/recursion_limit`). Tail-call policy is still open.
 - [~] **C-style pointers** (`int*`, `&x`, `*p`, `p[i]`, `p->x`, `sizeof`, `malloc`/`free`, checked memory), replacing the opaque `ptr` and its helpers. Plan and status per phase: [docs/pointers.md](docs/pointers.md). Done in the interpreter: P0-P6 and P9 (`conformance/pointers/`, `conformance/errors/pointer_*`). Open: function pointers (P7), compiled-mode and C-engine parity (P8, rejected with `E3011` today), an `--unchecked` mode.
 - [ ] **Write down the final builtin list** (name, signature, semantics, error behavior) as a table in the language reference, and mark each builtin "core" or "may move to the stdlib later". Today the set is spread across `print`, `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values`, `type`, `isinstance`, `help` and the `ptr_*` / `c_str` family.
 - [ ] **Compiled mode lags the interpreter**: the HLIR and native paths know none of the builtin methods, slicing, string indexing or iteration over strings and maps. Parity belongs to §9.1 and the C engine.
 - [ ] Performance work does **not** happen here. Do not tune the Python tree-walker. See Phase 5.
-- [ ] **`input()` / stdin**, `args` / `argv`, `exit(code)`, and environment access.
+- [x] **`input()` / stdin**, `args()`, `exit(code)` and `env(name)` (`tests/test_host_builtins.py`). `manv run prog.mv a b` passes the words after the program; the interpreter now streams its output as it runs so a prompt shows before `input()` waits.
 
 ## Phase 5 — The C engine (fast interpreter)
 
@@ -314,7 +314,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 169 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 174 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.

@@ -1,0 +1,7 @@
+ZeroDivisionError division by zero
+ZeroDivisionError modulo by zero
+augmented division by zero
+float division by zero
+unsupported operand types for '-': str and int
+unsupported operand types for '+': int and str
+TypeError

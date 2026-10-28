@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import io
+import os
 import sys
 from typing import TextIO
 
@@ -23,10 +24,12 @@ def run_target(
     deterministic_gc: bool = False,
     gc_stress: bool = False,
     stable_debug_format: bool = False,
+    argv: list[str] | None = None,
 ) -> int:
     context = discover_target(path)
     return run_file(
         context.entry,
+        argv=argv,
         stdout=stdout,
         mode=mode,
         target_name=target_name,
@@ -48,6 +51,7 @@ def run_file(
     deterministic_gc: bool = False,
     gc_stress: bool = False,
     stable_debug_format: bool = False,
+    argv: list[str] | None = None,
 ) -> int:
     source_path = Path(path).resolve()
     source = source_path.read_text(encoding="utf-8")
@@ -62,6 +66,7 @@ def run_file(
             gc_stress=gc_stress,
             stable_debug_format=stable_debug_format,
         )
+        interpreter.argv = list(argv or [])
         try:
             return interpreter.run_main(program)
         except RaiseSignal as rs:
@@ -74,6 +79,14 @@ def run_file(
                     int(frame.get("line", 1)),
                     int(frame.get("column", 1)),
                 )
+            ) from None
+        except ManvError:
+            raise
+        except Exception as exc:  # a bug in the interpreter, not in the program: say so without a traceback
+            if os.environ.get("MANV_DEBUG"):
+                raise
+            raise ManvError(
+                diag("E3999", f"internal error: {type(exc).__name__}: {exc} (set MANV_DEBUG=1 for a traceback)", str(source_path), 1, 1)
             ) from None
 
     if mode == "compiled":

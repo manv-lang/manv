@@ -503,7 +503,9 @@ raise ValueError("message")
 
 - A `try` needs at least one `except` or a `finally` (`E1011`).
 - `except` names exactly one type. Multiple clauses are allowed, and the first match wins.
-- Built-in exception types seen so far: `ValueError`, `IndexError`, `RuntimeError`, `TypeError`, `AttributeError`, `OverflowError`.
+- Built-in exception types: `Exception` (the base of the rest), `ValueError`, `TypeError`, `IndexError`, `KeyError`, `AttributeError`, `ZeroDivisionError` (`/` or `%` by zero), `OverflowError`, `RuntimeError`, `RecursionError` (a `RuntimeError`; more than 1000 nested calls), `EOFError` (`input()` with nothing left), `ImportError`, `StopIteration`, `OSError`, `OutOfMemoryError`, and `PointerError` / `NullPointerError` (§9.2).
+- Operators on the wrong kinds of value are a `TypeError` that names both types (`unsupported operand types for '+': int and str`); an index outside an array or string is an `IndexError` that gives the index and the length; a missing map key is a `KeyError`.
+- A function that finishes without `return` (or with a bare `return`) gives `none`, so `print(f())` prints `none`.
 - An uncaught exception terminates the program with an `E3900` diagnostic.
 
 ### 5.7 Other statements
@@ -785,9 +787,10 @@ Available without an `include`. With no standard library, these native builtins 
 
 | Group | Names |
 |-------|-------|
-| I/O | `print` (any number of values, written separated by spaces) |
+| I/O | `print` (any number of values, written separated by spaces), `input([prompt])` (reads one line, without its newline; `EOFError` at the end of the input) |
+| Program | `exit([code])` (leaves at once with that exit code, cannot be caught), `args()` (the words after the program name on the command line, as an array of strings), `env(name[, default])` (an environment variable, or `default`, or `none`) |
 | Conversion | `int`, `float`, `str`, `bool` |
-| Collections | `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values` |
+| Collections | `len`, `sum`, `min`, `max`, `sorted`, `enumerate` (gives `(index, value)` tuples), `zip(a, b, ...)` (any number of arrays; gives tuples, as long as the shortest), `array_append`, `map_has_key`, `map_keys`, `map_values` |
 | Types | `type`, `isinstance` |
 | Introspection | `help` |
 | Memory | `malloc` `calloc` `realloc` `free` `memcpy` `memmove` `memset` `memcmp` `cstr` `str_from` (§9.2) |
@@ -796,7 +799,7 @@ How values are written by `print` and `str()`: `true`, `false` and `none`; numbe
 
 Known quirks that are bugs, not design:
 
-- `zip` takes one argument, an array of arrays: `zip([a, b])`. Its output is wrong at the moment.
+- `array_append(a, x)` mutates `a` (see §4.5); prefer `a.append(x)`.
 - `not` used to bind tighter than comparison (`not a == b` meant `(not a) == b`). It is now looser, as in Python.
 
 ---

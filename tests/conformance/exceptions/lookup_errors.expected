@@ -1,0 +1,6 @@
+index 3 out of range for an array of length 3
+index -4 out of range for an array of length 3
+store: index 5 out of range for an array of length 3
+KeyError
+remove: KeyError
+index 7 out of range for a string of length 3

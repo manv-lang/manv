@@ -533,8 +533,12 @@ def test_gc_cycle_collection_and_exception_rooting() -> None:
 
     val_err = interp.types["ValueError"]
     payload = interp.heap.allocate("Node", InstanceObject(type_obj=t))
+    # Deterministic GC collects every 32nd allocation; keep the payload rooted until the exception holds it,
+    # so the test does not depend on how many objects the interpreter allocated at start-up.
+    interp.global_env.define("__tmp_payload", payload)
     exc = interp.heap.allocate("Exception", ExceptionObject(type_obj=val_err, message="m", payload=payload))
     interp.active_exceptions.append(exc)
+    interp.global_env.values.pop("__tmp_payload", None)
     interp.heap.collect("exception-root")
     assert any(r.payload is payload for r in interp.heap._records.values())
 

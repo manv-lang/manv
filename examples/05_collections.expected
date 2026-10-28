@@ -1,0 +1,32 @@
+10
+40
+5
+150
+10
+50
+[10, 20, 30, 40, 50]
+[30, 20, 50]
+[10, 30]
+[50, 40]
+0 a
+1 b
+2 c
+x 1
+y 2
+z 3
+[1, 99, 3, 4]
+[1, 99, 3, 4, 5]
+5 6
+Alice
+30
+has age key
+no email
+['name', 'age']
+['Alice', 30]
+name = Alice
+age = 30
+alice@example.com
+31
+Bob scored 80
+Carol scored 95
+Dave scored 72

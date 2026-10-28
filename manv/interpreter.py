@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
@@ -97,6 +98,16 @@ class FunctionValue:
     is_class_method: bool = False
 
 
+class ExitSignal(BaseException):
+    """`exit(code)`: leaves the program immediately. A BaseException so no ManV handler or host
+    wrapper can swallow it."""
+
+    def __init__(self, code: int):
+        super().__init__(code)
+        self.code = code
+
+
+MAX_CALL_DEPTH = 1000  # ManV calls; deeper raises a catchable RecursionError
 _NO_DECLARED = object()  # `_declared_value` found nothing special about this declaration
 
 
@@ -213,6 +224,10 @@ class Interpreter:
         self._frame_cells: list[list[tuple[Environment, str, MemCell]]] = [[]]
         Environment.on_fault = lambda fault: self._raise_fault(fault, None)
         self._install_memory_builtins()
+        self.argv: list[str] = []
+        self.stdin: TextIO | None = None  # defaults to sys.stdin when input() is called
+        self._call_depth = 0
+        self._install_host_builtins()
 
     def _bootstrap_runtime_types(self) -> None:
         object_t = self.heap.allocate("Type", TypeObject(name="object"))
@@ -240,6 +255,9 @@ class Interpreter:
         self._define_type("RuntimeError", "Exception")
         self._define_type("OSError", "Exception")
         self._define_type("OutOfMemoryError", "RuntimeError")
+        self._define_type("ZeroDivisionError", "Exception")
+        self._define_type("RecursionError", "RuntimeError")
+        self._define_type("EOFError", "Exception")
         self._define_type("PointerError", "Exception")
         self._define_type("NullPointerError", "PointerError")
 
@@ -381,6 +399,17 @@ class Interpreter:
             self.execute_stmt(stmt, self.global_env)
 
     def run_main(self, program: ast.Program) -> int:
+        # Each ManV call uses several Python frames; leave room for MAX_CALL_DEPTH of them.
+        previous_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(max(previous_limit, MAX_CALL_DEPTH * 25))
+        try:
+            return self._run_main(program)
+        except ExitSignal as signal:
+            return signal.code
+        finally:
+            sys.setrecursionlimit(previous_limit)
+
+    def _run_main(self, program: ast.Program) -> int:
         self.load_program(program)
         if "main" not in self.functions:
             if program.statements:
@@ -548,13 +577,13 @@ class Interpreter:
                 current = target[idx]
                 rhs = self.eval_expr(stmt.value, env)
                 op = stmt.op[:-1]
-                result = eval_binary(op, current, rhs)
+                result = self._augmented(op, current, rhs, stmt.span)
                 target[idx] = result
             elif isinstance(target, dict):
                 current = target.get(index)
                 rhs = self.eval_expr(stmt.value, env)
                 op = stmt.op[:-1]
-                result = eval_binary(op, current, rhs)
+                result = self._augmented(op, current, rhs, stmt.span)
                 target[index] = result
             elif isinstance(target, InstanceObject):
                 # Get current value via __getitem__, apply op, set via __setitem__
@@ -573,9 +602,9 @@ class Interpreter:
                     if not dfound:
                         result, dfound = self._try_dunder(current, alias, [rhs])
                     if not dfound:
-                        result = eval_binary(op, current, rhs)
+                        result = self._augmented(op, current, rhs, stmt.span)
                 else:
-                    result = eval_binary(op, current, rhs)
+                    result = self._augmented(op, current, rhs, stmt.span)
                 _, sfound = self._try_dunder(target, "__setitem__", [index, result])
                 if not sfound:
                     _, sfound = self._try_dunder(target, "setitem", [index, result])
@@ -1004,10 +1033,7 @@ class Interpreter:
                     result, found = self._try_dunder(left, alias, [right])
                 if found:
                     return result
-            try:
-                return eval_binary(expr.op, left, right)
-            except Exception:
-                self._raise_runtime("TypeError", f"unsupported binary operator '{expr.op}'", expr.span)
+            return self._binary_value(expr.op, left, right, expr.span)
 
         if isinstance(expr, ast.ArrayExpr):
             return [self.eval_expr(e, env) for e in expr.elements]
@@ -1074,7 +1100,7 @@ class Interpreter:
                     self._raise_runtime("TypeError", "string index must be int", expr.span)
                 idx = index + len(target) if index < 0 else index
                 if idx < 0 or idx >= len(target):
-                    self._raise_runtime("IndexError", f"string index out of range: {index}", expr.span)
+                    self._raise_runtime("IndexError", f"index {index} out of range for a string of length {len(target)}", expr.span)
                 return target[idx]
             if isinstance(target, dict):
                 self._assert_hashable(index, expr.span)
@@ -1502,7 +1528,7 @@ class Interpreter:
         if idx < 0:
             idx += len(target)
         if idx < 0 or idx >= len(target):
-            self._raise_runtime("IndexError", f"list index out of range: {index}", span)
+            self._raise_runtime("IndexError", f"index {index} out of range for an array of length {len(target)}", span)
         return idx
 
     def _assert_hashable(self, key: Any, span: Any) -> None:
@@ -1563,14 +1589,18 @@ class Interpreter:
         for param, value in zip(fn.decl.params, args, strict=True):
             env.define(param.name, self._bind_value(value, param.type_name))
 
+        if self._call_depth >= MAX_CALL_DEPTH:
+            self._raise_runtime("RecursionError", f"maximum recursion depth exceeded ({MAX_CALL_DEPTH} nested calls)", fn.decl.span)
         self.call_stack.append({"function": fn.decl.name, "span": fn.decl.span, "env": env.values, "owner_type": fn.owner_type})
         self._frame_cells.append([])
+        self._call_depth += 1
         try:
             for stmt in fn.decl.body:
                 self.execute_stmt(stmt, env, in_loop=False)
         except ReturnSignal as signal:
             return self._bind_value(signal.value, fn.decl.return_type)
         finally:
+            self._call_depth -= 1
             self.call_stack.pop()
             self._end_frame()
         return None
@@ -2249,16 +2279,28 @@ class Interpreter:
             if isinstance(current, Pointer):
                 rhs = self._pointer_binary(op, current, rhs, span)
             else:
-                try:
-                    rhs = eval_binary(op, current, rhs)
-                except Exception:
-                    self._raise_runtime("TypeError", f"unsupported operator '{op}=' for this memory slot", span)
+                rhs = self._binary_value(op, current, rhs, span)
         self._guard(lambda: self.memory.store(slot, rhs, slot_type), span)
 
     def _augmented(self, op: str, current: Any, rhs: Any, span: Any) -> Any:
         if isinstance(current, (Pointer, ArrayRef)) or isinstance(rhs, (Pointer, ArrayRef)):
             return self._pointer_binary(op, current, rhs, span)
-        return eval_binary(op, current, rhs)
+        return self._binary_value(op, current, rhs, span)
+
+    def _binary_value(self, op: str, left: Any, right: Any, span: Any) -> Any:
+        """`left op right` on plain values, reporting failures as ManV exceptions."""
+        try:
+            return eval_binary(op, left, right)
+        except ZeroDivisionError:
+            self._raise_runtime("ZeroDivisionError", "modulo by zero" if op == "%" else "division by zero", span)
+        except RaiseSignal:
+            raise
+        except Exception:
+            self._raise_runtime(
+                "TypeError",
+                f"unsupported operand types for '{op}': {self._runtime_type_name(left)} and {self._runtime_type_name(right)}",
+                span,
+            )
 
     def _pointer_binary(self, op: str, left: Any, right: Any, span: Any) -> Any:
         lp = isinstance(left, (Pointer, ArrayRef))
@@ -2450,6 +2492,38 @@ class Interpreter:
             "memcpy": memcpy, "memmove": memcpy, "memset": memset, "memcmp": memcmp,
             "cstr": cstr, "str_from": str_from,
         }.items():
+            fn.__name__ = name
+            self.global_env.define(name, fn)
+
+    def _install_host_builtins(self) -> None:
+        """`input`, `exit`, `args` and `env`: the program's connection to its surroundings."""
+
+        def input_(prompt: Any = "") -> str:
+            if not isinstance(prompt, str):
+                raise TypeError("input() prompt must be a string")
+            if prompt:
+                self.stdout.write(prompt)
+                getattr(self.stdout, "flush", lambda: None)()
+            source = self.stdin or sys.stdin
+            line = source.readline()
+            if line == "":
+                self._raise_runtime("EOFError", "input() reached the end of the input", None)
+            return line.rstrip("\r\n")
+
+        def exit_(code: Any = 0) -> None:
+            if isinstance(code, bool) or not isinstance(code, int):
+                raise TypeError("exit() needs an int exit code")
+            raise ExitSignal(code)
+
+        def args_() -> list[str]:
+            return list(self.argv)
+
+        def env_(name: Any, default: Any = None) -> Any:
+            if not isinstance(name, str):
+                raise TypeError("env() needs a variable name")
+            return os.environ.get(name, default)
+
+        for name, fn in {"input": input_, "exit": exit_, "args": args_, "env": env_}.items():
             fn.__name__ = name
             self.global_env.define(name, fn)
 

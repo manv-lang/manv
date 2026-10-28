@@ -1,0 +1,12 @@
+fn nothing():
+    x = 1
+
+fn bare() -> int:
+    return
+
+fn main() -> int:
+    print(nothing())
+    print(bare())
+    r = nothing()
+    print(r == none)
+    return 0

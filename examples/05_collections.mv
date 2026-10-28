@@ -2,90 +2,88 @@
 # 05_collections.mv
 #
 # Demonstrates:
-#   - Array literals, index access
+#   - Array literals, indexing, slicing
 #   - len, sum, min, max, sorted, enumerate, zip
-#   - Array mutation via index assignment and array_append
-#   - Map literals, key access, map_has_key, map_keys, map_values
-#   - Nested collections (array of maps built incrementally)
+#   - Array methods (append, sort, ...) and index assignment
+#   - Map literals, key access, methods (keys, values, has, ...)
+#   - Tuples and unpacking in for loops
+#   - Nested collections (an array of maps)
 #
-# Note: array_append currently appends to the array it is given (and
-# returns it). Whether it should return a new array instead is an open
-# decision, so write `a = array_append(a, x)`, which means the same
-# either way.
+# Arrays and maps are shared, not copied: `b = a` makes both names refer to
+# the same array, and `a.copy()` makes an independent one.
 # ---
 
 fn main() -> int:
 
     # --- Array literals and index access ---
     array nums = [10, 30, 20, 50, 40]
-    print(nums[0])   # 10 (first element)
-    print(nums[4])   # 40 (last element)
+    print(nums[0])    # 10 (first element)
+    print(nums[-1])   # 40 (negative indexes count from the end)
 
     # --- Built-in aggregate functions ---
-    print(len(nums))     # 5
-    print(sum(nums))     # 150
-    print(min(nums))     # 10
-    print(max(nums))     # 50
-    print(sorted(nums))  # [10, 20, 30, 40, 50]
+    print(len(nums))      # 5
+    print(sum(nums))      # 150
+    print(min(nums))      # 10
+    print(max(nums))      # 50
+    print(sorted(nums))   # [10, 20, 30, 40, 50]
 
-    # --- Building a sub-array manually (no slice syntax yet) ---
-    array sub = []
-    int i = 1
-    while i < 4:
-        sub = array_append(sub, nums[i])  # collect elements at index 1, 2, 3
-        i = i + 1
-    print(sub)   # [30, 20, 50]
+    # --- Slicing: a..b is "from a up to, not including, b" ---
+    print(nums[1..4])   # [30, 20, 50]
+    print(nums[..2])    # [10, 30]
+    print(nums[3..])    # [50, 40]
 
-    # --- enumerate: yields [index, value] pairs ---
+    # --- enumerate gives (index, value) tuples; unpack them in the loop ---
     array letters = ["a", "b", "c"]
-    for pair in enumerate(letters):
-        print(pair)   # [0, "a"], [1, "b"], [2, "c"]
+    for i, letter in enumerate(letters):
+        print(i, letter)   # 0 a, 1 b, 2 c
 
-    # --- zip: interleaves arrays element-wise ---
+    # --- zip pairs up arrays element by element ---
     array keys = ["x", "y", "z"]
     array vals = [1, 2, 3]
-    array zipped = zip([keys, vals])   # [[x,1], [y,2], [z,3]]
-    for pair in zipped:
-        print(pair)
+    for key, val in zip(keys, vals):
+        print(key, val)    # x 1, y 2, z 3
 
-    # --- Array mutation: index assignment ---
+    # --- Mutation: index assignment and methods ---
     array mutable = [1, 2, 3]
-    mutable[1] = 99      # replace element at index 1
-    print(mutable)       # [1, 99, 3]
-
-    # --- array_append: appends an item ---
-    array extended = array_append(mutable, 4)
-    print(extended)      # [1, 99, 3, 4]
-    print(mutable)       # currently also [1, 99, 3, 4]; see the note above
+    mutable[1] = 99
+    mutable.append(4)
+    print(mutable)         # [1, 99, 3, 4]
+    alias = mutable        # the same array, not a copy
+    alias.append(5)
+    print(mutable)         # [1, 99, 3, 4, 5]
+    snapshot = mutable.copy()
+    snapshot.append(6)
+    print(len(mutable), len(snapshot))   # 5 6
 
     # --- Map literals and key access ---
     map person = {"name": "Alice", "age": 30}
-    print(person["name"])    # "Alice"
-    print(person["age"])     # 30
+    print(person["name"])   # Alice
+    print(person["age"])    # 30
 
-    # --- map_has_key: check existence before access ---
-    if map_has_key(person, "age"):
+    # --- Check a key before reading it ---
+    if person.has("age"):
         print("has age key")
+    print(person.get("email", "no email"))   # a default for a missing key
 
-    # --- map_keys and map_values ---
-    array ks = map_keys(person)
-    array vs = map_values(person)
-    print(ks)
-    print(vs)
+    # --- keys, values and items ---
+    print(person.keys())     # ['name', 'age']  (insertion order)
+    print(person.values())   # ['Alice', 30]
+    for k, v in person.items():
+        print(k, "=", v)
 
     # --- Adding and updating map entries ---
-    person["email"] = "alice@example.com"   # add new key
-    person["age"] = 31                       # update existing key
+    person["email"] = "alice@example.com"   # add a new key
+    person["age"] = 31                       # update an existing key
     print(person["email"])
     print(person["age"])
 
-    # --- Nested collections: build array of maps with array_append ---
+    # --- Nested collections: an array of maps ---
     array users = []
-    users = array_append(users, {"name": "Bob", "score": 80})
-    users = array_append(users, {"name": "Carol", "score": 95})
-    users = array_append(users, {"name": "Dave", "score": 72})
+    users.append({"name": "Bob", "score": 80})
+    users.append({"name": "Carol", "score": 95})
+    users.append({"name": "Dave", "score": 72})
 
     for user in users:
-        print(user["name"] + " scored " + str(user["score"]))
+        print(f"{user['name']} scored {user['score']}")
 
     return 0

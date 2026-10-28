@@ -1,0 +1,28 @@
+fn main() -> int:
+    xs = [1, 2, 3]
+    try:
+        print(xs[3])
+    except IndexError as e:
+        print(e.message)
+    try:
+        print(xs[-4])
+    except IndexError as e:
+        print(e.message)
+    try:
+        xs[5] = 1
+    except IndexError as e:
+        print("store:", e.message)
+    m = {"a": 1}
+    try:
+        print(m["b"])
+    except KeyError as e:
+        print(e.type)
+    try:
+        m.remove("zz")
+    except KeyError as e:
+        print("remove:", e.type)
+    try:
+        print("abc"[7])
+    except IndexError as e:
+        print(e.message)
+    return 0
