@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **351 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **363 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is not yet a language you could write a real program in. Still missing: default and keyword arguments, `with`, inheritance details, the builtins in the stdlib's place. Details in the phases below.
+**Not yet true of the interpreter:** it is nearly a language you could write real programs in. Still missing: `*args`, `with`, inheritance details, definite-assignment checks, and the builtins in the stdlib's place (`input`, `argv`, `exit`). Details in the phases below.
 
 ### How the 12 failing tests were resolved
 
@@ -122,14 +122,14 @@ The target: nothing that parses is rejected later with a generic `E2099`.
 - [x] **`elif`**: parsed as an `else` holding one nested `if`, so every later stage already handled it (`conformance/control_flow/elif_chain`).
 - [x] **Nested functions**: declared in a function body, visible from the declaration on, can read the enclosing scope and recurse. A duplicate name in one scope is `E2007`. Capture semantics for *mutating* an enclosing variable are still undecided (Phase 4, closures).
 - [x] The semantic pass skipped the `else:` body of `while` entirely, so an undefined name there went unreported. It is analysed now. (`conformance/errors/while_else_undefined_name`)
-- [ ] **Single-expression lambdas** (`fn(x): x * 2`), pending the decision.
+- [x] **Single-expression lambdas** (`fn(x): x * 2`), decision 7 (`conformance/functions/expression_lambdas`).
 - [ ] **`with` statement** and a context-manager protocol (`__enter__` / `__exit__`), or remove `with` from the grammar.
 - [x] **Conditional expression** (`a if cond else b`), right-associative, lowest precedence, `else` required (`E1017`). Only the chosen branch runs, in the interpreter and in HLIR lowering (`conformance/control_flow/conditional_expression`, `tests/test_hlir_parity.py`). Native LLVM output has not been checked.
 - [x] **Tuples** `(a, b)`, `(a,)`, `()` and unpacking: `a, b = f()`, `a, b = b, a`, `return a, b`, `for k, v in m.items()`. Tuples index, slice, compare, iterate, are map keys, and are immutable (`conformance/tuples/`). `m.items()` and `enumerate` now return tuples. Open: element/attribute targets (`xs[i], xs[j] = ...`), nested and `*rest` targets, tuple patterns in `match`, compiled-mode support (the HLIR path reports the statement as unsupported).
 - [ ] **Slices** `a[1..3]`, `s[1..]`, plus string indexing and negative-index rules, for strings, arrays and ranges.
 - [ ] **Ranges as values**: stepped `0..10 step 2` (or `range(0, 10, 2)`), inclusive vs. exclusive, and ranges stored in variables.
-- [ ] **Default and keyword arguments** at call sites, variadics (`*args`), and argument-count errors with a clear message.
-- [ ] **Top-level statements / script mode.** `print("hi")` in a file with no `main` currently fails with `E3001`. Decide and implement (a script entry point that is also valid for the compiler).
+- [x] **Default and keyword arguments**: defaults evaluated at every call, `f(b=2)`, static checks `E2066`-`E2069`, parse errors `E1019`/`E1020` (`conformance/functions/default_arguments`, `keyword_arguments`, `conformance/errors/call_*`). Open: `*args`/`**kwargs`, keyword-only parameters, compiled mode (`E3010`).
+- [x] **Script mode** (decision 6): a file of top-level statements runs without `main`; no `main` and no statements is still `E3001` (`conformance/functions/script_mode`, `conformance/errors/no_main_no_statements`). Interpreter only.
 - [ ] **Structured type annotations.** Annotations are stored as raw strings. Parse them into a type AST (`array[int]`, `map[str, int]`, `f32[]`, function types, optional types) and check them.
 - [ ] Generic containers: `array[int]`, `map[str, int]`, with checking where annotated.
 - [ ] **Definite assignment** and **unreachable code** diagnostics.
@@ -313,7 +313,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 124 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 136 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
@@ -343,8 +343,8 @@ These shape the language, so they are yours to make. Each blocks specific items 
 | 3 | `elif` or only nested `else: if`? | **Done:** `elif` added. Nesting 4 deep for a simple chain works against readability. | P3 |
 | 4 | String interpolation: `f"x={x}"`, `"${x}"`, or a native `format` builtin only? | f-strings. **Done.** | P2, P4 |
 | 5 | Integer model: arbitrary precision, 64-bit, or per-type fixed width with wrap/trap? | Per-type fixed width, with `int` as a 64-bit trap-on-overflow default. This keeps engine and compiler identical, and trap-on-overflow is cheap in C (`__builtin_add_overflow`). Arbitrary precision would make every `int` operation a possible allocation and undo the typed-code speedups. | P1, P4, P5, §9 |
-| 6 | Script mode: may a file be just statements with no `main`? | Yes for `manv run`, with the semantics "implicit main", so `manv run x.mv` works for small programs. | P3 |
-| 7 | Single-expression lambdas: `fn(x): x * 2`? | Yes. Block-only lambdas make `map`/`filter` noisy. | P3 |
+| 6 | Script mode: may a file be just statements with no `main`? | Yes for `manv run`, with the semantics "implicit main", so `manv run x.mv` works for small programs. **Done.** | P3 |
+| 7 | Single-expression lambdas: `fn(x): x * 2`? | **Done.** Yes. Block-only lambdas make `map`/`filter` noisy. | P3 |
 | 8 | `String` model: bytes or Unicode code points for `len`/index? | Code points, stored as UTF-8, with a separate `bytes` type for raw data. Indexing by code point is O(n) on UTF-8, so the engine needs an ASCII-only fast path (a flag on the string) to keep it cheap. | P4, P5 |
 | 9 | Value vs. reference semantics for `array`/`map`/`type` instances (aliasing on assignment/pass)? A concrete symptom today: `array_append(a, x)` mutates `a`, while `examples/05` documents it as pure. | Reference semantics for heap types, written down plainly, with an explicit `copy()`. This needs to be settled before the ownership model. | P4, P5, §9 |
 | 10 | Keep or cut: `class` alias, `True`/`False` aliases, `&&`/`||`/`!` aliases, the `macro` stub, `gpu`/`memory` statements? | Cut the `True`/`False` and `&&`/`||`/`!` aliases (one way to do it). Keep `class` only if it is needed for migration. Defer macros. | P2, P3 |

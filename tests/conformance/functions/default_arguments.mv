@@ -1,0 +1,34 @@
+fn greet(name: str, greeting: str = "Hello", punct = "!") -> str:
+    return f"{greeting}, {name}{punct}"
+
+fn scale(x: int, factor: int = 2) -> int:
+    return x * factor
+
+fn append_to(item, into = []) -> array:
+    into.append(item)
+    return into
+
+type Point:
+    fn __init__(self, x: int = 0, y: int = 0):
+        self.x = x
+        self.y = y
+
+    fn moved(self, dx: int = 1, dy: int = 0):
+        return Point(self.x + dx, self.y + dy)
+
+fn main() -> int:
+    print(greet("ManV"))
+    print(greet("ManV", "Hi"))
+    print(greet("ManV", "Hi", "?"))
+    print(scale(5), scale(5, 3))
+    print(append_to(1))
+    print(append_to(2))
+    p = Point()
+    print(p.x, p.y)
+    q = Point(3)
+    print(q.x, q.y)
+    r = q.moved()
+    print(r.x, r.y)
+    f = fn(a, b = 10): a + b
+    print(f(1), f(1, 2))
+    return 0

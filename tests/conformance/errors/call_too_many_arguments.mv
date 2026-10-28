@@ -1,0 +1,6 @@
+fn f(a: int) -> int:
+    return a
+
+fn main() -> int:
+    print(f(1, 2))
+    return 0

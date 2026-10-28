@@ -313,7 +313,9 @@ class Interpreter:
     def run_main(self, program: ast.Program) -> int:
         self.load_program(program)
         if "main" not in self.functions:
-            raise ManvError(diag("E3001", "missing 'main' function", self.file, 1, 1))
+            if program.statements:
+                return 0  # script mode: the top-level statements were the program
+            raise ManvError(diag("E3001", "missing 'main' function (and no top-level statements to run)", self.file, 1, 1))
         result = self._call_function(self.functions["main"], [])
         if result is None:
             return 0
@@ -1053,10 +1055,13 @@ class Interpreter:
                     return proxy
 
             args = [self.eval_expr(arg, env) for arg in expr.args]
+            kwargs = {name: self.eval_expr(value, env) for name, value in expr.kwargs}
 
             if isinstance(expr.callee, ast.IdentifierExpr):
                 alias = self._resolve_unshadowed_call_alias(expr.callee, env)
                 if alias is not None:
+                    if kwargs:
+                        self._raise_runtime("TypeError", f"builtin '{expr.callee.name}' does not take keyword arguments", expr.span)
                     if alias == "io_print":
                         return self._invoke_intrinsic(alias, [[self._to_text(a) for a in args]], expr.span)
                     if alias == "core_str" and len(args) == 1:
@@ -1064,7 +1069,7 @@ class Interpreter:
                     return self._invoke_intrinsic(alias, args, expr.span)
 
             callee = self.eval_expr(expr.callee, env)
-            return self._call_value(callee, args, expr.span)
+            return self._call_value(callee, args, expr.span, kwargs)
 
         if isinstance(expr, ast.MacroCallExpr):
             macro = self._macros.get(expr.name)
@@ -1112,15 +1117,23 @@ class Interpreter:
             return None
         return resolve_call_alias_name(callee)
 
-    def _call_value(self, callee: Any, args: list[Any], span: Any) -> Any:
+    def _call_value(self, callee: Any, args: list[Any], span: Any, kwargs: dict[str, Any] | None = None) -> Any:
         if isinstance(callee, FunctionValue):
-            return self._call_function(callee, args)
+            return self._call_function(callee, args, kwargs)
         if isinstance(callee, BoundMethodObject):
             fn = callee.function
             if isinstance(fn, FunctionValue) and fn.is_class_method:
                 cls_arg = callee.receiver.type_obj if isinstance(callee.receiver, InstanceObject) else callee.receiver
-                return self._call_function(fn, [cls_arg, *args])
-            return self._call_function(fn, [callee.receiver, *args])
+                return self._call_function(fn, [cls_arg, *args], kwargs)
+            return self._call_function(fn, [callee.receiver, *args], kwargs)
+        if kwargs and isinstance(callee, TypeObject):
+            return self._construct_instance(callee, args, span, kwargs)
+        if kwargs and isinstance(callee, InstanceObject):
+            call_method = self._lookup_method(callee.type_obj, "__call__") or self._lookup_method(callee.type_obj, "call_")
+            if call_method is not None:
+                return self._call_function(call_method, [callee, *args], kwargs)
+        if kwargs:
+            self._raise_runtime("TypeError", "this callable does not take keyword arguments", span)
         if isinstance(callee, SuperProxy):
             # super() itself is not callable; attribute access via super().method() is
             self._raise_runtime("TypeError", "super() object is not directly callable", span)
@@ -1192,7 +1205,7 @@ class Interpreter:
             return bool(val)
         return None
 
-    def _construct_instance(self, type_obj: TypeObject, args: list[Any], span: Any) -> InstanceObject:
+    def _construct_instance(self, type_obj: TypeObject, args: list[Any], span: Any, kwargs: dict[str, Any] | None = None) -> InstanceObject:
         instance: InstanceObject
         try:
             instance = self.heap.allocate(type_obj.name, InstanceObject(type_obj=type_obj))
@@ -1203,7 +1216,9 @@ class Interpreter:
             init_fn = self._lookup_method(type_obj, "init")
         
         if init_fn is not None:
-            self._call_function(init_fn, [instance, *args])
+            self._call_function(init_fn, [instance, *args], kwargs)
+        elif kwargs:
+            self._raise_runtime("TypeError", f"{type_obj.name}() takes no keyword arguments", span)
         elif args:
             base_exc = self.types.get("BaseException")
             if base_exc is not None and self._is_type_or_subtype(type_obj, base_exc) and len(args) <= 1:
@@ -1374,9 +1389,37 @@ class Interpreter:
         except Exception:
             self._raise_runtime("TypeError", "unhashable map key", span)
 
-    def _call_function(self, fn: FunctionValue, args: list[object]) -> object:
-        if len(args) != len(fn.decl.params):
-            self._raise_runtime("TypeError", f"function '{fn.decl.name}' expects {len(fn.decl.params)} args, got {len(args)}", fn.decl.span)
+    def _bind_arguments(self, fn: FunctionValue, args: list[object], kwargs: dict[str, Any] | None) -> list[object]:
+        """Match positional and keyword arguments to the parameters, filling in defaults.
+        A default is evaluated at every call that needs it, in the scope the function was defined in."""
+        params = fn.decl.params
+        span = fn.decl.span
+        if len(args) > len(params):
+            expects = f"expects {len(params)} args" if not any(p.default is not None for p in params) else f"takes at most {len(params)} args"
+            self._raise_runtime("TypeError", f"function '{fn.decl.name}' {expects}, got {len(args)}", span)
+        bound: list[object] = list(args)
+        for index in range(len(args), len(params)):
+            param = params[index]
+            if kwargs and param.name in kwargs:
+                bound.append(kwargs[param.name])
+            elif param.default is not None:
+                bound.append(self.eval_expr(param.default, fn.globals_env or self.global_env))
+            else:
+                if any(p.default is not None for p in params) or kwargs:
+                    self._raise_runtime("TypeError", f"function '{fn.decl.name}' is missing argument '{param.name}'", span)
+                self._raise_runtime("TypeError", f"function '{fn.decl.name}' expects {len(params)} args, got {len(args)}", span)
+        if kwargs:
+            names = [p.name for p in params]
+            for name in kwargs:
+                if name not in names:
+                    self._raise_runtime("TypeError", f"function '{fn.decl.name}' has no parameter named '{name}'", span)
+                if names.index(name) < len(args):
+                    self._raise_runtime("TypeError", f"function '{fn.decl.name}' got more than one value for '{name}'", span)
+        return bound
+
+    def _call_function(self, fn: FunctionValue, args: list[object], kwargs: dict[str, Any] | None = None) -> object:
+        if kwargs or len(args) != len(fn.decl.params):
+            args = self._bind_arguments(fn, args, kwargs)
 
         gpu_config = normalize_gpu_decorator(fn.decl)
         if gpu_config is not None and gpu_config.required:

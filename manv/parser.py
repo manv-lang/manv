@@ -79,11 +79,7 @@ class Parser:
         params: list[ast.Param] = []
         if not self._is_op(")"):
             while True:
-                p_tok = self._expect("IDENT", message="expected parameter name")
-                p_type = None
-                if self._match_op(":"):
-                    p_type = self._parse_type(stop_ops={",", ")"})
-                params.append(ast.Param(name=p_tok.lexeme, type_name=p_type, span=self._span(p_tok)))
+                params.append(self._parse_param(params))
                 if self._match_op(","):
                     continue
                 break
@@ -353,6 +349,20 @@ class Parser:
         expr = self._parse_expression()
         self._consume_required_newline("expected newline after expression")
         return ast.ExprStmt(expr=expr, span=self._span_from_expr(expr))
+
+    def _parse_param(self, previous: list[ast.Param]) -> ast.Param:
+        """`name`, `name: T`, `name = default` or `name: T = default`. Once one parameter has a
+        default, every later one needs a default too."""
+        p_tok = self._expect("IDENT", message="expected parameter name")
+        p_type = None
+        if self._match_op(":"):
+            p_type = self._parse_type(stop_ops={",", ")", "="})
+        default = None
+        if self._match_op("="):
+            default = self._parse_expression()
+        elif previous and previous[-1].default is not None:
+            self._error("E1019", f"parameter '{p_tok.lexeme}' needs a default value: it follows a parameter that has one", p_tok)
+        return ast.Param(name=p_tok.lexeme, type_name=p_type, span=self._span(p_tok), default=default)
 
     def _is_destructure_start(self) -> bool:
         """`a, b = ...`: names separated by commas, then `=`."""
@@ -1047,14 +1057,26 @@ class Parser:
         while True:
             if self._match_op("("):
                 args: list[object] = []
+                kwargs: list[tuple[str, object]] = []
                 if not self._is_op(")"):
                     while True:
-                        args.append(self._parse_expression())
+                        if self._is("IDENT") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "=":
+                            name_tok = self._advance()
+                            self._advance()
+                            if any(name == name_tok.lexeme for name, _ in kwargs):
+                                self._error("E1020", f"keyword argument '{name_tok.lexeme}' is given twice", name_tok)
+                            kwargs.append((name_tok.lexeme, self._parse_expression()))
+                        else:
+                            if kwargs:
+                                self._error("E1020", "a positional argument cannot follow a keyword argument", self._current())
+                            args.append(self._parse_expression())
                         if self._match_op(","):
+                            if self._is_op(")"):
+                                break
                             continue
                         break
                 close = self._expect_op(")")
-                expr = ast.CallExpr(callee=expr, args=args, span=self._span(close))
+                expr = ast.CallExpr(callee=expr, args=args, span=self._span(close), kwargs=kwargs)
                 continue
             if self._match_op("["):
                 idx = self._parse_index()
@@ -1225,11 +1247,7 @@ class Parser:
         params: list[ast.Param] = []
         if not self._is_op(")"):
             while True:
-                p_tok = self._expect("IDENT", message="expected parameter name")
-                p_type = None
-                if self._match_op(":"):
-                    p_type = self._parse_type(stop_ops={",", ")"})
-                params.append(ast.Param(name=p_tok.lexeme, type_name=p_type, span=self._span(p_tok)))
+                params.append(self._parse_param(params))
                 if self._match_op(","):
                     continue
                 break
@@ -1237,8 +1255,13 @@ class Parser:
         return_type = None
         if self._match_op("->"):
             return_type = self._parse_type(stop_ops={":"})
-        self._expect_op(":")
-        body = self._parse_block()
+        colon = self._expect_op(":")
+        if self._is("NEWLINE"):
+            body = self._parse_block()
+        else:
+            # `fn(x): x * 2` -- a single expression is the return value
+            value = self._parse_expression()
+            body = [ast.ReturnStmt(value=value, span=self._span_from_expr(value))]
         return ast.LambdaExpr(params=params, return_type=return_type, body=body, span=self._span(fn_tok))
 
     def _collect_until_newline(self) -> str:

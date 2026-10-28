@@ -378,9 +378,29 @@ class SemanticAnalyzer:
         self._validate_function_decorators(decl, is_method=is_method)
         fn_scope = Scope(parent=parent)
         for param in decl.params:
+            if param.default is not None:
+                self._analyze_expr(param.default, parent, as_callee=False)
             fn_scope.define(param.name, normalize_type_name(param.type_name))
         for stmt in decl.body:
             self._analyze_stmt(stmt, fn_scope, decl, loop_depth=0, except_depth=0)
+
+    def _check_call_arguments(self, call: ast.CallExpr, fn: ast.FnDecl) -> None:
+        """Arity and keyword checks for a call to a known top-level function."""
+        line, col = call.span.line, call.span.column
+        names = [p.name for p in fn.params]
+        if len(call.args) > len(names):
+            self._add_error("E2066", f"'{fn.name}' takes at most {len(names)} argument(s), got {len(call.args)}", line, col)
+            return
+        bound = set(names[: len(call.args)])
+        for name, _ in call.kwargs:
+            if name not in names:
+                self._add_error("E2067", f"'{fn.name}' has no parameter named '{name}'", line, col)
+            elif name in bound:
+                self._add_error("E2068", f"'{fn.name}' got more than one value for parameter '{name}'", line, col)
+            bound.add(name)
+        missing = [p.name for p in fn.params if p.default is None and p.name not in bound]
+        if missing:
+            self._add_error("E2069", f"'{fn.name}' is missing argument(s): {', '.join(missing)}", line, col)
 
     def _validate_function_decorators(self, decl: ast.FnDecl, *, is_method: bool) -> None:
         gpu_count = 0
@@ -900,8 +920,12 @@ class SemanticAnalyzer:
             self._analyze_expr(expr.callee, scope, as_callee=True)
             for arg in expr.args:
                 self._analyze_expr(arg, scope, as_callee=False)
+            for _, value in expr.kwargs:
+                self._analyze_expr(value, scope, as_callee=False)
             if isinstance(expr.callee, ast.IdentifierExpr):
                 fn = self.functions.get(expr.callee.name)
+                if fn and not scope.contains(expr.callee.name):
+                    self._check_call_arguments(expr, fn)
                 if fn:
                     return normalize_type_name(fn.return_type)
                 if expr.callee.name in self.types:

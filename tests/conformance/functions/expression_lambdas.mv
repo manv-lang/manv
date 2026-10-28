@@ -1,0 +1,20 @@
+fn apply(f, x: int) -> int:
+    return f(x)
+
+fn main() -> int:
+    double = fn(x): x * 2
+    print(double(21))
+    print(apply(fn(n): n + 1, 9))
+    add = fn(a, b): a + b
+    print(add(2, 3))
+    offset = 100
+    shift = fn(x): x + offset
+    print(shift(1))
+    pick = fn(a, b): a if a > b else b
+    print(pick(3, 8))
+    fs = [fn(x): x + 1, fn(x): x * x]
+    print(fs[0](5), fs[1](5))
+    print(sorted([3, 1, 2]))
+    typed = fn(x: int) -> int: x - 1
+    print(typed(10))
+    return 0

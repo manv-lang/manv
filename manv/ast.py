@@ -32,6 +32,7 @@ class Param:
     name: str
     type_name: str | None
     span: Span
+    default: Any = None  # expression evaluated at every call that omits the argument
 
 
 @dataclass
@@ -434,6 +435,7 @@ class CallExpr:
     callee: Any
     args: list[Any]
     span: Span
+    kwargs: list[tuple[str, Any]] = field(default_factory=list)  # `name=value` arguments, after the positional ones
 
 
 @dataclass

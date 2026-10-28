@@ -1,0 +1,26 @@
+fn box(width: int, height: int = 1, label: str = "box") -> str:
+    return f"{label} {width}x{height}"
+
+type Pair:
+    fn __init__(self, a, b = 0):
+        self.a = a
+        self.b = b
+
+fn main() -> int:
+    print(box(3))
+    print(box(3, label="crate"))
+    print(box(height=4, width=2))
+    print(box(1, 2, label="x"))
+    print(box(
+        width=5,
+        height=6,
+    ))
+    p = Pair(b=2, a=1)
+    print(p.a, p.b)
+    g = fn(x, scale = 2): x * scale
+    print(g(4, scale=3))
+    try:
+        g(1, nope=2)
+    except TypeError as e:
+        print("TypeError")
+    return 0

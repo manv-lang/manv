@@ -5,6 +5,9 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- Default argument values and keyword arguments at call sites (`E1019`, `E1020`, `E2066`-`E2069`).
+- Single-expression lambdas: `fn(x): x * 2`.
+- Script mode: a file of top-level statements runs without a `main` function.
 - f-strings with format specs: `f"{name}: {value:.2f}"` (syntax errors are `E1018`).
 - Tuples `(a, b)` and unpacking (`a, b = f()`, `for k, v in ...`, `return a, b`).
 - The `in` / `not in` operators, open-ended slices (`a[1..]`, `a[..2]`), and the builtins `ord` and `chr`.

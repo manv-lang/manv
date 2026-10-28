@@ -224,11 +224,19 @@ m["key"]         # map lookup
 shapes.area(r)   # member of an included module
 ```
 
-Argument lists may span lines. Keyword arguments are accepted only in decorators.
+Argument lists may span lines, and a trailing comma is allowed. Keyword arguments (`f(x, scale=2)`) are described in §6.1.
 
 ### 4.4 Function literals ✅
 
-A lambda is the same `fn` form without a name, and it **always has a block body**:
+A lambda is the same `fn` form without a name. It has either a **single-expression body**, which is its return value, or a block body:
+
+```manv
+double = fn(x): x * 2
+add = fn(a, b = 10) -> int: a + b
+pick = fn(a, b): a if a > b else b
+```
+
+With a block body:
 
 ```manv
 square = fn(x: int) -> int:
@@ -239,7 +247,7 @@ array evens = filter_array(numbers, fn(x: int) -> bool:
 )
 ```
 
-The closing `)` of the enclosing call goes on the line after the block. Single-expression lambdas (`fn(x): x * 2`) do not exist 🧭. Lambdas capture variables from the enclosing scope (closures).
+The closing `)` of the enclosing call goes on the line after the block. Lambdas capture variables from the enclosing scope (closures). In an expression body the lambda extends as far right as possible, so in `[fn(x): x + 1, fn(x): x * x]` each lambda ends at the comma.
 
 ### 4.5 Collections and ranges
 
@@ -525,12 +533,17 @@ fn apply(f, x: int) -> int:   # untyped parameter: any value, including a functi
 
 - Parameter types and the return type are optional.
 - Functions are first-class values: they can be passed, returned, stored in arrays and called.
-- No default arguments, keyword arguments at call sites, `*args` or overloading yet 🧭.
+- **Default values**: `fn f(a, b: int = 2)`. A default is any expression and is evaluated **at every call** that omits the argument (so `into = []` gives a fresh array each time, unlike Python). After a parameter with a default, every later parameter needs one too (`E1019`).
+- **Keyword arguments**: `f(1, b=3)` and `f(b=3, a=1)`; positional arguments come first (`E1020` otherwise, also for a name given twice). The same works for constructors (`Point(y=2)`) and methods. Builtin functions do not take keyword arguments.
+- Calling a known top-level function is checked before the program runs: too many arguments `E2066`, unknown keyword `E2067`, a parameter given twice `E2068`, a missing argument `E2069`. Calls through variables, methods and constructors are checked when they run (`TypeError`).
+- Not there yet 🧭: `*args` / `**kwargs`, keyword-only parameters, overloading, and defaults and keywords in compiled mode (keyword arguments are rejected there with `E3010`).
 - Recursion works.
 
 ### 6.2 Entry point ✅
 
-A runnable program defines `fn main() -> int`. The return value is the process exit code (`0` means success). A file with no `main` fails with `E3001`.
+A runnable program defines `fn main() -> int`. The return value is the process exit code (`0` means success).
+
+**Script mode** ✅: a file with top-level statements and no `main` just runs those statements, top to bottom, and exits with `0`. Functions and types in the file are available from the start (they are declared before any statement runs). A file with neither `main` nor any statement fails with `E3001`. If a file has both, the statements run first, then `main`. Script mode is not available in compiled mode yet.
 
 ⚠️ Top-level statements outside functions parse, but a file with them and no `main` is rejected. A "script mode" is an open decision 🧭.
 
@@ -761,8 +774,9 @@ program      := { decorator* (fn_decl | type_decl | impl_decl | macro_decl
                               | module_decl | extern_decl | statement) }
 block        := NEWLINE INDENT statement+ DEDENT
 fn_decl      := "fn" IDENT "(" [params] ")" ["->" type] ":" block
-lambda       := "fn" "(" [params] ")" ["->" type] ":" block
-params       := IDENT [":" type] { "," IDENT [":" type] }
+lambda       := "fn" "(" [params] ")" ["->" type] ":" (expr | block)
+params       := param { "," param }
+param        := IDENT [":" type] ["=" expr]
 type_decl    := ("type" | "class") IDENT ["(" IDENT {"," IDENT} ")"] ":" NEWLINE INDENT
                 [STRING] { (field_decl | const_decl | decorator* fn_decl) } DEDENT
 impl_decl    := "impl" IDENT ":" NEWLINE INDENT { decorator* fn_decl } DEDENT

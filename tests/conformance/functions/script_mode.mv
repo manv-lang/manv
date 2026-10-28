@@ -1,0 +1,9 @@
+total = 0
+for i in 1..4:
+    total += i
+print("total", total)
+
+fn double(n: int) -> int:
+    return n * 2
+
+print(double(total))

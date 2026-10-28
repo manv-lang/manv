@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import ast
-from .diagnostics import Span
+from .diagnostics import ManvError, Span, diag
 from .hlir import HBasicBlock, HExternDecl, HFunction, HInstruction, HModule, HTerminator, Provenance, SourceSpan
 from .intrinsics import intrinsic_effect_names, resolve_call_alias_name, resolve_intrinsic, resolve_intrinsic_name_from_callee
 from .lexer import Lexer
@@ -1271,6 +1271,10 @@ class HLIRLowerer:
             return out
 
         if isinstance(expr, ast.CallExpr):
+            if expr.kwargs:
+                raise ManvError(
+                    diag("E3010", "keyword arguments are not supported in compiled mode yet", expr.span.file, expr.span.line, expr.span.column)
+                )
             arg_values = [self._lower_expr(state, arg) for arg in expr.args]
             callsite_id = state.next_callsite_id()
             intrinsic_name = resolve_intrinsic_name_from_callee(expr.callee) or self._resolve_unshadowed_call_alias(

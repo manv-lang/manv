@@ -1,0 +1,8 @@
+box 3x1
+crate 3x1
+box 2x4
+x 1x2
+box 5x6
+1 2
+12
+TypeError
