@@ -1,0 +1,4 @@
+fn main() -> int:
+    u8 const* p = malloc(4) as u8*
+    p[0] = 1
+    return 0

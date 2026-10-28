@@ -1,0 +1,15 @@
+fn main() -> int:
+    u8* bytes = malloc(16)
+    i32* ints = malloc(16)
+    i64* longs = malloc(16)
+    f32* floats = malloc(16)
+    print((bytes + 1) as usize - bytes as usize)
+    print((ints + 1) as usize - ints as usize)
+    print((longs + 1) as usize - longs as usize)
+    print((floats + 3) as usize - floats as usize)
+    print(sizeof(u8), sizeof(i16), sizeof(i32), sizeof(i64), sizeof(f32), sizeof(float), sizeof(bool), sizeof(int*))
+    free(bytes)
+    free(ints)
+    free(longs)
+    free(floats)
+    return 0

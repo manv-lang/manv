@@ -45,6 +45,7 @@ from .intrinsics import (
     StdCallable,
     StdNamespace,
     format_field,
+    format_memory_value,
     invoke_intrinsic,
     resolve_call_alias_name,
     std_namespace_attr,
@@ -53,6 +54,20 @@ from .runtime import unsupported_feature
 from .semantics import SemanticAnalyzer
 from .semantics_core import eval_binary, eval_unary
 from .builtin_methods import BuiltinMethods
+from .memory import (
+    ArrayRef,
+    FLOAT_TYPES,
+    INT_TYPES,
+    NULL,
+    SCALARS,
+    Memory,
+    MemoryFault,
+    Pointer,
+    StructRef,
+    canonical_pointer_type,
+    is_pointer_type,
+    pointee_of,
+)
 
 
 class ReturnSignal(Exception):
@@ -82,7 +97,38 @@ class FunctionValue:
     is_class_method: bool = False
 
 
+_NO_DECLARED = object()  # `_declared_value` found nothing special about this declaration
+
+
+class MemCell:
+    """A variable whose address was taken (`&x`): its value lives in raw memory, so a pointer and
+    the variable always agree. Lookups and assignments go through the cell."""
+
+    __slots__ = ("memory", "ptr", "type_name")
+
+    def __init__(self, memory: Memory, ptr: Pointer, type_name: str):
+        self.memory = memory
+        self.ptr = ptr
+        self.type_name = type_name
+
+    def load(self) -> object:
+        return self.memory.load(self.ptr, self.type_name)
+
+    def store(self, value: object) -> None:
+        self.memory.store(self.ptr, value, self.type_name)
+
+
+class StructType:
+    """The name of a `struct`, callable as a constructor: `Vec2(1.0, 2.0)`."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+
 class Environment:
+    # Set by the interpreter: turns a MemoryFault raised by a variable's cell into a ManV exception.
+    on_fault: Any = None
+
     def __init__(self, parent: "Environment | None" = None):
         self.parent = parent
         self.values: dict[str, object] = {}
@@ -92,19 +138,35 @@ class Environment:
 
     def lookup(self, name: str) -> object:
         if name in self.values:
-            return self.values[name]
+            value = self.values[name]
+            return value.load() if type(value) is MemCell else value
         if self.parent is not None:
             return self.parent.lookup(name)
         raise KeyError(name)
 
     def assign(self, name: str, value: object) -> None:
         if name in self.values:
+            current = self.values[name]
+            if type(current) is MemCell:
+                try:
+                    current.store(value)
+                except MemoryFault as fault:
+                    Environment.on_fault(fault)
+                return
             self.values[name] = value
             return
         if self.parent is not None:
             self.parent.assign(name, value)
             return
         raise KeyError(name)
+
+    def owner_of(self, name: str) -> "Environment | None":
+        env: Environment | None = self
+        while env is not None:
+            if name in env.values:
+                return env
+            env = env.parent
+        return None
 
 
 class Interpreter:
@@ -147,6 +209,10 @@ class Interpreter:
         self.heap.register_root_provider(self._gc_roots)
         self._bootstrap_runtime_types()
         self._builtin_methods = BuiltinMethods(self)
+        self.memory = Memory()
+        self._frame_cells: list[list[tuple[Environment, str, MemCell]]] = [[]]
+        Environment.on_fault = lambda fault: self._raise_fault(fault, None)
+        self._install_memory_builtins()
 
     def _bootstrap_runtime_types(self) -> None:
         object_t = self.heap.allocate("Type", TypeObject(name="object"))
@@ -174,6 +240,8 @@ class Interpreter:
         self._define_type("RuntimeError", "Exception")
         self._define_type("OSError", "Exception")
         self._define_type("OutOfMemoryError", "RuntimeError")
+        self._define_type("PointerError", "Exception")
+        self._define_type("NullPointerError", "PointerError")
 
         # expose runtime types as globals so programs can raise/catch them by name
         for name, t in self.types.items():
@@ -288,6 +356,8 @@ class Interpreter:
                     self._raise_runtime("TypeError", f"impl target '{decl.target}' is undefined", decl.span)
                 for method in decl.methods:
                     self._register_type_method(type_obj, method)
+            elif isinstance(decl, ast.StructDecl):
+                self._define_struct(decl)
             elif isinstance(decl, ast.MacroDeclStub):
                 self._macros[decl.name] = decl
             elif isinstance(decl, ast.ModuleDecl):
@@ -327,6 +397,14 @@ class Interpreter:
 
     def execute_stmt(self, stmt: object, env: Environment, in_loop: bool = False) -> object | None:
         if isinstance(stmt, ast.LetStmt):
+            if stmt.c_array:
+                env.define(stmt.name, self._make_c_array(stmt, env))
+                return None
+            if stmt.type_name and stmt.array_size is None:
+                declared = self._declared_value(stmt, env)
+                if declared is not _NO_DECLARED:
+                    env.define(stmt.name, declared)
+                    return None
             if stmt.array_size is not None:
                 raw_size = self.eval_expr(stmt.array_size, env)
                 if not isinstance(raw_size, int) or raw_size < 0:
@@ -386,7 +464,9 @@ class Interpreter:
             return None
 
         if isinstance(stmt, ast.AssignStmt):
-            value = self.eval_expr(stmt.value, env)
+            value = self._own(self.eval_expr(stmt.value, env))
+            if stmt.pointer_type is not None:
+                value = self._coerce_pointer(value, stmt.pointer_type)
             if stmt.declares:
                 env.define(stmt.name, value)
                 return None
@@ -435,7 +515,7 @@ class Interpreter:
                         except KeyError:
                             self._raise_runtime("RuntimeError", f"undefined variable '{stmt.name}'", stmt.span)
                         return None
-            result = eval_binary(op, current, rhs)
+            result = self._augmented(op, current, rhs, stmt.span)
             try:
                 env.assign(stmt.name, result)
             except KeyError:
@@ -447,13 +527,22 @@ class Interpreter:
             current = self._lookup_attr(target, stmt.attr, stmt.span)
             rhs = self.eval_expr(stmt.value, env)
             op = stmt.op[:-1]
-            result = eval_binary(op, current, rhs)
+            result = self._augmented(op, current, rhs, stmt.span)
             self._store_attr(target, stmt.attr, result, stmt.span)
+            return None
+
+        if isinstance(stmt, ast.SetDerefStmt):
+            self._exec_set_deref(stmt, env)
             return None
 
         if isinstance(stmt, ast.AugAssignIndexStmt):
             target = self.eval_expr(stmt.target, env)
             index = self.eval_expr(stmt.index, env)
+            if isinstance(target, (Pointer, ArrayRef)):
+                slot, slot_type = self._element_slot(target, index, stmt.span)
+                rhs = self.eval_expr(stmt.value, env)
+                self._store_result(slot, slot_type, stmt.op[:-1], rhs, stmt.span)
+                return None
             if isinstance(target, list):
                 idx = self._normalize_list_index(target, index, stmt.span)
                 current = target[idx]
@@ -506,6 +595,10 @@ class Interpreter:
             target = self.eval_expr(stmt.target, env)
             index = self.eval_expr(stmt.index, env)
             value = self.eval_expr(stmt.value, env)
+            if isinstance(target, (Pointer, ArrayRef)):
+                slot, slot_type = self._element_slot(target, index, stmt.span)
+                self._guard(lambda: self.memory.store(slot, value, slot_type), stmt.span)
+                return None
             if isinstance(target, list):
                 idx = self._normalize_list_index(target, index, stmt.span)
                 target[idx] = value
@@ -875,6 +968,8 @@ class Interpreter:
             if expr.op in {"or", "||"}:
                 return bool(left) or bool(self.eval_expr(expr.right, env))
             right = self.eval_expr(expr.right, env)
+            if isinstance(left, (Pointer, ArrayRef)) or isinstance(right, (Pointer, ArrayRef)):
+                return self._pointer_binary(expr.op, left, right, expr.span)
             if expr.op in {"==", "!="}:
                 eq = self._equals(left, right, expr.span)
                 return eq if expr.op == "==" else (not eq)
@@ -920,6 +1015,19 @@ class Interpreter:
         if isinstance(expr, ast.TupleExpr):
             return tuple(self.eval_expr(e, env) for e in expr.elements)
 
+        if isinstance(expr, ast.AddrOfExpr):
+            return self._eval_address_of(expr, env)
+
+        if isinstance(expr, ast.DerefExpr):
+            ptr = self._as_pointer(self.eval_expr(expr.operand, env), expr.span, "dereference")
+            return self._guard(lambda: self.memory.load(ptr), expr.span)
+
+        if isinstance(expr, ast.CastExpr):
+            return self._cast(self.eval_expr(expr.operand, env), expr.type_name, expr.span)
+
+        if isinstance(expr, ast.SizeofExpr):
+            return self._eval_sizeof(expr, env)
+
         if isinstance(expr, ast.FStringExpr):
             pieces: list[str] = []
             for part in expr.parts:
@@ -955,6 +1063,9 @@ class Interpreter:
             if isinstance(expr.index, ast.RangeExpr):
                 return self._slice(target, expr.index, env, expr.span)
             index = self.eval_expr(expr.index, env)
+            if isinstance(target, (Pointer, ArrayRef)):
+                slot, slot_type = self._element_slot(target, index, expr.span)
+                return self._guard(lambda: self.memory.load(slot, slot_type), expr.span)
             if isinstance(target, (list, tuple)):
                 idx = self._normalize_list_index(target, index, expr.span)
                 return target[idx]
@@ -1126,6 +1237,8 @@ class Interpreter:
                 cls_arg = callee.receiver.type_obj if isinstance(callee.receiver, InstanceObject) else callee.receiver
                 return self._call_function(fn, [cls_arg, *args], kwargs)
             return self._call_function(fn, [callee.receiver, *args], kwargs)
+        if isinstance(callee, StructType):
+            return self._construct_struct(callee, args, kwargs or {}, span)
         if kwargs and isinstance(callee, TypeObject):
             return self._construct_instance(callee, args, span, kwargs)
         if kwargs and isinstance(callee, InstanceObject):
@@ -1137,6 +1250,8 @@ class Interpreter:
         if isinstance(callee, SuperProxy):
             # super() itself is not callable; attribute access via super().method() is
             self._raise_runtime("TypeError", "super() object is not directly callable", span)
+        if isinstance(callee, StructType):
+            return self._construct_struct(callee, args, kwargs or {}, span)
         if isinstance(callee, TypeObject):
             cast = self._try_primitive_cast(callee, args, span)
             if cast is not None:
@@ -1157,6 +1272,8 @@ class Interpreter:
                 return callee(*args)
             except RaiseSignal:
                 raise
+            except MemoryFault as fault:
+                self._raise_fault(fault, span)
             except Exception as exc:
                 self._raise_runtime("RuntimeError", str(exc), span)
         self._raise_runtime("TypeError", "call target is not callable", span)
@@ -1252,6 +1369,8 @@ class Interpreter:
         return None
 
     def _lookup_attr(self, base: Any, attr: str, span: Any) -> Any:
+        if isinstance(base, StructRef):
+            return self._guard(lambda: self._struct_get(base, attr), span)
         if isinstance(base, (str, list, dict)):
             bound = self._builtin_methods.lookup(base, attr, span)
             if bound is not None:
@@ -1344,6 +1463,9 @@ class Interpreter:
         return None
 
     def _store_attr(self, target: Any, attr: str, value: Any, span: Any) -> None:
+        if isinstance(target, StructRef):
+            self._guard(lambda: self._struct_set(target, attr, value), span)
+            return
         if isinstance(target, InstanceObject):
             setter = self._lookup_setter(target.type_obj, attr)
             if setter is not None:
@@ -1439,16 +1561,18 @@ class Interpreter:
 
         env = Environment(parent=fn.globals_env or self.global_env)
         for param, value in zip(fn.decl.params, args, strict=True):
-            env.define(param.name, value)
+            env.define(param.name, self._bind_value(value, param.type_name))
 
         self.call_stack.append({"function": fn.decl.name, "span": fn.decl.span, "env": env.values, "owner_type": fn.owner_type})
+        self._frame_cells.append([])
         try:
             for stmt in fn.decl.body:
                 self.execute_stmt(stmt, env, in_loop=False)
         except ReturnSignal as signal:
-            return signal.value
+            return self._bind_value(signal.value, fn.decl.return_type)
         finally:
             self.call_stack.pop()
+            self._end_frame()
         return None
 
     def _help_text(self, value: Any) -> str:
@@ -1892,6 +2016,8 @@ class Interpreter:
                 if found:
                     return str(result)
             return self._stringify(value)
+        if isinstance(value, (Pointer, StructRef, ArrayRef)):
+            return format_memory_value(value, lambda v: self._to_text(v, nested=True))
         if isinstance(value, list):
             return "[" + ", ".join(self._to_text(v, nested=True) for v in value) + "]"
         if isinstance(value, tuple):
@@ -1958,6 +2084,374 @@ class Interpreter:
 
         _caller.__name__ = fn_decl.name
         return _caller
+
+    # ======================================================================= pointers
+    def _raise_fault(self, fault: MemoryFault, span: Any) -> NoReturn:
+        error = {"null": "NullPointerError", "pointer": "PointerError", "type": "TypeError"}.get(fault.kind, "PointerError")
+        self._raise_runtime(error, fault.message, span)
+
+    def _guard(self, action: Any, span: Any) -> Any:
+        """Run a memory operation and report a MemoryFault as the matching ManV exception."""
+        try:
+            return action()
+        except MemoryFault as fault:
+            self._raise_fault(fault, span)
+
+    def _as_pointer(self, value: Any, span: Any, what: str) -> Pointer:
+        if isinstance(value, Pointer):
+            return value
+        if isinstance(value, ArrayRef):
+            return Pointer(value.address, value.elem_type)
+        self._raise_runtime("TypeError", f"cannot {what} a {self._runtime_type_name(value)}: it is not a pointer", span)
+
+    def _element_slot(self, target: Any, index: Any, span: Any) -> tuple[Pointer, str]:
+        """The address and type of `target[index]` for a pointer or a C array."""
+        if isinstance(index, bool) or not isinstance(index, int):
+            self._raise_runtime("TypeError", "pointer index must be an int", span)
+        if isinstance(target, ArrayRef):
+            if not 0 <= index < target.count:
+                self._raise_runtime("IndexError", f"array index {index} out of range for an array of {target.count}", span)
+            elem = target.elem_type
+            return Pointer(target.address + index * self._guard(lambda: self.memory.sizeof(elem), span), elem), elem
+        pointee = target.pointee
+        size = self._guard(lambda: self.memory.sizeof(pointee), span)
+        return Pointer(target.address + index * size, pointee, target.foreign), pointee
+
+    def _own(self, value: Any) -> Any:
+        """Struct values are copied when bound to a new name (value semantics, as in C)."""
+        if isinstance(value, StructRef):
+            return self.memory.copy_struct(value)
+        return value
+
+    def _coerce_pointer(self, value: Any, type_name: str | None) -> Any:
+        """Implicit conversion at a declared pointer type: `void*` and arrays become `T*`."""
+        if type_name and is_pointer_type(type_name):
+            target = pointee_of(canonical_pointer_type(type_name))
+            if isinstance(value, ArrayRef):
+                return Pointer(value.address, target if target != "void" else value.elem_type)
+            if isinstance(value, Pointer) and value.pointee != target:
+                return value.retyped(target)
+        return value
+
+    def _bind_value(self, value: Any, type_name: str | None) -> Any:
+        return self._own(self._coerce_pointer(value, type_name))
+
+    def _declared_value(self, stmt: "ast.LetStmt", env: Environment) -> Any:
+        """The initial value for `T name [= v]` when T is a pointer or struct type; else a marker."""
+        type_name = stmt.type_name or ""
+        if is_pointer_type(type_name):
+            if stmt.value is None:
+                return Pointer(0, pointee_of(canonical_pointer_type(type_name)))
+            return self._coerce_pointer(self.eval_expr(stmt.value, env), type_name)
+        if type_name in self.memory.structs:
+            if stmt.value is None:
+                return self.memory.new_struct(type_name)
+            return self._own(self.eval_expr(stmt.value, env))
+        return _NO_DECLARED
+
+    def _make_c_array(self, stmt: "ast.LetStmt", env: Environment) -> ArrayRef:
+        elem = stmt.type_name[len("array["):-1]
+        count = self.eval_expr(stmt.array_size, env)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            self._raise_runtime("ValueError", f"array size for '{stmt.name}' must be a non-negative integer", stmt.span)
+        ref = self._guard(lambda: self.memory.new_array(elem, count), stmt.span)
+        if stmt.value is not None:
+            seed = self.eval_expr(stmt.value, env)
+            if not isinstance(seed, list):
+                self._raise_runtime("TypeError", f"initializer for '{stmt.name}' must be an array literal", stmt.span)
+            if len(seed) > count:
+                self._raise_runtime("ValueError", f"initializer for '{stmt.name}' has {len(seed)} items, exceeds size {count}", stmt.span)
+            size = self._guard(lambda: self.memory.sizeof(elem), stmt.span)
+            for i, item in enumerate(seed):
+                slot = Pointer(ref.address + i * size, elem)
+                self._guard(lambda slot=slot, item=item: self.memory.store(slot, item, elem), stmt.span)
+        return ref
+
+    def _end_frame(self) -> None:
+        """Leaving a function: its address-taken locals die. A pointer that outlives them now faults
+        ("use after free"), and a closure that kept the variable sees its last value."""
+        for owner, name, cell in self._frame_cells.pop():
+            if owner.values.get(name) is cell:
+                try:
+                    owner.values[name] = cell.load()
+                except MemoryFault:
+                    owner.values.pop(name, None)
+            self.memory.release(cell.ptr.address)
+
+    def _eval_address_of(self, expr: "ast.AddrOfExpr", env: Environment) -> Pointer:
+        operand = expr.operand
+        if isinstance(operand, ast.IdentifierExpr):
+            owner = env.owner_of(operand.name)
+            if owner is None:
+                self._raise_runtime("TypeError", f"cannot take the address of '{operand.name}'", expr.span)
+            raw = owner.values[operand.name]
+            if isinstance(raw, MemCell):
+                return Pointer(raw.ptr.address, raw.type_name)
+            if isinstance(raw, StructRef):
+                return Pointer(raw.address, raw.sdef.name)
+            if isinstance(raw, ArrayRef):
+                return Pointer(raw.address, raw.elem_type)
+            type_name = self._cell_type(raw, expr.pointee, expr.span)
+            size = self._guard(lambda: self.memory.sizeof(type_name), expr.span)
+            slot = self.memory.alloc(size)
+            cell = MemCell(self.memory, slot, type_name)
+            self._guard(lambda: cell.store(raw), expr.span)
+            owner.values[operand.name] = cell
+            self._frame_cells[-1].append((owner, operand.name, cell))
+            return Pointer(slot.address, type_name)
+        if isinstance(operand, ast.IndexExpr):
+            base = self.eval_expr(operand.value, env)
+            if not isinstance(base, (Pointer, ArrayRef)):
+                self._raise_runtime("TypeError", f"cannot take the address of an element of a {self._runtime_type_name(base)}", expr.span)
+            index = self.eval_expr(operand.index, env)
+            if isinstance(base, ArrayRef):
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= base.count:
+                    self._raise_runtime("IndexError", f"array index {index} out of range for an array of {base.count}", expr.span)
+                size = self._guard(lambda: self.memory.sizeof(base.elem_type), expr.span)
+                return Pointer(base.address + index * size, base.elem_type)
+            slot, slot_type = self._element_slot(base, index, expr.span)
+            return Pointer(slot.address, slot_type, base.foreign)
+        if isinstance(operand, ast.AttributeExpr):
+            base = self.eval_expr(operand.value, env)
+            if not isinstance(base, StructRef):
+                self._raise_runtime("TypeError", f"cannot take the address of a field of a {self._runtime_type_name(base)}", expr.span)
+            ptr, field = self._guard(lambda: self.memory.field_pointer(base, operand.attr), expr.span)
+            return Pointer(ptr.address, field.type_name)
+        if isinstance(operand, ast.DerefExpr):
+            return self._as_pointer(self.eval_expr(operand.operand, env), expr.span, "take the address through")
+        self._raise_runtime("TypeError", "cannot take the address of this expression", expr.span)
+
+    def _cell_type(self, value: Any, declared: str | None, span: Any) -> str:
+        """The memory type for a variable that is about to be given an address."""
+        if declared:
+            canonical = canonical_pointer_type(declared) if (declared == "ptr" or declared.endswith("*")) else declared
+            if canonical in SCALARS or is_pointer_type(canonical):
+                return canonical
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, Pointer):
+            return value.pointee + "*"
+        self._raise_runtime("TypeError", f"cannot take the address of a {self._runtime_type_name(value)}: only numbers, bools, pointers, structs and C arrays live in raw memory", span)
+
+    def _exec_set_deref(self, stmt: "ast.SetDerefStmt", env: Environment) -> None:
+        ptr = self._as_pointer(self.eval_expr(stmt.target, env), stmt.span, "store through")
+        value = self.eval_expr(stmt.value, env)
+        self._store_result(ptr, ptr.pointee, stmt.op, value, stmt.span)
+
+    def _store_result(self, slot: Pointer, slot_type: str, op: str | None, rhs: Any, span: Any) -> None:
+        """`*slot = rhs`, or `*slot op= rhs` when `op` is set."""
+        if op is not None:
+            current = self._guard(lambda: self.memory.load(slot, slot_type), span)
+            if isinstance(current, Pointer):
+                rhs = self._pointer_binary(op, current, rhs, span)
+            else:
+                try:
+                    rhs = eval_binary(op, current, rhs)
+                except Exception:
+                    self._raise_runtime("TypeError", f"unsupported operator '{op}=' for this memory slot", span)
+        self._guard(lambda: self.memory.store(slot, rhs, slot_type), span)
+
+    def _augmented(self, op: str, current: Any, rhs: Any, span: Any) -> Any:
+        if isinstance(current, (Pointer, ArrayRef)) or isinstance(rhs, (Pointer, ArrayRef)):
+            return self._pointer_binary(op, current, rhs, span)
+        return eval_binary(op, current, rhs)
+
+    def _pointer_binary(self, op: str, left: Any, right: Any, span: Any) -> Any:
+        lp = isinstance(left, (Pointer, ArrayRef))
+        rp = isinstance(right, (Pointer, ArrayRef))
+        if lp:
+            left = self._as_pointer(left, span, "use")
+        if rp:
+            right = self._as_pointer(right, span, "use")
+        if op in {"==", "!=", "<", "<=", ">", ">="}:
+            if not (lp and rp):
+                self._raise_runtime("TypeError", "a pointer can only be compared with another pointer (use null for no pointer)", span)
+            a, b = left.address, right.address
+            return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+
+        def scale(ptr: Pointer) -> int:
+            if ptr.pointee == "void":
+                self._raise_runtime("TypeError", "arithmetic on a void* is not allowed; cast it to u8* first", span)
+            return self._guard(lambda: self.memory.sizeof(ptr.pointee), span)
+
+        def whole(n: Any) -> int:
+            if isinstance(n, bool) or not isinstance(n, int):
+                self._raise_runtime("TypeError", "pointer arithmetic needs an int", span)
+            return n
+
+        if op == "+" and lp != rp:
+            ptr, n = (left, right) if lp else (right, left)
+            return Pointer(ptr.address + whole(n) * scale(ptr), ptr.pointee, ptr.foreign)
+        if op == "-" and lp and not rp:
+            return Pointer(left.address - whole(right) * scale(left), left.pointee, left.foreign)
+        if op == "-" and lp and rp:
+            size = scale(left)
+            if size != scale(right):
+                self._raise_runtime("TypeError", "cannot subtract pointers to types of different sizes", span)
+            return (left.address - right.address) // size
+        self._raise_runtime("TypeError", f"operator '{op}' is not defined for pointers", span)
+
+    def _cast(self, value: Any, type_name: str, span: Any) -> Any:
+        target = canonical_pointer_type(type_name) if (type_name == "ptr" or type_name.endswith("*")) else type_name.replace("const ", "").strip()
+        if is_pointer_type(target):
+            pointee = pointee_of(target)
+            if isinstance(value, ArrayRef):
+                return Pointer(value.address, pointee)
+            if isinstance(value, Pointer):
+                return value.retyped(pointee)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return Pointer(value, pointee) if value else Pointer(0, pointee)
+            self._raise_runtime("TypeError", f"cannot cast a {self._runtime_type_name(value)} to {type_name}", span)
+        if isinstance(value, (Pointer, ArrayRef)):
+            address = value.address
+            if target in INT_TYPES:
+                return self._wrap_int(address, target)
+            self._raise_runtime("TypeError", f"cannot cast a pointer to {type_name}; use usize or a pointer type", span)
+        if target in INT_TYPES:
+            if isinstance(value, (int, float, bool)):
+                return self._wrap_int(int(value), target)
+        elif target in FLOAT_TYPES:
+            if isinstance(value, (int, float, bool)):
+                return float(value)
+        elif target == "bool":
+            return bool(value)
+        elif target == "void":
+            return None
+        self._raise_runtime("TypeError", f"cannot cast a {self._runtime_type_name(value)} to {type_name}", span)
+
+    @staticmethod
+    def _wrap_int(value: int, type_name: str) -> int:
+        bits = SCALARS[type_name][0] * 8
+        value &= (1 << bits) - 1
+        if SCALARS[type_name][1].islower() and value >= 1 << (bits - 1):
+            value -= 1 << bits
+        return value
+
+    def _eval_sizeof(self, expr: "ast.SizeofExpr", env: Environment) -> int:
+        if expr.type_name is not None:
+            owner = env.owner_of(expr.type_name) if expr.operand is not None else None
+            is_variable = owner is not None and not isinstance(owner.values[expr.type_name], (StructType, TypeObject))
+            if not is_variable:
+                return self._guard(lambda: self.memory.sizeof(expr.type_name), expr.span)
+        value = self.eval_expr(expr.operand, env)
+        if isinstance(value, StructRef):
+            return value.sdef.size
+        if isinstance(value, ArrayRef):
+            return value.count * self._guard(lambda: self.memory.sizeof(value.elem_type), expr.span)
+        if isinstance(value, Pointer):
+            return 8
+        if isinstance(value, bool):
+            return 1
+        if isinstance(value, (int, float)):
+            return 8
+        self._raise_runtime("TypeError", f"sizeof does not apply to a {self._runtime_type_name(value)}; it is not raw memory", expr.span)
+
+    # ----------------------------------------------------------------------- structs
+    def _define_struct(self, decl: "ast.StructDecl") -> None:
+        fields: list[tuple[str, str, int | None]] = []
+        for f in decl.fields:
+            count = None
+            if f.count is not None:
+                count = self.eval_expr(f.count, self.global_env)
+            type_name = f.type_name.replace("const ", "").strip()
+            fields.append((f.name, canonical_pointer_type(type_name) if type_name.endswith("*") else type_name, count))
+        self._guard(lambda: self.memory.define_struct(decl.name, fields), decl.span)
+        self.global_env.define(decl.name, StructType(decl.name))
+
+    def _struct_get(self, ref: StructRef, attr: str) -> Any:
+        ptr, field = self.memory.field_pointer(ref, attr)
+        if field.count is not None:
+            return ArrayRef(self.memory, ptr.address, field.type_name, field.count, owned=False)
+        return self.memory.load(ptr, field.type_name)
+
+    def _struct_set(self, ref: StructRef, attr: str, value: Any) -> None:
+        ptr, field = self.memory.field_pointer(ref, attr)
+        if field.count is not None:
+            raise MemoryFault("type", f"assign the elements of '{attr}' one at a time")
+        if isinstance(value, Pointer) and is_pointer_type(field.type_name):
+            value = value.retyped(pointee_of(field.type_name))
+        self.memory.store(ptr, value, field.type_name)
+
+    def _construct_struct(self, struct_type: StructType, args: list[Any], kwargs: dict[str, Any], span: Any) -> StructRef:
+        sdef = self.memory.structs[struct_type.name]
+        if len(args) > len(sdef.fields):
+            self._raise_runtime("TypeError", f"{sdef.name}() takes at most {len(sdef.fields)} argument(s), got {len(args)}", span)
+        ref = self.memory.new_struct(sdef.name)
+        names = [f.name for f in sdef.fields]
+        for name in kwargs:
+            if name not in names:
+                self._raise_runtime("TypeError", f"struct {sdef.name} has no field '{name}'", span)
+            if names.index(name) < len(args):
+                self._raise_runtime("TypeError", f"{sdef.name}() got more than one value for '{name}'", span)
+        for name, value in [*zip(names, args), *kwargs.items()]:
+            self._guard(lambda name=name, value=value: self._struct_set(ref, name, value), span)
+        return ref
+
+    # ----------------------------------------------------------------------- builtins
+    def _install_memory_builtins(self) -> None:
+        mem = self.memory
+
+        def size_arg(value: Any, what: str) -> int:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MemoryFault("type", f"{what} must be an int")
+            return value
+
+        def ptr_arg(value: Any, what: str) -> Pointer:
+            if isinstance(value, Pointer):
+                return value
+            if isinstance(value, ArrayRef):
+                return Pointer(value.address, value.elem_type)
+            raise MemoryFault("type", f"{what} must be a pointer")
+
+        def malloc(n: Any) -> Pointer:
+            return mem.alloc(size_arg(n, "size"), heap=True)
+
+        def calloc(count: Any, size: Any) -> Pointer:
+            return mem.alloc(size_arg(count, "count") * size_arg(size, "size"), heap=True)
+
+        def realloc(p: Any, n: Any) -> Pointer:
+            return mem.realloc(ptr_arg(p, "pointer"), size_arg(n, "size"))
+
+        def free(p: Any) -> None:
+            mem.free(ptr_arg(p, "pointer"))
+
+        def memcpy(dst: Any, src: Any, n: Any) -> Pointer:
+            d, s, count = ptr_arg(dst, "destination"), ptr_arg(src, "source"), size_arg(n, "size")
+            mem.move(d, s, count)
+            return d
+
+        def memset(dst: Any, byte: Any, n: Any) -> Pointer:
+            d = ptr_arg(dst, "destination")
+            mem.fill(d, size_arg(byte, "byte"), size_arg(n, "size"))
+            return d
+
+        def memcmp(a: Any, b: Any, n: Any) -> int:
+            return mem.compare(ptr_arg(a, "first"), ptr_arg(b, "second"), size_arg(n, "size"))
+
+        def cstr(s: Any) -> Pointer:
+            if not isinstance(s, str):
+                raise MemoryFault("type", "cstr() needs a string")
+            data = s.encode("utf-8")
+            ptr = mem.alloc(len(data) + 1, heap=True)
+            mem.write_bytes(ptr.address, data + b"\0")
+            return ptr.retyped("u8")
+
+        def str_from(p: Any, n: Any = None) -> str:
+            ptr = ptr_arg(p, "pointer")
+            raw = mem.read_cstring(ptr, None if n is None else size_arg(n, "length"))
+            return raw.decode("utf-8", errors="replace")
+
+        for name, fn in {
+            "malloc": malloc, "calloc": calloc, "realloc": realloc, "free": free,
+            "memcpy": memcpy, "memmove": memcpy, "memset": memset, "memcmp": memcmp,
+            "cstr": cstr, "str_from": str_from,
+        }.items():
+            fn.__name__ = name
+            self.global_env.define(name, fn)
 
     def _span_of(self, node: Any) -> Any:
         return getattr(node, "span", type("_S", (), {"line": 1, "column": 1})())

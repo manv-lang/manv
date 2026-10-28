@@ -5,6 +5,8 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- **C-style pointers**: `T*` types, `&x`, `*p`, `p[i]`, `p->f`, scaled pointer arithmetic, `null`, `as` casts, `sizeof`, `struct` (C layout, value semantics), C arrays (`int buf[16]`), and the checked memory builtins `malloc calloc realloc free memcpy memmove memset memcmp cstr str_from`. Memory errors raise `PointerError` / `NullPointerError`. Errors `E2070`-`E2077`, `E1021`, `E3011`. See `docs/pointers.md`.
+- Fixed-width integer types `i8 i16 u16 u32 u64` and `f64` (as pointee and field types).
 - Default argument values and keyword arguments at call sites (`E1019`, `E1020`, `E2066`-`E2069`).
 - Single-expression lambdas: `fn(x): x * 2`.
 - Script mode: a file of top-level statements runs without a `main` function.
@@ -21,6 +23,8 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - A GitHub Actions workflow that runs the tests on Linux, macOS and Windows (not yet run).
 
 ### Changed
+- `int buf[16]` (an element type other than `array`) now declares a C array in raw memory instead of a padded managed array; `array xs[16]` is unchanged.
+- `extern "c"` functions with pointer types pass and return `Pointer` values (returned pointers are foreign and unchecked).
 - `m.items()` and `enumerate()` return tuples instead of two-element arrays.
 - Strings: indexing (`s[i]`, `s[-1]`), slicing (`s[a..b]`, also on arrays), iteration over characters, and methods (`upper`, `lower`, `strip`, `split`, `join`, `replace`, `find`, `startswith`, `endswith`, `contains`, ...).
 - Arrays gained `append`, `pop`, `insert`, `extend`, `remove`, `index`, `contains`, `count`, `reverse`, `sort`, `copy` and `clear`; maps gained `keys`, `values`, `items`, `get`, `has`, `remove`, `copy` and `clear`, and `for k in m` iterates keys in insertion order. Arrays and maps are reference values; `copy()` makes an independent one.
@@ -36,6 +40,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - `examples/08_modules_stdlib.mv` moved to `examples/_parked/` until the standard library is redesigned.
 
 ### Removed
+- `c_str`, `ptr_null`, `ptr_is_null`, `ptr_add` and `ptr_to_str`: replaced by `cstr`, `null`, `p == null`, `p + n` and `str_from`. `ptr` remains as an alias of `void*`.
 - The "stdlib not installed" warning that was printed by most CLI commands.
 - The `typer` dependency, and the packages that came only with it (click, rich, shellingham, markdown-it-py, mdurl).
 - Compiled Python files and test build artifacts that were committed despite `.gitignore`.

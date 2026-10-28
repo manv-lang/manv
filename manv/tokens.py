@@ -77,11 +77,15 @@ KEYWORDS = {
     "extern",
     "ptr",
     "i64",
+    "null",
+    "sizeof",
+    "struct",
 }
 
 DOUBLE_CHAR_OPS = {"->", "==", "!=", "<=", ">=", "&&", "||", "..", "+=", "-=", "*=", "/=", "%="}
 SINGLE_CHAR_OPS = {
     "@",
+    "&",
     "+",
     "-",
     "*",

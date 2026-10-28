@@ -1,0 +1,8 @@
+out of bounds
+before the start
+use after free
+double free
+free of a local
+wild pointer
+misaligned
+0 true

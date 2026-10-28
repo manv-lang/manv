@@ -1,0 +1,23 @@
+fn set_to(p: int*, value: int):
+    *p = value
+
+fn main() -> int:
+    int x = 5
+    int* a = &x
+    int* b = &x
+    *a = 6
+    print(x, *b)
+    x = 9
+    print(*a, *b)
+    print(a == b)
+    set_to(&x, 77)
+    print(x)
+    y = 1.5
+    float* py = &y
+    *py = *py * 2
+    print(y)
+    i32 small = 10
+    i32* ps = &small
+    *ps += 5
+    print(small)
+    return 0

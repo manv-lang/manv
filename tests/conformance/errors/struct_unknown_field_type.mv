@@ -1,0 +1,5 @@
+struct Bad:
+    Missing m
+
+fn main() -> int:
+    return 0

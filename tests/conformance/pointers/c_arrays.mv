@@ -1,0 +1,32 @@
+fn sum(p: int*, n: int) -> int:
+    total = 0
+    for i in 0..n:
+        total += p[i]
+    return total
+
+fn main() -> int:
+    int buf[4]
+    print(buf[0], buf[3])
+    buf[0] = 10
+    buf[1] = 20
+    buf[2] = 30
+    buf[3] = 40
+    print(sum(buf, 4))
+    print(sizeof(buf))
+    int* p = buf
+    print(*(p + 2))
+    print(&buf[3] - &buf[0])
+    i32 small[3] = [1, 2, 3]
+    print(small[2], sizeof(small))
+    buf[1] += 5
+    print(buf[1])
+    print(buf)
+    try:
+        buf[4] = 1
+    except IndexError as e:
+        print("IndexError")
+    try:
+        print(buf[-1])
+    except IndexError as e:
+        print("IndexError")
+    return 0

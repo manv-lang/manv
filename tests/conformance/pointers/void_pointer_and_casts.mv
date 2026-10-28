@@ -1,0 +1,14 @@
+fn main() -> int:
+    void* raw = malloc(8)
+    int* as_int = raw
+    *as_int = 258
+    u8* as_bytes = raw as u8*
+    print(as_bytes[0], as_bytes[1], as_bytes[2])
+    void* again = as_int
+    print(again == raw)
+    address = raw as usize
+    back = address as void*
+    print(back == raw)
+    print(-1 as u8, 300 as u8, 3.9 as int, 7 as float, 255 as i8)
+    free(raw)
+    return 0

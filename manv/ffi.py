@@ -15,6 +15,8 @@ import os
 import sys
 from typing import Any
 
+from .memory import ArrayRef, Pointer
+
 
 # ---------------------------------------------------------------------------
 # Library resolution and caching
@@ -86,10 +88,16 @@ MANV_TO_CTYPE: dict[str, Any] = {
 }
 
 
+def _is_pointer_type(t: str | None) -> bool:
+    return t == "ptr" or str(t or "").rstrip().endswith("*")
+
+
 def manv_to_ctype(t: str | None) -> Any:
     """Return the ctypes type for a ManV type name, or ``None`` for void."""
     if t in VOID_RETURN:
         return None
+    if _is_pointer_type(t):
+        return ctypes.c_void_p
     return MANV_TO_CTYPE.get(str(t), ctypes.c_long)
 
 
@@ -100,13 +108,17 @@ def manv_to_ctype(t: str | None) -> Any:
 def marshal_arg(value: Any, type_name: str | None) -> Any:
     """Convert a ManV runtime value to a C-compatible argument."""
     t = str(type_name or "")
+    if isinstance(value, (Pointer, ArrayRef)):
+        return value.address
+    if _is_pointer_type(t) and value is None:
+        return 0
     if t == "str":
         if isinstance(value, str):
             return value.encode("utf-8")
         if isinstance(value, (bytes, bytearray)):
             return bytes(value)
         return value or b""
-    if t == "ptr":
+    if t == "ptr" or _is_pointer_type(t):
         if isinstance(value, str):
             return value.encode("utf-8")
         if isinstance(value, (bytes, bytearray)):
@@ -125,8 +137,10 @@ def unmarshal_return(raw: Any, return_type: str | None) -> Any:
     """Convert a ctypes return value back to a ManV runtime value."""
     if return_type in VOID_RETURN:
         return None
-    if return_type == "ptr":
-        return int(raw) if raw is not None else 0
+    if _is_pointer_type(return_type):
+        text = str(return_type).replace("const ", "").strip()
+        pointee = "void" if text == "ptr" else text[:-1].strip()
+        return Pointer(int(raw) if raw is not None else 0, pointee or "void", foreign=True)
     if return_type == "str":
         if isinstance(raw, bytes):
             return raw.decode("utf-8", errors="replace")
@@ -142,6 +156,8 @@ def unmarshal_return(raw: Any, return_type: str | None) -> Any:
 
 def marshal_vararg(value: Any) -> Any:
     """Best-effort type promotion for positional varargs beyond fixed params."""
+    if isinstance(value, (Pointer, ArrayRef)):
+        return ctypes.c_void_p(value.address)
     if isinstance(value, bool):
         return ctypes.c_int(int(value))
     if isinstance(value, int):

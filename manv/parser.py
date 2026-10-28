@@ -13,9 +13,10 @@ from __future__ import annotations
 from . import ast
 from .diagnostics import ManvError, Span, diag
 from .lexer import Lexer
+from .memory import NULL
 from .tokens import Token
 
-C_DECL_TYPES = {"int", "i32", "i64", "str", "array", "map", "u8", "usize", "float", "f32", "bool", "ptr"}
+C_DECL_TYPES = {"int", "i32", "i64", "str", "array", "map", "u8", "usize", "float", "f32", "bool", "ptr", "void"}
 MODULE_SEGMENT_KEYWORDS = {"str", "int", "float", "bool", "type", "array", "map"}
 
 
@@ -26,6 +27,7 @@ class Parser:
         self.source_lines = source_lines
         self.pos = 0
         self._after_block = False  # Set True after consuming a DEDENT (block end)
+        self._no_cast = False  # True while parsing a `with` context, where `as` is not a cast
 
     def parse(self) -> ast.Program:
         declarations: list[object] = []
@@ -37,6 +39,8 @@ class Parser:
             decorators = self._parse_decorators()
             if self._match_keyword("fn"):
                 declarations.append(self._parse_fn_decl(decorators=decorators))
+            elif self._match_keyword("struct"):
+                declarations.append(self._parse_struct_decl())
             elif self._match_keyword("type") or self._match_keyword("class"):
                 if decorators:
                     self._error("E1012", "decorators are only supported on functions", self._current())
@@ -103,6 +107,35 @@ class Parser:
             decorators=list(decorators or []),
             docstring=docstring,
         )
+
+    def _parse_struct_decl(self) -> ast.StructDecl:
+        """`struct Name:` followed by an indented block of `T field` or `T field[N]` lines."""
+        struct_tok = self._prev()
+        name_tok = self._expect("IDENT", message="expected struct name")
+        self._expect_op(":")
+        self._consume_required_newline("expected newline after ':'")
+        self._expect("INDENT", message="expected indented struct body")
+        fields: list[ast.StructField] = []
+        while not self._is("DEDENT") and not self._is("EOF"):
+            self._consume_newlines()
+            if self._is("DEDENT") or self._is("EOF"):
+                break
+            if not self._is_c_declaration_start():
+                self._error("E1006", "expected a field declaration 'T name' inside struct", self._current())
+            start = self._current()
+            type_name = self._parse_decl_type()
+            field_tok = self._expect("IDENT", message="expected field name")
+            count = None
+            if self._match_op("["):
+                count = self._parse_expression()
+                self._expect_op("]")
+            if self._is_op("="):
+                self._error("E1006", "struct fields cannot have initial values", self._current())
+            fields.append(ast.StructField(name=field_tok.lexeme, type_name=type_name, count=count, span=self._span(start)))
+            self._consume_required_newline("expected newline after struct field")
+        self._expect("DEDENT", message="expected dedent")
+        self._after_block = True
+        return ast.StructDecl(name=name_tok.lexeme, fields=fields, span=self._span(struct_tok))
 
     def _parse_type_decl(self) -> ast.TypeDecl:
         type_tok = self._prev()
@@ -295,6 +328,9 @@ class Parser:
             self._consume_required_newline("expected newline")
             return ast.UnsupportedStmt(feature="memory", detail=detail, span=self._span(token))
 
+        if self._is_op("*"):
+            return self._parse_deref_assignment()
+
         if self._is("IDENT") and self._peek(1).kind == "OP" and self._peek(1).lexeme in {"+=", "-=", "*=", "/=", "%="}:
             name_tok = self._advance()
             op_tok = self._advance()
@@ -347,8 +383,44 @@ class Parser:
             return self._parse_match_stmt()
 
         expr = self._parse_expression()
+        assignment = self._assignment_to(expr)
+        if assignment is not None:
+            self._consume_required_newline("expected newline after assignment")
+            return assignment
         self._consume_required_newline("expected newline after expression")
         return ast.ExprStmt(expr=expr, span=self._span_from_expr(expr))
+
+    def _parse_deref_assignment(self) -> object:
+        """`*p = v` and `*p += v` (a statement starting with `*`)."""
+        star = self._current()
+        target = self._parse_unary()
+        assignment = self._assignment_to(target)
+        if assignment is None:
+            self._error("E1002", "a statement starting with '*' must assign through the pointer: '*p = value'", star)
+        self._consume_required_newline("expected newline after assignment")
+        return assignment
+
+    def _assignment_to(self, target: object) -> object | None:
+        """If `=` or `op=` follows `target`, parse the right side and build the matching store statement."""
+        aug = {"+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%"}
+        tok = self._current()
+        if tok.kind != "OP" or not (tok.lexeme == "=" or tok.lexeme in aug):
+            return None
+        if not isinstance(target, (ast.AttributeExpr, ast.IndexExpr, ast.DerefExpr)):
+            return None
+        self._advance()
+        value = self._parse_expression()
+        op = aug.get(tok.lexeme)
+        span = self._span(tok)
+        if isinstance(target, ast.DerefExpr):
+            return ast.SetDerefStmt(target=target.operand, value=value, span=span, op=op)
+        if isinstance(target, ast.AttributeExpr):
+            if op is None:
+                return ast.SetAttrStmt(target=target.value, attr=target.attr, value=value, span=span)
+            return ast.AugAssignAttrStmt(target=target.value, attr=target.attr, op=tok.lexeme, value=value, span=span)
+        if op is None:
+            return ast.SetIndexStmt(target=target.value, index=target.index, value=value, span=span)
+        return ast.AugAssignIndexStmt(target=target.value, index=target.index, op=tok.lexeme, value=value, span=span)
 
     def _parse_param(self, previous: list[ast.Param]) -> ast.Param:
         """`name`, `name: T`, `name = default` or `name: T = default`. Once one parameter has a
@@ -412,8 +484,14 @@ class Parser:
         return ast.TypeAttrDecl(name=name_tok.lexeme, type_name=type_name, value=value, span=self._span(start))
 
     def _parse_decl_type(self) -> str:
-        """Consume the type in `T name`: a type word, optionally followed by `[]` pairs (`f32[]`)."""
+        """Consume the type in `T name`: a type word, optionally `const`, `*`s (`int**`) and `[]` pairs (`f32[]`)."""
         type_name = self._advance().lexeme
+        if self._is("KEYWORD") and self._current().lexeme == "const" and self._peek(1).lexeme == "*":
+            self._advance()
+            type_name = "const " + type_name
+        while self._is_op("*"):
+            self._advance()
+            type_name += "*"
         while self._is_op("[") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "]":
             self._advance()
             self._advance()
@@ -426,10 +504,12 @@ class Parser:
         name_tok = self._expect("IDENT", message="expected variable name")
         array_size: object | None = None
 
+        c_array = False
         if self._match_op("["):
             array_size = self._parse_expression()
             self._expect_op("]")
             if type_name != "array":
+                c_array = True  # `array xs[3]` is the managed array; any other element type is C memory
                 type_name = f"array[{type_name}]"
 
         value = None
@@ -442,6 +522,7 @@ class Parser:
             value=value,
             span=self._span(type_tok),
             array_size=array_size,
+            c_array=c_array,
         )
 
     def _parse_return_stmt(self) -> ast.ReturnStmt:
@@ -905,6 +986,8 @@ class Parser:
             if tok.kind == "KEYWORD" and bracket_depth == 0 and stop_keywords and tok.lexeme in stop_keywords:
                 break
             parts.append(self._advance().lexeme)
+            if parts[-1] == "const":
+                parts.append(" ")
         result = "".join(parts).strip()
         if not result:
             tok = self._current()
@@ -1024,15 +1107,61 @@ class Parser:
         return expr
 
     def _parse_unary(self) -> object:
+        """A prefix expression followed by any number of `as T` casts (`-x as int` is `(-x) as int`)."""
+        expr = self._parse_prefix()
+        while not self._no_cast and self._is("KEYWORD") and self._current().lexeme == "as":
+            as_tok = self._advance()
+            expr = ast.CastExpr(operand=expr, type_name=self._parse_cast_type(), span=self._span(as_tok))
+        return expr
+
+    def _parse_prefix(self) -> object:
         if self._match_op("-"):
             op_tok = self._prev()
-            right = self._parse_unary()
+            right = self._parse_prefix()
             return ast.UnaryExpr(op="-", expr=right, span=self._span(op_tok))
         if self._match_op("!"):
             op_tok = self._prev()
-            right = self._parse_unary()
+            right = self._parse_prefix()
             return ast.UnaryExpr(op="!", expr=right, span=self._span(op_tok))
+        if self._match_op("&"):
+            op_tok = self._prev()
+            return ast.AddrOfExpr(operand=self._parse_prefix(), span=self._span(op_tok))
+        if self._match_op("*"):
+            op_tok = self._prev()
+            return ast.DerefExpr(operand=self._parse_prefix(), span=self._span(op_tok))
         return self._parse_postfix()
+
+    _CAST_TYPE_WORDS = C_DECL_TYPES | {"void", "u16", "u32", "u64", "i8", "i16", "f64"}
+
+    def _parse_cast_type(self) -> str:
+        """The type after `as`: `usize`, `u8*`, `const char*`, `void**`."""
+        const = False
+        if self._is("KEYWORD") and self._current().lexeme == "const":
+            self._advance()
+            const = True
+        tok = self._current()
+        if not (tok.kind == "IDENT" or (tok.kind == "KEYWORD" and tok.lexeme in self._CAST_TYPE_WORDS)):
+            self._error("E1021", "expected a type after 'as'", tok)
+        self._advance()
+        name = tok.lexeme
+        if const:
+            name = "const " + name
+        while self._is_op("*") and self._star_is_pointer():
+            self._advance()
+            name += "*"
+        return name
+
+    def _star_is_pointer(self) -> bool:
+        """In `p as T * ...`: is this `*` part of the type, or a multiplication? It is part of the
+        type when nothing that could start an operand follows (`)`, `,`, newline, another `*`, ...)."""
+        nxt = self._peek(1)
+        if nxt.kind in {"NEWLINE", "EOF"}:
+            return True
+        if nxt.kind == "OP":
+            return nxt.lexeme in {")", "]", "}", ",", ":", "=", "==", "!=", "<", "<=", ">", ">=", "+", "*", "..", "->", "&&", "||"}
+        if nxt.kind == "KEYWORD":
+            return nxt.lexeme in {"and", "or", "if", "else", "in", "as", "for"}
+        return False
 
     def _parse_postfix(self) -> object:
         expr = self._parse_primary()
@@ -1087,6 +1216,12 @@ class Parser:
                 attr = self._expect_attr_name()
                 expr = ast.AttributeExpr(value=expr, attr=attr.lexeme, span=self._span(attr))
                 continue
+            if self._is_op("->"):
+                arrow = self._advance()
+                attr = self._expect_attr_name()
+                deref = ast.DerefExpr(operand=expr, span=self._span(arrow))
+                expr = ast.AttributeExpr(value=deref, attr=attr.lexeme, span=self._span(attr))
+                continue
             break
         return expr
 
@@ -1114,6 +1249,10 @@ class Parser:
             return ast.LiteralExpr(value=False, literal_type="bool", span=self._span(tok))
         if self._match_keyword("none"):
             return ast.LiteralExpr(value=None, literal_type="none", span=self._span(tok))
+        if self._match_keyword("null"):
+            return ast.LiteralExpr(value=NULL, literal_type="null", span=self._span(tok))
+        if self._match_keyword("sizeof"):
+            return self._parse_sizeof(tok)
         if self._match_keyword("syscall"):
             return self._parse_syscall_expr()
         if tok.kind == "KEYWORD" and tok.lexeme in {"type", "int", "i32", "i64", "float", "f32", "bool", "str", "void", "ptr"}:
@@ -1240,6 +1379,36 @@ class Parser:
             self._error("E1018", f"unexpected text after the expression '{expr_text}' in f-string", tok)
         return expr
 
+    def _parse_sizeof(self, tok: Token) -> object:
+        """`sizeof(T)` / `sizeof(expr)`. A lone name could be either, so both are kept."""
+        self._expect_op("(")
+        offset = 0
+        if self._peek(offset).kind == "KEYWORD" and self._peek(offset).lexeme == "const":
+            offset += 1
+        word = self._peek(offset)
+        is_word = word.kind == "IDENT" or (word.kind == "KEYWORD" and word.lexeme in self._CAST_TYPE_WORDS)
+        if is_word:
+            stars = 0
+            probe = offset + 1
+            while self._peek(probe).kind == "OP" and self._peek(probe).lexeme == "*":
+                stars += 1
+                probe += 1
+            if self._peek(probe).kind == "OP" and self._peek(probe).lexeme == ")":
+                const = "const " if offset else ""
+                self.pos += probe
+                self._expect_op(")")
+                name = const + word.lexeme + "*" * stars
+                if stars == 0 and word.kind == "IDENT" and not offset:
+                    return ast.SizeofExpr(
+                        type_name=word.lexeme,
+                        operand=ast.IdentifierExpr(name=word.lexeme, span=self._span(word)),
+                        span=self._span(tok),
+                    )
+                return ast.SizeofExpr(type_name=name, operand=None, span=self._span(tok))
+        operand = self._parse_expression()
+        self._expect_op(")")
+        return ast.SizeofExpr(type_name=None, operand=operand, span=self._span(tok))
+
     def _parse_lambda_expr(self) -> ast.LambdaExpr:
         """Parse ``fn(params) -> return_type: body`` as an expression."""
         fn_tok = self._prev()
@@ -1341,6 +1510,12 @@ class Parser:
         if not (tok.kind == "IDENT" or (tok.kind == "KEYWORD" and tok.lexeme in C_DECL_TYPES)):
             return False
         offset = 1
+        if self._peek(offset).kind == "KEYWORD" and self._peek(offset).lexeme == "const" and self._peek(offset + 1).lexeme == "*":
+            offset += 1
+        stars = 0
+        while self._peek(offset).kind == "OP" and self._peek(offset).lexeme == "*":
+            stars += 1
+            offset += 1
         while (
             self._peek(offset).kind == "OP"
             and self._peek(offset).lexeme == "["
@@ -1348,7 +1523,13 @@ class Parser:
             and self._peek(offset + 1).lexeme == "]"
         ):
             offset += 2
-        return self._peek(offset).kind == "IDENT"
+        if self._peek(offset).kind != "IDENT":
+            return False
+        if stars:
+            # `a * b` alone is a product; only `T* name =`, `T* name[` or `T* name` + newline declares.
+            after = self._peek(offset + 1)
+            return after.kind in {"NEWLINE", "EOF"} or (after.kind == "OP" and after.lexeme in {"=", "["})
+        return True
 
     def _match_logic_op(self, kind: str) -> bool:
         if kind == "and":
@@ -1429,7 +1610,11 @@ class Parser:
 
     def _parse_with_stmt(self) -> ast.WithStmt:
         with_tok = self._prev()
-        context = self._parse_expression()
+        self._no_cast = True  # `with expr as name`: here `as` binds the name, it is not a cast
+        try:
+            context = self._parse_expression()
+        finally:
+            self._no_cast = False
         bind_name: str | None = None
         if self._match_keyword("as"):
             bind_tok = self._expect("IDENT", message="expected bind variable after 'as'")

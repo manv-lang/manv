@@ -1,0 +1,4 @@
+fn main() -> int:
+    int* a = malloc(4)
+    print(a * 2)
+    return 0

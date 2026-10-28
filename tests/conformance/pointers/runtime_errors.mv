@@ -1,0 +1,43 @@
+fn main() -> int:
+    int* p = malloc(2 * sizeof(int))
+    p[1] = 5
+    try:
+        p[2] = 1
+    except PointerError as e:
+        print("out of bounds")
+    try:
+        print(p[-1])
+    except PointerError as e:
+        print("before the start")
+    free(p)
+    try:
+        print(*p)
+    except PointerError as e:
+        print("use after free")
+    try:
+        free(p)
+    except PointerError as e:
+        print("double free")
+    int local = 1
+    try:
+        free(&local)
+    except PointerError as e:
+        print("free of a local")
+    try:
+        p2 = 12345 as int*
+        print(*p2)
+    except PointerError as e:
+        print("wild pointer")
+    u8* bytes = malloc(8)
+    try:
+        i32* odd = (bytes + 1) as i32*
+        print(*odd)
+    except PointerError as e:
+        print("misaligned")
+    void* v = bytes
+    try:
+        print(*(v as u8*), v as u8* == bytes)
+    except PointerError as e:
+        print("unexpected")
+    free(bytes)
+    return 0

@@ -1,0 +1,75 @@
+struct Pair:
+    u8 tag
+    i32 value
+    u8 flag
+
+struct Vec2:
+    float x
+    float y
+
+struct Line:
+    Vec2 start
+    Vec2 end
+    int id
+
+struct Node:
+    int value
+    Node* next
+
+struct Grid:
+    i32 cells[4]
+    u8 w
+
+fn length_sq(v: Vec2*) -> float:
+    return v->x * v->x + v->y * v->y
+
+fn main() -> int:
+    print(sizeof(Pair), sizeof(Vec2), sizeof(Line), sizeof(Node), sizeof(Grid))
+    Vec2 a = Vec2(3.0, 4.0)
+    print(a.x, a.y)
+    print(length_sq(&a))
+    Vec2 b = a
+    b.x = 100.0
+    print(a.x, b.x)
+    Vec2* p = &a
+    p->y = 8.0
+    (*p).x = 6.0
+    print(a)
+    Line l = Line()
+    l.start.x = 1.0
+    l.end = Vec2(5.0, 6.0)
+    l.id = 7
+    print(l.start.x, l.end.y, l.id)
+    Vec2* e = &l.end
+    e->x = 9.0
+    print(l.end.x)
+    Pair q = Pair(1, 2, 3)
+    print(q.tag, q.value, q.flag)
+    Vec2 named = Vec2(y=2.0, x=1.0)
+    print(named)
+    Vec2 zero
+    print(zero.x, zero.y)
+    Vec2* many = malloc(3 * sizeof(Vec2))
+    many[1].y = 5.5
+    (many + 2)->x = 2.5
+    print(many[1].y, many[2].x, many[0].x)
+    free(many)
+    Node* n1 = malloc(sizeof(Node))
+    Node* n2 = malloc(sizeof(Node))
+    n1->value = 1
+    n2->value = 2
+    n1->next = n2
+    n2->next = null
+    cur = n1
+    total = 0
+    while cur != null:
+        total += cur->value
+        cur = cur->next
+    print(total)
+    free(n1)
+    free(n2)
+    Grid g
+    g.cells[2] = 5
+    g.w = 9
+    print(g.cells[2], g.cells[0], g.w)
+    return 0

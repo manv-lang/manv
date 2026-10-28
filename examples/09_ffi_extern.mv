@@ -4,57 +4,50 @@
 # Demonstrates ManV's C Foreign Function Interface (FFI).
 #
 #   - extern "c": block form declaring multiple C functions at once
-#   - Calling an extern fn and inspecting its return value
-#   - c_str(s)  — convert a ManV string to a C-compatible char* pointer
-#   - ptr_null() / ptr_is_null()  — null pointer creation and check
-#   - ptr_add()  — pointer arithmetic (advance a pointer by N bytes)
+#   - Pointer types in signatures: `u8*` is a C `unsigned char *`
+#   - cstr(s)    -- turn a ManV string into a NUL-terminated C string
+#   - null, ==   -- the null pointer and comparing pointers
+#   - p + n      -- pointer arithmetic (scaled by the pointee size)
 #
-# Note: this file calls real libc functions (strlen, malloc, free).
-# It will run correctly on any POSIX system and most Windows environments
-# when the ManV interpreter is linked against the C runtime.
+# A pointer returned by C code is "foreign": ManV does not know how big the block is,
+# so accesses through it are not checked. Pointers from ManV's own malloc are checked
+# (see 10_pointers.mv).
+#
+# Note: this file calls real libc functions (strlen, malloc, free). Memory from C's malloc
+# must go back to C's free, and memory from ManV's malloc/cstr to ManV's free; they are
+# named c_malloc/c_free here so the two cannot be mixed up.
 # ---
 
 # --- extern block: declare multiple C functions together ---
 extern "c":
-    fn strlen(s: ptr) -> int       # return the byte-length of a C string
-    fn malloc(size: int) -> ptr    # allocate `size` bytes on the heap
-    fn free(p: ptr)                # release previously malloc'd memory
-
-# --- Single-function extern: varargs printf ---
-# printf uses C varargs (...), which is platform-dependent.
-# Uncomment if your platform supports it:
-# extern "c" fn printf(fmt: ptr, ...) -> int
+    fn strlen(s: u8*) -> int       # the byte length of a C string
+    fn c_malloc(size: int) -> void* as "malloc"   # C's own malloc (foreign memory)
+    fn c_free(p: void*) as "free"                 # only for memory from C's malloc
 
 fn main() -> int:
 
-    # --- c_str: turn a ManV string into a C char* ---
-    ptr hello = c_str("Hello, FFI!")
+    # --- cstr: a ManV string as a C char* ---
+    u8* hello = cstr("Hello, FFI!")
+    print(strlen(hello))               # 11 (bytes in "Hello, FFI!")
+    print(str_from(hello))             # and back into a ManV string
+    free(hello)                        # ManV's free: cstr memory belongs to ManV
 
-    # --- Call the C strlen to measure it ---
-    int length = strlen(hello)
-    print(length)   # 11 (bytes in "Hello, FFI!")
+    # --- null and comparison ---
+    void* nothing = null
+    if nothing == null:
+        print("pointer is null")
 
-    # --- ptr_null and ptr_is_null ---
-    ptr null_ptr = ptr_null()
-    if ptr_is_null(null_ptr):
-        print("pointer is null")       # always prints
-
-    # --- malloc / free: allocate a raw 64-byte buffer ---
-    ptr buf = malloc(64)
-    if ptr_is_null(buf):
+    # --- malloc / free from C ---
+    u8* buf = c_malloc(64) as u8*
+    if buf == null:
         print("malloc failed")
         return 1
-    print("malloc succeeded, buffer is non-null")
+    print("malloc succeeded, buffer is not null")
 
-    # --- ptr_add: advance pointer by an offset (bytes) ---
-    ptr offset_ptr = ptr_add(buf, 8)   # pointer 8 bytes into the buffer
-    if ptr_is_null(offset_ptr):
-        print("offset ptr is null")
-    else:
-        print("offset pointer is valid")
+    # --- pointer arithmetic: p + 8 is 8 bytes further for a u8* ---
+    u8* later = buf + 8
+    print(later - buf)                 # 8
 
-    # --- free the buffer when done ---
-    free(buf)
+    c_free(buf)
     print("buffer freed")
-
     return 0

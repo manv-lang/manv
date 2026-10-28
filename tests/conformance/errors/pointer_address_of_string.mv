@@ -1,0 +1,4 @@
+fn main() -> int:
+    s = "text"
+    p = &s
+    return 0

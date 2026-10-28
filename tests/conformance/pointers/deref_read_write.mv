@@ -1,0 +1,25 @@
+fn main() -> int:
+    int* p = malloc(sizeof(int))
+    *p = 41
+    *p += 1
+    print(*p)
+    *p = *p * 2
+    print(*p)
+    f32* f = malloc(sizeof(f32))
+    *f = 1.5
+    print(*f)
+    u8* b = malloc(1)
+    *b = 300
+    print(*b)
+    i32* small = malloc(4)
+    *small = -7
+    print(*small)
+    bool* flag = malloc(1)
+    *flag = true
+    print(*flag)
+    free(p)
+    free(f)
+    free(b)
+    free(small)
+    free(flag)
+    return 0

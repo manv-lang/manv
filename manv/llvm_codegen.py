@@ -1039,47 +1039,6 @@ def _emit_intrinsic_call(instr: HInstruction, state: _FunctionState, out: list[s
         if instr.dest is not None:
             state.values[instr.dest] = LlvmValue("ptr", temp, container_kind="syscall_result")
         return out
-    if name == "ptr_null":
-        if instr.dest is not None:
-            state.values[instr.dest] = LlvmValue("ptr", "null")
-        return out
-    if name == "ptr_is_null":
-        if len(instr.args) != 1:
-            raise LlvmLoweringError("ptr_is_null expects one argument")
-        p = _operand(str(instr.args[0]), state)
-        tmp = state.new_temp()
-        out.append(f"  {tmp} = icmp eq ptr {p.ref}, null")
-        if instr.dest is not None:
-            state.values[instr.dest] = LlvmValue("i1", tmp)
-        return out
-    if name == "c_str":
-        if len(instr.args) != 1:
-            raise LlvmLoweringError("c_str expects one argument")
-        s = _operand(str(instr.args[0]), state)
-        tmp = state.new_temp()
-        out.append(f"  {tmp} = call ptr @manv_rt_str_to_cstr(ptr {s.ref})")
-        if instr.dest is not None:
-            state.values[instr.dest] = LlvmValue("ptr", tmp)
-        return out
-    if name == "ptr_to_str":
-        if len(instr.args) != 1:
-            raise LlvmLoweringError("ptr_to_str expects one argument")
-        p = _operand(str(instr.args[0]), state)
-        tmp = state.new_temp()
-        out.append(f"  {tmp} = call ptr @manv_rt_cstr_to_str(ptr {p.ref})")
-        if instr.dest is not None:
-            state.values[instr.dest] = LlvmValue("ptr", tmp)
-        return out
-    if name == "ptr_add":
-        if len(instr.args) != 2:
-            raise LlvmLoweringError("ptr_add expects two arguments")
-        p = _operand(str(instr.args[0]), state)
-        n = _coerce_value(_operand(str(instr.args[1]), state), "i64", state, out)
-        tmp = state.new_temp()
-        out.append(f"  {tmp} = getelementptr i8, ptr {p.ref}, i64 {n.ref}")
-        if instr.dest is not None:
-            state.values[instr.dest] = LlvmValue("ptr", tmp)
-        return out
     raise LlvmLoweringError(f"unsupported intrinsic call for LLVM lowering: {name}")
 
 

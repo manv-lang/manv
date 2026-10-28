@@ -1,0 +1,4 @@
+fn main() -> int:
+    void* p = malloc(8)
+    print(*p)
+    return 0

@@ -1,0 +1,21 @@
+fn main() -> int:
+    int* p = calloc(5, sizeof(int))
+    for i in 0..5:
+        p[i] = i * i
+    total = 0
+    for i in 0..5:
+        total += p[i]
+    print(total)
+    p[2] += 100
+    print(p[2])
+    int* end = p + 5
+    int* cur = p
+    count = 0
+    while cur < end:
+        count += 1
+        cur += 1
+    print(count, end - p)
+    print(&p[3] - &p[1])
+    print(*(&p[4]))
+    free(p)
+    return 0

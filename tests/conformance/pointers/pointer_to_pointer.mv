@@ -1,0 +1,17 @@
+fn main() -> int:
+    int value = 1
+    int* p = &value
+    int** pp = &p
+    **pp = 2
+    print(value)
+    int other = 50
+    *pp = &other
+    print(*p)
+    **pp += 1
+    print(other)
+    int** table = malloc(2 * sizeof(int*))
+    table[0] = &value
+    table[1] = &other
+    print(*table[0], *table[1])
+    free(table)
+    return 0

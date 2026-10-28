@@ -177,6 +177,7 @@ class LetStmt:
     span: Span
     array_size: Any | None = None
     is_const: bool = False
+    c_array: bool = False  # `int buf[16]`: a C array in raw memory (not the managed `array`)
 
 
 @dataclass
@@ -188,6 +189,7 @@ class AssignStmt:
     value: Any
     span: Span
     declares: bool = False
+    pointer_type: str | None = None  # set by semantic analysis when the variable was declared `T*`
 
 
 @dataclass
@@ -463,6 +465,67 @@ class FStringExpr:
     """`f"a {x} b {y:>5}"`. `parts` holds literal strings and `(expression, format_spec)` pairs."""
 
     parts: list[Any]
+    span: Span
+
+
+@dataclass
+class AddrOfExpr:
+    """`&x`, `&p[i]`, `&s.f`. `pointee` is the declared type of a variable operand, when known."""
+
+    operand: Any
+    span: Span
+    pointee: str | None = None
+
+
+@dataclass
+class DerefExpr:
+    """`*p`; `p->f` is `(*p).f`."""
+
+    operand: Any
+    span: Span
+
+
+@dataclass
+class CastExpr:
+    """`value as T`: a conversion between pointer and integer types, or between numeric types."""
+
+    operand: Any
+    type_name: str
+    span: Span
+
+
+@dataclass
+class SizeofExpr:
+    """`sizeof(T)` or `sizeof(expr)`. A lone name may be a type or a variable; `type_name` holds it
+    and `operand` the identifier, and semantic analysis or the runtime decides."""
+
+    type_name: str | None
+    operand: Any | None
+    span: Span
+
+
+@dataclass
+class SetDerefStmt:
+    """`*p = v`, or `*p += v` when `op` is `+` (the operator without `=`)."""
+
+    target: Any
+    value: Any
+    span: Span
+    op: str | None = None
+
+
+@dataclass
+class StructField:
+    name: str
+    type_name: str
+    count: Any | None  # element-count expression for `T name[N]`
+    span: Span
+
+
+@dataclass
+class StructDecl:
+    name: str
+    fields: list[Any]
     span: Span
 
 

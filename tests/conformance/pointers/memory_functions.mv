@@ -1,0 +1,17 @@
+fn main() -> int:
+    u8* a = calloc(8, 1)
+    print(a[0], a[7])
+    memset(a, 7, 4)
+    print(a[3], a[4])
+    u8* b = malloc(8)
+    memcpy(b, a, 8)
+    print(memcmp(a, b, 8))
+    b[7] = 9
+    print(memcmp(a, b, 8) < 0, memcmp(b, a, 8) > 0)
+    memmove(a + 2, a, 4)
+    print(a[0], a[1], a[2], a[3], a[4], a[5])
+    a = realloc(a, 16)
+    print(a[2], a[5], a[15])
+    free(a)
+    free(b)
+    return 0

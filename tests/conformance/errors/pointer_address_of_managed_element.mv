@@ -1,0 +1,4 @@
+fn main() -> int:
+    xs = [1, 2]
+    p = &xs[0]
+    return 0

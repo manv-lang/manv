@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **363 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **392 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -190,6 +190,7 @@ With no stdlib, **the builtins are the standard library**. Everything in this ph
 - [ ] **Inheritance details:** `super`, method resolution order with multiple bases, class-level constants, `isinstance` against base types, and abstract-ish methods.
 - [ ] **Closures:** captured variable semantics (by reference vs. by value) and loop-variable capture. Add tests for each.
 - [ ] **Recursion limit** with a clean error rather than a Python `RecursionError`. Tail-call policy.
+- [~] **C-style pointers** (`int*`, `&x`, `*p`, `p[i]`, `p->x`, `sizeof`, `malloc`/`free`, checked memory), replacing the opaque `ptr` and its helpers. Plan and status per phase: [docs/pointers.md](docs/pointers.md). Done in the interpreter: P0-P6 and P9 (`conformance/pointers/`, `conformance/errors/pointer_*`). Open: function pointers (P7), compiled-mode and C-engine parity (P8, rejected with `E3011` today), an `--unchecked` mode.
 - [ ] **Write down the final builtin list** (name, signature, semantics, error behavior) as a table in the language reference, and mark each builtin "core" or "may move to the stdlib later". Today the set is spread across `print`, `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values`, `type`, `isinstance`, `help` and the `ptr_*` / `c_str` family.
 - [ ] **Compiled mode lags the interpreter**: the HLIR and native paths know none of the builtin methods, slicing, string indexing or iteration over strings and maps. Parity belongs to §9.1 and the C engine.
 - [ ] Performance work does **not** happen here. Do not tune the Python tree-walker. See Phase 5.
@@ -313,7 +314,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 136 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 169 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.

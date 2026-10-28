@@ -101,11 +101,6 @@ BUILTIN_ALIASES: dict[str, str] = {
     "map_has_key": "core_map_has_key",
     "array_append": "core_array_append",
     "array_pop": "core_array_pop",
-    "ptr_null": "ptr_null",
-    "ptr_is_null": "ptr_is_null",
-    "c_str": "c_str",
-    "ptr_to_str": "ptr_to_str",
-    "ptr_add": "ptr_add",
 }
 
 
@@ -662,6 +657,39 @@ def _core_bool(args: list[Any], **_: Any) -> bool:
     return bool(args[0])
 
 
+def format_memory_value(value: Any, fmt: Any) -> str:
+    """How a pointer, struct or C array is written. `fmt` formats the elements inside."""
+    from .memory import ArrayRef, MemoryFault, Pointer, StructRef
+
+    if isinstance(value, Pointer):
+        return "null" if value.address == 0 else f"0x{value.address:x}"
+    try:
+        if isinstance(value, StructRef):
+            body = ", ".join(f"{f.name}={fmt(_read_field(value, f))}" for f in value.sdef.fields)
+            return f"{value.sdef.name}({body})"
+        if isinstance(value, ArrayRef):
+            return "[" + ", ".join(fmt(_read_element(value, i)) for i in range(value.count)) + "]"
+    except MemoryFault:
+        return "<invalid memory>"
+    return str(value)
+
+
+def _read_field(ref: Any, f: Any) -> Any:
+    from .memory import ArrayRef, Pointer
+
+    ptr = Pointer(ref.address + f.offset, f.type_name)
+    if f.count is not None:
+        return ArrayRef(ref.memory, ptr.address, f.type_name, f.count, owned=False)
+    return ref.memory.load(ptr, f.type_name)
+
+
+def _read_element(ref: Any, i: int) -> Any:
+    from .memory import Pointer
+
+    size = ref.memory.sizeof(ref.elem_type)
+    return ref.memory.load(Pointer(ref.address + i * size, ref.elem_type), ref.elem_type)
+
+
 def format_value(value: Any, *, nested: bool = False) -> str:
     """How print() and str() write a value: `true`/`false`/`none`, collections of the same, and a
     string as itself (quoted when it sits inside a collection)."""
@@ -673,6 +701,8 @@ def format_value(value: Any, *, nested: bool = False) -> str:
         return "none"
     if isinstance(value, str):
         return repr(value) if nested else value
+    if type(value).__name__ in {"Pointer", "StructRef", "ArrayRef"}:
+        return format_memory_value(value, lambda v: format_value(v, nested=True))
     if isinstance(value, list):
         return "[" + ", ".join(format_value(v, nested=True) for v in value) + "]"
     if isinstance(value, tuple):
@@ -1470,48 +1500,6 @@ def _gpu_dispatch(args: list[Any], **_: Any) -> dict[str, Any]:
     return result.to_dict()
 
 
-def _ptr_null(args: list[Any], **_: Any) -> int:
-    """Return a null pointer value (0)."""
-    return 0
-
-
-def _ptr_is_null(args: list[Any], **_: Any) -> bool:
-    """Return True if the pointer value is null (0 or None)."""
-    _ensure_arity("ptr_is_null", args, min_n=1, max_n=1)
-    v = args[0]
-    return v == 0 or v is None
-
-
-def _c_str(args: list[Any], **_: Any) -> bytes:
-    """Convert a ManV str to a C-compatible bytes value (UTF-8 encoded, null-terminated)."""
-    _ensure_arity("c_str", args, min_n=1, max_n=1)
-    v = args[0]
-    if isinstance(v, bytes):
-        return v
-    if isinstance(v, str):
-        return v.encode("utf-8")
-    return str(v).encode("utf-8")
-
-
-def _ptr_to_str(args: list[Any], **_: Any) -> str:
-    """Convert a C pointer / bytes value to a ManV str."""
-    _ensure_arity("ptr_to_str", args, min_n=1, max_n=1)
-    v = args[0]
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="replace")
-    if isinstance(v, str):
-        return v
-    return str(v)
-
-
-def _ptr_add(args: list[Any], **_: Any) -> int:
-    """Add an integer offset to a pointer value and return the result."""
-    _ensure_arity("ptr_add", args, min_n=2, max_n=2)
-    base = args[0] or 0
-    offset = int(args[1])
-    return int(base) + offset
-
-
 def _register_defaults() -> None:
     register_intrinsic(
         IntrinsicSpec("core_len", [ANY_T], "int", {Effect.PURE}, may_throw=True, deterministic=True, pure_for_kernel=False)
@@ -1788,16 +1776,6 @@ def _register_defaults() -> None:
     register_intrinsic_handler("gpu_capabilities", _gpu_capabilities)
     register_intrinsic_handler("gpu_dispatch", _gpu_dispatch)
     # ptr / C FFI intrinsics
-    register_intrinsic(IntrinsicSpec("ptr_null", [], "int", {Effect.PURE}, may_throw=False, std_only=False))
-    register_intrinsic(IntrinsicSpec("ptr_is_null", [ANY_T], "bool", {Effect.PURE}, may_throw=False, std_only=False))
-    register_intrinsic(IntrinsicSpec("c_str", ["str"], "str", {Effect.ALLOCATES}, may_throw=False, std_only=False))
-    register_intrinsic(IntrinsicSpec("ptr_to_str", [ANY_T], "str", {Effect.READS_MEMORY}, may_throw=False, std_only=False))
-    register_intrinsic(IntrinsicSpec("ptr_add", [ANY_T, "int"], "int", {Effect.PURE}, may_throw=False, std_only=False))
-    register_intrinsic_handler("ptr_null", _ptr_null)
-    register_intrinsic_handler("ptr_is_null", _ptr_is_null)
-    register_intrinsic_handler("c_str", _c_str)
-    register_intrinsic_handler("ptr_to_str", _ptr_to_str)
-    register_intrinsic_handler("ptr_add", _ptr_add)
 
 
 _register_defaults()

@@ -40,7 +40,7 @@ Marking a function with `@gpu` is ordinary decoration, not a separate dialect. T
 
 ### 1.5 Low-level control when asked for, out of the way when not
 
-The common case is plain values and functions. Raw pointers (`ptr`), C FFI (`extern`), system calls (`syscall`) and compiler intrinsics (`__intrin.*`) exist for the cases that need them. They are visibly different from ordinary code.
+The common case is plain values and functions. C-style pointers (`int*`, `&x`, `*p`), C FFI (`extern`), system calls (`syscall`) and compiler intrinsics (`__intrin.*`) exist for the cases that need them. They are visibly different from ordinary code.
 
 ### 1.6 A small core; the library comes later
 
@@ -98,7 +98,7 @@ fn const type class impl macro module include from extern as
 if else while for in break continue return
 try except finally raise with match
 and or not true false True False none
-int i32 i64 u8 usize float f32 bool str array map ptr void
+int i32 i64 u8 usize float f32 bool str array map ptr void null sizeof struct
 syscall gpu memory
 ```
 
@@ -164,7 +164,10 @@ No bitwise (`& | ^ ~ << >>`) and no exponent (`**`) operators exist yet 🧭.
 | `str` | string | ✅ |
 | `array` | ordered, growable sequence | ✅ |
 | `map` | key-to-value dictionary | ✅ |
-| `ptr` | raw pointer (for FFI) | ✅ |
+| `i8` `i16` `u16` `u32` `u64` `f64` | more fixed-width numbers (sizes for pointers and structs; arithmetic still uses the `int`/`float` model) | ✅ |
+| `T*` | pointer to `T`, e.g. `int*`, `u8*`, `Vec2*`, `int**` | ✅ see §9.2 |
+| `ptr` | the same as `void*` (kept as an alias) | ✅ |
+| `struct` | C-layout record in raw memory | ✅ see §9.2 |
 | `void` | no value (return type only) | n/a |
 | `none` | the single "no value" value | n/a |
 
@@ -199,7 +202,7 @@ Typing is gradual. Annotations are optional on parameters, returns and inferred 
 | 7 | `<`, `<=`, `>`, `>=`, `in`, `not in` | left |
 | 8 | `+`, `-` | left |
 | 9 | `*`, `/`, `%` | left |
-| 10 | unary `-`, `!` | right |
+| 10 | unary `-`, `!`, `&` (address of), `*` (dereference), then casts `x as T` | right |
 | 11 | call `f(x)`, index `a[i]`, member `a.b` | left |
 
 Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a chained comparison.
@@ -378,7 +381,7 @@ There is no `let`. A name comes into existence in one of three ways, and only on
 int count = 0
 array items = []
 i64 big = 9223372036854
-ptr buf = malloc(64)
+void* buf = malloc(64)
 Point origin = Point(0, 0)
 
 # Inferred declaration: a first assignment creates the variable.
@@ -656,18 +659,99 @@ type User:
 
 ```manv
 extern "c":                              # block form
-    fn strlen(s: ptr) -> int
-    fn malloc(size: int) -> ptr
-    fn free(p: ptr)
+    fn strlen(s: u8*) -> int
+    fn c_malloc(size: int) -> void* as "malloc"
+    fn c_free(p: void*) as "free"
 
-extern "c" fn puts(s: ptr) -> int        # single-function form
-extern "c" fn printf(fmt: ptr, ...) -> int          # varargs
+extern "c" fn puts(s: u8*) -> int         # single-function form
+extern "c" fn printf(fmt: u8*, ...) -> int        # varargs
 extern "c" fn c_abs(x: int) -> int as "abs"         # rename: ManV name vs C symbol
 ```
 
-Pointer helpers: `c_str(s)`, `ptr_null()`, `ptr_is_null(p)`, `ptr_add(p, bytes)`. A `void` return type is written by omitting `-> type`.
+Pointer parameters accept a ManV pointer (`Pointer` values are passed as addresses) or a string literal for a `u8*`. A pointer **returned** by C is *foreign*: ManV cannot know the size of the block, so accesses through it are unchecked and a mistake can crash the program. Give C's `malloc`/`free` their own names (as above) so they do not shadow ManV's checked `malloc`/`free`, and free C memory with C's `free` only. The old `c_str`, `ptr_null`, `ptr_is_null`, `ptr_add` and `ptr_to_str` are gone: use `cstr`, `null`, `p == null`, `p + n` and `str_from`. A `void` return type is written by omitting `-> type`.
 
-### 9.2 `syscall` ✅
+### 9.2 Pointers and raw memory ✅
+
+ManV copies C's pointers: typed addresses of raw memory, with address-of, dereference, indexing and arithmetic scaled by the element size. The ordinary types (`str`, `array`, `map`, `type` instances) stay managed; pointers are for layout-sensitive data, buffers and C interop. The design and its reasons are in [docs/pointers.md](docs/pointers.md).
+
+```manv
+int x = 5
+int* p = &x            # address of a variable
+*p = 6                 # write through the pointer: x is now 6
+*p += 1                # x is 7
+
+int* xs = malloc(4 * sizeof(int))
+xs[0] = 10             # xs[i] is *(xs + i)
+*(xs + 1) = 20         # xs + 1 moves by sizeof(int) bytes
+int* end = xs + 4
+print(end - xs)        # 4: the distance in elements
+free(xs)
+
+int* nothing = null
+print(nothing == null) # true
+```
+
+**Types.** `T*` is a pointer to `T` for any scalar (`i8 u8 i16 u16 i32 u32 i64 u64 int usize f32 f64 float bool`), pointer or `struct`. `void*` points at nothing in particular, converts implicitly to and from any `T*`, and can be neither dereferenced nor used in arithmetic. `const T*` (written `u8 const* p` in a declaration, `p: const u8*` elsewhere) forbids writing through it. `int` is 64 bits wide in memory, `i32` is 32. A pointer converts to another pointer type only through `void*` or a cast, and never to or from an integer without a cast.
+
+**Operators.**
+
+| Expression | Meaning |
+|------------|---------|
+| `&x`, `&p[i]`, `&s.f`, `&*p` | address of a variable, element or field (not of a `str`, `array`, `map`, `tuple` or `type` instance: `E2074`) |
+| `*p`, `*p = v`, `*p += v` | read, write, update the value pointed at |
+| `p[i]`, `p[i] = v` | the `i`-th element after `p` (negative indexes allowed) |
+| `p + n`, `n + p`, `p - n`, `p += n` | move by `n` elements (`n * sizeof(T)` bytes) |
+| `q - p` | the number of elements between two pointers of the same type |
+| `p == q`, `p < q`, ... | compare addresses; a pointer is only compared with another pointer or `null` |
+| `if p:` | a pointer is true when it is not `null` |
+| `p->f` | field `f` of the struct `p` points at, i.e. `(*p).f` |
+| `p as T*`, `p as usize`, `n as void*` | conversions; `x as i32`, `3.9 as int` also work for numbers |
+| `sizeof(T)`, `sizeof(x)` | the size in bytes of a type, or of a variable's declared type |
+
+`as` binds tighter than the arithmetic operators and `*` after `as T` is part of the type only when no operand follows it: `n as usize * 4` is a product, `p as u8*` is a pointer type.
+
+**Memory functions** (core builtins, not extern calls, so they can be checked): `malloc(n)`, `calloc(count, size)`, `realloc(p, n)`, `free(p)`, `memcpy(dst, src, n)`, `memmove(dst, src, n)`, `memset(p, byte, n)`, `memcmp(a, b, n)`. Memory is zero-filled when allocated (C leaves it undefined, so a program may not rely on this). `free(null)` does nothing. `cstr(s)` returns a NUL-terminated `u8*` copy of a string that you `free`; `str_from(p)` reads a string up to the NUL and `str_from(p, n)` reads `n` bytes (UTF-8).
+
+**Structs.** A `struct` is a record with C layout (fields in order, natural alignment, size rounded up to the alignment) and *value semantics*: assigning or passing one copies it.
+
+```manv
+struct Vec2:
+    float x
+    float y
+
+struct Node:
+    int value
+    Node* next            # a pointer to itself is fine; containing itself is not (E2076)
+
+Vec2 a = Vec2(3.0, 4.0)   # positional, or Vec2(y=1.0, x=2.0); omitted fields are 0
+Vec2 b = a                # a copy
+Vec2* p = &a
+p->x = 9.0                # a.x is now 9.0
+print(sizeof(Vec2))       # 16
+```
+
+A field may be a scalar, a pointer, another struct, or a fixed array (`i32 cells[4]`; the size is an integer literal). Structs cannot have methods or initial values (`E1006`), and are unrelated to `type`, which stays the managed class.
+
+**C arrays.** `int buf[16]` declares 16 `int`s in raw memory (zero-filled, an initializer `= [1, 2]` fills the first elements). `sizeof(buf)` is 128, `buf[i]` is bounds-checked (`IndexError`), and in an expression, argument or `int*` declaration the name decays to a pointer to its first element. This differs from `array xs[16]`, which is still the managed array.
+
+**Checking.** Every access through a pointer ManV allocated is checked, and a mistake raises a catchable exception instead of corrupting memory:
+
+| Mistake | Exception |
+|---------|-----------|
+| dereferencing `null` | `NullPointerError` (a `PointerError`) |
+| reading or writing outside the block, before its start, or misaligned | `PointerError` |
+| using memory after `free`, or after the function that owned a local returned | `PointerError` |
+| `free` twice, `free` of a local, struct or array, or of a pointer that did not come from `malloc` | `PointerError` |
+| dereferencing an address that was made up (`12345 as int*`) | `PointerError` |
+| storing a value of the wrong kind (`*p = "text"` into an `int*`) | `TypeError` |
+
+A local whose address is taken (`&x`) lives in memory for as long as its function runs; a pointer to it that outlives the function is dangling, and using it is a `PointerError`. Pointers from C are foreign and unchecked (see §9.1).
+
+**Compile-time errors.** `E2070` dereferencing or storing through a non-pointer or a `void*`; `E2071` address of something that is not a variable, element or field; `E2072` writing through a `const` pointer; `E2073` incompatible pointer types or operators (adding two pointers, comparing with an int, casting a float to a pointer); `E2074` address of a managed value; `E2075` unknown struct field type; `E2076` a struct that contains itself; `E1021` missing type after `as`.
+
+**Not there yet 🧭:** function pointers and passing a ManV function to C as a callback, `char`-style literals, pointer-to-array types, `union`, and everything in compiled mode (pointers, structs and C arrays are rejected there with `E3011`). Printing a pointer writes its address (`0x...`), which differs from run to run, so tests compare pointers instead.
+
+### 9.3 `syscall` ✅
 
 ```manv
 syscall("getpid")
@@ -676,7 +760,7 @@ syscall(number_or_name, arg1, arg2)
 
 Usable as a statement or an expression. Typed wrappers are a library concern and wait for the standard library redesign.
 
-### 9.3 Intrinsics
+### 9.4 Intrinsics
 
 `__intrin.name(args)` calls a compiler-known primitive such as `__intrin.sqrt_float(x)`. The interpreter currently versions intrinsics (`core_len@1`) and rejects calls from non-library code with `E2022`. That rule belongs to the parked standard library and is expected to change once the engine's real primitive set is known. For now, treat `__intrin.*` as internal. See [§1.6](#16-a-small-core-the-library-comes-later).
 
@@ -706,7 +790,7 @@ Available without an `include`. With no standard library, these native builtins 
 | Collections | `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values` |
 | Types | `type`, `isinstance` |
 | Introspection | `help` |
-| FFI | `c_str`, `ptr_null`, `ptr_is_null`, `ptr_add` |
+| Memory | `malloc` `calloc` `realloc` `free` `memcpy` `memmove` `memset` `memcmp` `cstr` `str_from` (§9.2) |
 
 How values are written by `print` and `str()`: `true`, `false` and `none`; numbers as usual; a string as itself (but quoted inside an array or map); arrays as `[1, 2]`; maps as `{'k': 1}`. Written text for strings inside collections is not final.
 
@@ -802,8 +886,9 @@ equality     := comparison { ("==" | "!=") comparison }
 comparison   := term { ("<" | "<=" | ">" | ">=") term }
 term         := factor { ("+" | "-") factor }
 factor       := unary { ("*" | "/" | "%") unary }
-unary        := ("-" | "!" | "not") unary | postfix
-postfix      := primary { "(" [args] ")" | "[" expr "]" | "." IDENT }
-primary      := NUMBER | STRING | "true" | "false" | "none" | IDENT
+unary        := prefix { "as" type }
+prefix       := ("-" | "!" | "&" | "*") prefix | postfix
+postfix      := primary { "(" [args] ")" | "[" expr "]" | "." IDENT | "->" IDENT }
+primary      := NUMBER | STRING | "true" | "false" | "none" | "null" | "sizeof" "(" (type | expr) ")" | IDENT
               | "(" expr ")" | "[" [expr {"," expr}] "]" | "{" [pair {"," pair}] "}" | lambda
 ```

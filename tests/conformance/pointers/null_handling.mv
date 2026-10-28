@@ -1,0 +1,31 @@
+fn find(p: int*, n: int, target: int) -> int*:
+    for i in 0..n:
+        if p[i] == target:
+            return p + i
+    return null
+
+fn main() -> int:
+    int* none_yet = null
+    print(none_yet == null)
+    int* buf = malloc(3 * sizeof(int))
+    buf[0] = 4
+    buf[1] = 5
+    buf[2] = 6
+    int* hit = find(buf, 3, 5)
+    print(hit != null, hit - buf)
+    print(find(buf, 3, 99) == null)
+    if hit:
+        print("truthy")
+    if not none_yet:
+        print("null is falsy")
+    try:
+        x = *none_yet
+    except NullPointerError as e:
+        print("NullPointerError")
+    try:
+        *none_yet = 1
+    except PointerError as e:
+        print("also a PointerError")
+    free(null)
+    free(buf)
+    return 0

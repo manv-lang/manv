@@ -1,0 +1,86 @@
+# ---
+# 10_pointers.mv
+#
+# C-style pointers in ManV.
+#
+#   T*          a pointer to T            &x       the address of x
+#   *p          the value p points at     p[i]     the i-th element after p
+#   p + n       n elements further        p - q    elements between two pointers
+#   null        the null pointer          p as T*  convert between pointer types
+#   sizeof(T)   the size of T in bytes    p->f     field f of the struct p points at
+#
+# Every access is checked: a bad one raises PointerError instead of corrupting memory.
+# ---
+
+struct Vec2:
+    float x
+    float y
+
+struct Node:
+    int value
+    Node* next
+
+fn swap(a: int*, b: int*):
+    int tmp = *a
+    *a = *b
+    *b = tmp
+
+fn sum(values: int*, count: int) -> int:
+    total = 0
+    for i in 0..count:
+        total += values[i]
+    return total
+
+fn push(head: Node*, value: int) -> Node*:
+    Node* node = malloc(sizeof(Node))
+    node->value = value
+    node->next = head
+    return node
+
+fn main() -> int:
+    # --- addresses of locals ---
+    int a = 1
+    int b = 2
+    swap(&a, &b)
+    print(a, b)                          # 2 1
+
+    # --- raw memory from malloc ---
+    int* numbers = malloc(4 * sizeof(int))
+    for i in 0..4:
+        numbers[i] = (i + 1) * 10
+    print(sum(numbers, 4))               # 100
+    int* second = numbers + 1
+    print(*second, second - numbers)     # 20 1
+    free(numbers)
+
+    # --- C arrays decay to pointers ---
+    int scores[3] = [7, 8, 9]
+    print(sum(scores, 3), sizeof(scores))   # 24 24
+
+    # --- structs, by value and through pointers ---
+    Vec2 v = Vec2(3.0, 4.0)
+    Vec2* pv = &v
+    pv->x = 6.0
+    print(v)                             # Vec2(x=6.0, y=4.0)
+
+    # --- a linked list ---
+    Node* head = null
+    for i in 1..4:
+        head = push(head, i)
+    total = 0
+    Node* cur = head
+    while cur != null:
+        total += cur->value
+        Node* next = cur->next
+        free(cur)
+        cur = next
+    print(total)                         # 6
+
+    # --- mistakes are caught ---
+    int* p = malloc(sizeof(int))
+    free(p)
+    try:
+        print(*p)
+    except PointerError as e:
+        print("use after free caught")
+    return 0

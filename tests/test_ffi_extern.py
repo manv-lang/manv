@@ -26,6 +26,7 @@ from manv.diagnostics import ManvError
 from manv.ffi import resolve_lib, load_library, marshal_arg, unmarshal_return, marshal_vararg
 from manv.hlir_lowering import lower_ast_to_hlir
 from manv.intrinsics import invoke_intrinsic
+from manv.memory import NULL, Pointer
 from manv.runner import run_file
 
 # ---------------------------------------------------------------------------
@@ -144,7 +145,7 @@ class TestExternParser:
         src = (
             'fn main() -> int:\n'
             '    extern "c" fn strlen(s: ptr) -> int\n'
-            '    n = strlen(c_str("hi"))\n'
+            '    n = strlen(cstr("hi"))\n'
             '    return n\n'
         )
         # Parse only — should not raise
@@ -196,8 +197,10 @@ class TestFfiEngine:
         assert unmarshal_return(42, "void") is None
 
     def test_unmarshal_return_ptr(self):
-        assert unmarshal_return(99, "ptr") == 99
-        assert unmarshal_return(None, "ptr") == 0
+        assert unmarshal_return(99, "ptr") == Pointer(99)
+        assert unmarshal_return(99, "ptr").foreign
+        assert unmarshal_return(None, "ptr") == NULL
+        assert unmarshal_return(7, "u8*").pointee == "u8"
 
     def test_unmarshal_return_str_bytes(self):
         assert unmarshal_return(b"hello", "str") == "hello"
@@ -237,36 +240,13 @@ class TestFfiEngine:
 # ---------------------------------------------------------------------------
 
 class TestPointerIntrinsics:
-    def test_ptr_null_returns_zero(self):
-        assert invoke_intrinsic("ptr_null", []) == 0
+    """The old helper functions were replaced by `null`, `==`, `+`, `cstr` and `str_from`
+    (see tests/conformance/pointers/)."""
 
-    def test_ptr_is_null_true_for_zero(self):
-        assert invoke_intrinsic("ptr_is_null", [0]) is True
-
-    def test_ptr_is_null_true_for_none(self):
-        assert invoke_intrinsic("ptr_is_null", [None]) is True
-
-    def test_ptr_is_null_false_for_nonzero(self):
-        assert invoke_intrinsic("ptr_is_null", [1]) is False
-
-    def test_c_str_encodes_utf8(self):
-        assert invoke_intrinsic("c_str", ["hi"]) == b"hi"
-
-    def test_c_str_unicode(self):
-        result = invoke_intrinsic("c_str", ["héllo"])
-        assert result == "héllo".encode("utf-8")
-
-    def test_ptr_to_str_decodes(self):
-        result = invoke_intrinsic("ptr_to_str", [b"world"])
-        assert result == "world"
-
-    def test_ptr_add(self):
-        result = invoke_intrinsic("ptr_add", [100, 50])
-        assert result == 150
-
-    def test_ptr_add_none_base(self):
-        result = invoke_intrinsic("ptr_add", [None, 8])
-        assert result == 8
+    @pytest.mark.parametrize("name", ["ptr_null", "ptr_is_null", "c_str", "ptr_to_str", "ptr_add"])
+    def test_old_helpers_are_gone(self, name):
+        with pytest.raises(Exception):
+            invoke_intrinsic(name, [])
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +260,7 @@ class TestInterpreterLiveLibc:
             'extern "c" fn strlen(s: ptr) -> int\n'
             "\n"
             "fn main() -> int:\n"
-            '    n = strlen(c_str("hello"))\n'
+            '    n = strlen(cstr("hello"))\n'
             "    print(n)\n"
             "    return 0\n"
         )
@@ -297,7 +277,7 @@ class TestInterpreterLiveLibc:
             "\n"
             "fn main() -> int:\n"
             "    buf = malloc(64)\n"
-            "    print(ptr_is_null(buf))\n"
+            "    print((buf == null))\n"
             "    free(buf)\n"
             "    return 0\n"
         )
@@ -314,7 +294,7 @@ class TestInterpreterLiveLibc:
             "    fn free(p: ptr)\n"
             "\n"
             "fn main() -> int:\n"
-            '    n = strlen(c_str("hi"))\n'
+            '    n = strlen(cstr("hi"))\n'
             "    buf = malloc(n)\n"
             "    free(buf)\n"
             "    print(n)\n"
@@ -331,7 +311,7 @@ class TestInterpreterLiveLibc:
             'extern "c" fn c_len(s: ptr) -> int as "strlen"\n'
             "\n"
             "fn main() -> int:\n"
-            '    n = c_len(c_str("hello!"))\n'
+            '    n = c_len(cstr("hello!"))\n'
             "    print(n)\n"
             "    return 0\n"
         )
@@ -367,8 +347,8 @@ class TestInterpreterLiveLibc:
     def test_ptr_null_in_interpreter(self, tmp_path):
         src = (
             "fn main() -> int:\n"
-            "    p = ptr_null()\n"
-            "    print(ptr_is_null(p))\n"
+            "    p = null\n"
+            "    print((p == null))\n"
             "    return 0\n"
         )
         code, out = _run_src(src)
@@ -383,8 +363,8 @@ class TestInterpreterLiveLibc:
             "\n"
             "fn main() -> int:\n"
             "    buf = malloc(16)\n"
-            "    p2 = ptr_add(buf, 8)\n"
-            "    print(ptr_is_null(p2))\n"
+            "    p2 = (buf as u8*) + 8\n"
+            "    print((p2 == null))\n"
             "    free(buf)\n"
             "    return 0\n"
         )
@@ -405,7 +385,7 @@ class TestStdlibLibc:
             "include strlen from libc\n"
             "\n"
             "fn main() -> int:\n"
-            '    n = strlen(c_str("hello"))\n'
+            '    n = strlen(cstr("hello"))\n'
             "    print(n)\n"
             "    return 0\n"
         )
@@ -421,7 +401,7 @@ class TestStdlibLibc:
             "\n"
             "fn main() -> int:\n"
             "    buf = malloc(128)\n"
-            "    print(ptr_is_null(buf))\n"
+            "    print((buf == null))\n"
             "    free(buf)\n"
             "    return 0\n"
         )
@@ -493,7 +473,7 @@ class TestHlirIntegration:
             'extern "c" fn strlen(s: ptr) -> int\n'
             "\n"
             "fn main() -> int:\n"
-            '    n = strlen(c_str("hello"))\n'
+            '    n = strlen(cstr("hello"))\n'
             "    return n\n"
         )
         prog = parse_program(src, "test.mv")

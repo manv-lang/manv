@@ -1,0 +1,5 @@
+struct Loop:
+    Loop inner
+
+fn main() -> int:
+    return 0

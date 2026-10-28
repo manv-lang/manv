@@ -1,0 +1,4 @@
+fn main() -> int:
+    int* a = malloc(4)
+    f32* b = a
+    return 0

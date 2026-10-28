@@ -709,9 +709,13 @@ class HLIRLowerer:
             self._lower_match(state, stmt)
             return
 
+        if isinstance(stmt, ast.SetDerefStmt):
+            raise ManvError(diag("E3011", "pointers are not supported in compiled mode yet", stmt.span.file, stmt.span.line, stmt.span.column))
         state.emit(HInstruction(op="unsupported_stmt", attrs={"kind": type(stmt).__name__}, effects=["may_throw"]), node=stmt)
 
     def _lower_let(self, state: _LowerState, stmt: ast.LetStmt) -> None:
+        if stmt.c_array:
+            raise ManvError(diag("E3011", "C arrays are not supported in compiled mode yet", stmt.span.file, stmt.span.line, stmt.span.column))
         if stmt.name not in state.declared_vars:
             state.emit(
                 HInstruction(op="declare_var", attrs={"name": stmt.name, "type": stmt.type_name}, effects=["writes_memory"]),
@@ -1216,6 +1220,10 @@ class HLIRLowerer:
         state.set_block(exit_label)
 
     def _lower_expr(self, state: _LowerState, expr: Any) -> str:
+        if isinstance(expr, (ast.AddrOfExpr, ast.DerefExpr, ast.CastExpr, ast.SizeofExpr)) or (
+            isinstance(expr, ast.LiteralExpr) and expr.literal_type == "null"
+        ):
+            raise ManvError(diag("E3011", "pointers are not supported in compiled mode yet", expr.span.file, expr.span.line, expr.span.column))
         if isinstance(expr, ast.LambdaExpr):
             out = state.new_temp()
             state.emit(
@@ -1594,6 +1602,9 @@ class HLIRLowerer:
 
 
 def lower_ast_to_hlir(program: ast.Program, source_name: str) -> HModule:
+    for decl in program.declarations:
+        if isinstance(decl, ast.StructDecl):
+            raise ManvError(diag("E3011", "structs are not supported in compiled mode yet", decl.span.file, decl.span.line, decl.span.column))
     return HLIRLowerer().lower_program(program, source_name)
 
 

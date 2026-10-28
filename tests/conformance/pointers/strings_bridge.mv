@@ -1,0 +1,12 @@
+fn main() -> int:
+    u8* s = cstr("héllo")
+    print(s[0], s[1], s[2])
+    print(str_from(s))
+    print(str_from(s, 3))
+    s[0] = 72
+    print(str_from(s))
+    free(s)
+    u8* empty = cstr("")
+    print(empty[0], str_from(empty) == "")
+    free(empty)
+    return 0
