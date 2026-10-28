@@ -1,0 +1,3 @@
+fn main() -> int:
+    int b = none
+    return 0

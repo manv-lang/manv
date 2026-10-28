@@ -38,10 +38,12 @@ def parse_program(source: str, file: str) -> ast.Program:
     return parser.parse()
 
 
-def analyze_program(program: ast.Program, file: str) -> None:
+def analyze_program(program: ast.Program, file: str) -> list:
+    """Check the program; raise on the first errors. Returns the warnings (diagnostics that do not stop a run)."""
     analyzer = SemanticAnalyzer(file=file)
     result = analyzer.analyze(program)
     analyzer.assert_valid(result)
+    return [d for d in result.diagnostics if d.severity == "warning"]
 
 
 def compile_pipeline(source: str, file: str, optimize: bool = True) -> tuple[dict, dict, dict, dict]:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import ast
+from .flow import check_program
+from .typesys import TypeNode, names_in, parse_type
 from .memory import SCALARS, canonical_pointer_type, is_pointer_type, pointee_of
 from .diagnostics import Diagnostic, ManvError, diag
 from .intrinsics import (
@@ -17,7 +19,7 @@ from .intrinsics import (
 
 
 BUILTIN_FUNCTIONS = set(BUILTIN_ALIASES.keys())
-BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id", "help"})
+BUILTIN_FUNCTIONS.update({"type", "isinstance", "issubclass", "id", "help", "super"})
 # Builtins implemented by the host: raw memory and the program's surroundings.
 # name -> (fewest args, most args, result type).
 HOST_BUILTINS: dict[str, tuple[int, int, str | None]] = {
@@ -59,6 +61,9 @@ BUILTIN_TYPES = {
     "OutOfMemoryError",
     "PointerError",
     "NullPointerError",
+    "LookupError",
+    "ArithmeticError",
+    "NotImplementedError",
     "ZeroDivisionError",
     "RecursionError",
     "EOFError",
@@ -304,6 +309,7 @@ class SemanticAnalyzer:
         self.type_attrs: dict[str, dict[str, str | None]] = {}
         self.type_accessors: dict[str, dict[str, dict[str, ast.FnDecl]]] = {}
         self.structs: dict[str, ast.StructDecl] = {}
+        self.included: set[str] = set()  # names brought in by `include`: not visible here, so trusted as types
 
     def analyze(self, program: ast.Program) -> SemanticResult:
         for decl in program.declarations:
@@ -328,6 +334,7 @@ class SemanticAnalyzer:
                 self.types.add(decl.name)
                 attr_table: dict[str, str | None] = {}
                 for attr in decl.attrs:
+                    self._check_annotation(attr.type_name, attr.span)
                     if attr.name in attr_table:
                         self._add_error("E2001", f"duplicate type attribute '{decl.name}.{attr.name}'", attr.span.line, attr.span.column)
                     attr_table[attr.name] = normalize_type_name(attr.type_name)
@@ -351,6 +358,8 @@ class SemanticAnalyzer:
         for stmt in program.statements:
             self._analyze_stmt(stmt, global_scope, None, loop_depth=0, except_depth=0)
 
+        check_program(program, set(self.structs), self._flow_error, self._flow_warning)
+
         for decl in program.declarations:
             if isinstance(decl, STUB_FEATURE_DECLS):
                 continue
@@ -371,6 +380,12 @@ class SemanticAnalyzer:
                     self._analyze_function_decl(method, global_scope, is_method=True)
 
         return SemanticResult(diagnostics=self.diagnostics)
+
+    def _flow_error(self, code: str, message: str, line: int, column: int) -> None:
+        self._add_error(code, message, line, column)
+
+    def _flow_warning(self, code: str, message: str, line: int, column: int) -> None:
+        self.diagnostics.append(diag(code, message, self.file, line, column, severity="warning"))
 
     def _check_struct(self, decl: ast.StructDecl) -> None:
         seen: set[str] = set()
@@ -439,9 +454,96 @@ class SemanticAnalyzer:
                 continue
             table[bucket][property_name] = method
 
+    _KNOWN_TYPE_WORDS = {
+        "int", "float", "str", "bool", "array", "map", "tuple", "none", "void", "fn", "object", "any", "range",
+        "ptr", "i32", "f32", "type",
+    }
+
+    def _check_annotation(self, text: str | None, span: Any) -> None:
+        """An annotation must name known types and give the right number of type arguments."""
+        if not text:
+            return
+        try:
+            node = parse_type(text)
+        except ValueError as exc:
+            self._add_error("E2078", f"malformed type '{text}': {exc}", span.line, span.column)
+            return
+        self._check_type_node(node, text, span)
+
+    def _check_type_node(self, node: TypeNode, text: str, span: Any) -> None:
+        if node.kind == "name":
+            name = node.name
+            known = (
+                name in self._KNOWN_TYPE_WORDS or name in SCALARS or name in self.types or name in self.structs
+                or name in self.included or "." in name
+            )
+            if not known:
+                self._add_error("E2078", f"unknown type '{name}' in '{text}'", span.line, span.column)
+            wanted = {"array": 1, "map": 2}.get(name)
+            if wanted is not None and node.args and len(node.args) != wanted:
+                self._add_error("E2078", f"'{name}' takes {wanted} type argument(s) in '{text}', got {len(node.args)}", span.line, span.column)
+        for arg in node.args:
+            self._check_type_node(arg, text, span)
+
+    def _common_type(self, types: list[str | None]) -> str | None:
+        """The one type all of `types` share (an int fits where a float is wanted), or None if unknown or mixed."""
+        if not types or any(t is None or t in {"null", "none"} for t in types):
+            return None
+        first = types[0]
+        if all(self._type_compatible(first, t) and self._type_compatible(t, first) for t in types):
+            return first
+        if all(self._type_compatible("f32", t) for t in types) and "f32" in types:
+            return "f32"
+        return "mixed"  # known, but not one type: only an untyped array or map accepts it
+
+    def _structured_compatible(self, expected: str, actual: str) -> bool:
+        """Compare annotations that have structure: `array[int]`, `map[str,int]`, `int?`, `fn(int)->str`."""
+        try:
+            want, got = parse_type(expected), parse_type(actual)
+        except ValueError:
+            return True
+        return self._node_compatible(want, got)
+
+    def _node_compatible(self, want: TypeNode, got: TypeNode) -> bool:
+        if got.kind == "name" and got.name == "mixed":
+            return want.kind == "name" and not want.args and want.name in {"mixed", "array", "map", "object", "any"}
+        if want.kind == "optional":
+            if got.kind == "name" and got.name == "none":
+                return True
+            return self._node_compatible(want.args[0], got.args[0] if got.kind == "optional" else got)
+        if got.kind == "optional":
+            return False  # a value that may be none does not fit a type that cannot be
+        if want.kind == "fn" or got.kind == "fn":
+            if want.kind == "fn" and got.kind == "fn":
+                return len(want.args) == len(got.args) and all(self._node_compatible(w, g) for w, g in zip(want.args, got.args))
+            return (want.kind == "name" and want.name == "fn") or (got.kind == "name" and got.name == "fn") or want.kind != "fn"
+        if want.kind == "pointer" or got.kind == "pointer":
+            return self._type_compatible(str(want), str(got))
+        if not self._type_compatible(want.name, got.name):
+            return False
+        if not want.args or not got.args:
+            return True  # `array[int]` accepts a plain array: its elements are not known
+        if len(want.args) != len(got.args):
+            return False
+        return all(self._node_compatible(w, g) for w, g in zip(want.args, got.args))
+
+    @staticmethod
+    def _erased(type_name: str | None) -> str | None:
+        """The type of an inferred variable keeps no element types: `xs = [1]` is an `array`, so it may change later."""
+        if type_name is None:
+            return None
+        if type_name.startswith("array["):
+            return "array"
+        if type_name.startswith("map["):
+            return "map"
+        return type_name
+
     def _analyze_function_decl(self, decl: ast.FnDecl, parent: Scope, *, is_method: bool) -> None:
         self._validate_function_decorators(decl, is_method=is_method)
         fn_scope = Scope(parent=parent)
+        for param in decl.params:
+            self._check_annotation(param.type_name, param.span)
+        self._check_annotation(decl.return_type, decl.span)
         for param in decl.params:
             if param.default is not None:
                 self._analyze_expr(param.default, parent, as_callee=False)
@@ -449,13 +551,21 @@ class SemanticAnalyzer:
         for stmt in decl.body:
             self._analyze_stmt(stmt, fn_scope, decl, loop_depth=0, except_depth=0)
 
-    def _check_call_arguments(self, call: ast.CallExpr, fn: ast.FnDecl) -> None:
-        """Arity and keyword checks for a call to a known top-level function."""
+    def _check_call_arguments(self, call: ast.CallExpr, fn: ast.FnDecl, arg_types: list[str | None] | None = None) -> None:
+        """Arity, keyword and argument-type checks for a call to a known top-level function."""
         line, col = call.span.line, call.span.column
         names = [p.name for p in fn.params]
         if len(call.args) > len(names):
             self._add_error("E2066", f"'{fn.name}' takes at most {len(names)} argument(s), got {len(call.args)}", line, col)
             return
+        for index, (param, got) in enumerate(zip(fn.params, arg_types or [])):
+            if param.type_name and got and not self._type_compatible(param.type_name, got):
+                self._add_error(
+                    "E2080",
+                    f"argument {index + 1} of '{fn.name}' ('{param.name}') expects {param.type_name}, got {got}",
+                    call.args[index].span.line if hasattr(call.args[index], "span") else line,
+                    call.args[index].span.column if hasattr(call.args[index], "span") else col,
+                )
         bound = set(names[: len(call.args)])
         for name, _ in call.kwargs:
             if name not in names:
@@ -600,10 +710,11 @@ class SemanticAnalyzer:
                 size_type = self._analyze_expr(stmt.array_size, scope, as_callee=False)
                 if size_type and not self._type_compatible("int", size_type):
                     self._add_error("E2006", f"array size for '{stmt.name}' must be int-compatible, got {size_type}", stmt.span.line, stmt.span.column)
+            self._check_annotation(stmt.type_name, stmt.span)
             value_type = self._analyze_expr(stmt.value, scope, as_callee=False) if stmt.value is not None else None
             if stmt.array_size is not None and value_type is None:
                 value_type = "array"
-            declared_type = normalize_type_name(stmt.type_name) or normalize_type_name(value_type)
+            declared_type = normalize_type_name(stmt.type_name) or self._erased(normalize_type_name(value_type))
             annotation = None if stmt.c_array else stmt.type_name
             scope.define(stmt.name, declared_type, const=stmt.is_const, annotation=annotation)
             if stmt.type_name and value_type and not self._type_compatible(stmt.type_name, value_type):
@@ -648,7 +759,7 @@ class SemanticAnalyzer:
                 self._check_store_through(target_type, value_type, stmt)
                 return
             self._check_not_const_target(stmt.target, scope, stmt)
-            if target_type and not (
+            if target_type and target_type not in self.types and not (
                 target_type == "array"
                 or target_type == "map"
                 or target_type.startswith("array[")
@@ -676,6 +787,7 @@ class SemanticAnalyzer:
             return
 
         if isinstance(stmt, ast.IncludeStmt):
+            self.included.add(stmt.alias or stmt.name or stmt.module.split(".")[-1])
             if stmt.name is None:
                 # Whole-module include: bind as alias or leaf of dotted path.
                 bind = stmt.alias if stmt.alias else stmt.module.split(".")[-1]
@@ -691,12 +803,12 @@ class SemanticAnalyzer:
                 # First assignment to a new name declares it (type inferred from the value).
                 value_type = self._analyze_expr(stmt.value, scope, as_callee=False)
                 stmt.declares = True
-                scope.define(stmt.name, normalize_type_name(value_type))
+                scope.define(stmt.name, self._erased(normalize_type_name(value_type)))
                 return
             current = scope.lookup(stmt.name)
             declared = scope.annotation_of(stmt.name)
-            if declared and is_pointer_type(normalize_type_name(declared)):
-                stmt.pointer_type = declared  # the runtime converts void*/arrays to this pointer type
+            if declared:
+                stmt.declared_type = declared  # the runtime converts and range-checks values stored in it
             if scope.is_const(stmt.name):
                 self._add_error("E2064", f"cannot assign to constant '{stmt.name}'", stmt.span.line, stmt.span.column)
             value_type = self._analyze_expr(stmt.value, scope, as_callee=False)
@@ -741,7 +853,7 @@ class SemanticAnalyzer:
                 self._check_store_through(target_type, value_type, stmt)  # writes the pointee, not the name
                 return
             self._check_not_const_target(stmt.target, scope, stmt)
-            if target_type and not (
+            if target_type and target_type not in self.types and not (
                 target_type == "array"
                 or target_type == "map"
                 or target_type.startswith("array[")
@@ -832,6 +944,18 @@ class SemanticAnalyzer:
                 self._add_error("E2008", "'break' is only valid inside loops", stmt.span.line, stmt.span.column)
             return
 
+        if isinstance(stmt, ast.PassStmt):
+            return
+
+        if isinstance(stmt, ast.WithStmt):
+            self._analyze_expr(stmt.context, scope, as_callee=False)
+            body_scope = Scope(parent=scope)
+            if stmt.bind_name is not None:
+                body_scope.define(stmt.bind_name, None)
+            for inner in stmt.body:
+                self._analyze_stmt(inner, body_scope, fn_decl, loop_depth=loop_depth, except_depth=except_depth)
+            return
+
         if isinstance(stmt, ast.ContinueStmt):
             if loop_depth <= 0:
                 self._add_error("E2009", "'continue' is only valid inside loops", stmt.span.line, stmt.span.column)
@@ -876,13 +1000,37 @@ class SemanticAnalyzer:
         if enforce_std_only and spec.std_only and not self.is_std_source:
             self._add_error("E2022", f"intrinsic '{intrinsic_name}' is restricted to std sources", line, col)
 
+        if intrinsic_name in {"core_int", "core_float", "core_bool", "core_str"}:
+            # conversions: int(x), int(text, base), float(x), bool(x), str(x); the value decides what is allowed
+            limit = 2 if intrinsic_name == "core_int" else 1
+            if len(args) > limit:
+                self._add_error("E2021", f"intrinsic '{intrinsic_name}' takes at most {limit} argument(s), got {len(args)}", line, col)
+            for arg in args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return {"core_int": "int", "core_float": "float", "core_bool": "bool", "core_str": "str"}[intrinsic_name]
+
+        if intrinsic_name in {"core_min", "core_max"}:
+            # min(array) or min(a, b, ...)
+            if not args:
+                self._add_error("E2021", f"intrinsic '{intrinsic_name}' needs at least one argument", line, col)
+            for arg in args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return None
+
+        if intrinsic_name == "core_range":
+            if not 1 <= len(args) <= 3:
+                self._add_error("E2021", f"intrinsic 'core_range' takes 1 to 3 arguments, got {len(args)}", line, col)
+            for arg in args:
+                self._analyze_expr(arg, scope, as_callee=False)
+            return "range"
+
         if intrinsic_name == "core_zip":
             # zip takes any number of arrays: zip(a, b, c)
             if not args:
                 self._add_error("E2021", "intrinsic 'core_zip' expects at least 1 array", line, col)
             for arg in args:
                 got = self._analyze_expr(arg, scope, as_callee=False)
-                if got and got not in {"array"} and not got.startswith("array["):
+                if got and got not in {"array", "range"} and got not in self.types and not got.startswith("array["):
                     self._add_error("E2021", f"intrinsic 'core_zip' arguments must be arrays, got {got}", line, col)
             return "array"
 
@@ -903,6 +1051,8 @@ class SemanticAnalyzer:
             )
         else:
             for idx, (exp, got) in enumerate(zip(expected, got_types, strict=True)):
+                if exp == "array" and (got == "range" or got in self.types):
+                    continue  # a range, or a user type that is iterable: sum, sorted, enumerate, zip and len accept them
                 if not intrinsic_type_matches(exp, got):
                     label = exp.name if isinstance(exp, IntrinsicTypeVar) else exp
                     self._add_error(
@@ -1006,6 +1156,8 @@ class SemanticAnalyzer:
                 return self._pointer_binary(expr, left, right)
             if expr.op in {"==", "!=", "<", "<=", ">", ">=", "in"}:
                 return "bool"
+            if expr.op in {"&", "|", "^", "<<", ">>"} and {left, right} & {"f32", "float", "str", "bool"}:
+                self._add_error("E2025", f"operator '{expr.op}' needs integer operands, got {left} and {right}", expr.span.line, expr.span.column)
             if left and right and left != right and left in {"int", "float"} and right in {"int", "float"}:
                 return "f32"
             return left or right
@@ -1019,6 +1171,10 @@ class SemanticAnalyzer:
         if isinstance(expr, ast.RangeExpr):
             start_type = None if expr.start is None else self._analyze_expr(expr.start, scope, as_callee=False)
             stop_type = None if expr.stop is None else self._analyze_expr(expr.stop, scope, as_callee=False)
+            if expr.step is not None:
+                step_type = self._analyze_expr(expr.step, scope, as_callee=False)
+                if step_type and not self._type_compatible("int", step_type):
+                    self._add_error("E2037", f"range step must be int-compatible, got {step_type}", expr.span.line, expr.span.column)
             if start_type and not self._type_compatible("int", start_type):
                 self._add_error("E2036", f"range start must be int-compatible, got {start_type}", expr.span.line, expr.span.column)
             if stop_type and not self._type_compatible("int", stop_type):
@@ -1049,8 +1205,7 @@ class SemanticAnalyzer:
                 )
 
             self._analyze_expr(expr.callee, scope, as_callee=True)
-            for arg in expr.args:
-                self._analyze_expr(arg, scope, as_callee=False)
+            arg_types = [self._analyze_expr(arg, scope, as_callee=False) for arg in expr.args]
             if (
                 isinstance(expr.callee, ast.IdentifierExpr)
                 and expr.callee.name in HOST_BUILTINS
@@ -1068,7 +1223,7 @@ class SemanticAnalyzer:
             if isinstance(expr.callee, ast.IdentifierExpr):
                 fn = self.functions.get(expr.callee.name)
                 if fn and not scope.contains(expr.callee.name):
-                    self._check_call_arguments(expr, fn)
+                    self._check_call_arguments(expr, fn, arg_types)
                 if fn:
                     return normalize_type_name(fn.return_type)
                 if expr.callee.name in self.types:
@@ -1092,9 +1247,9 @@ class SemanticAnalyzer:
             return None
 
         if isinstance(expr, ast.ArrayExpr):
-            for e in expr.elements:
-                self._analyze_expr(e, scope, as_callee=False)
-            return "array"
+            element_types = [self._analyze_expr(e, scope, as_callee=False) for e in expr.elements]
+            common = self._common_type(element_types)
+            return f"array[{common}]" if common else "array"
 
         if isinstance(expr, ast.TupleExpr):
             for e in expr.elements:
@@ -1116,10 +1271,12 @@ class SemanticAnalyzer:
             return "map"
 
         if isinstance(expr, ast.MapExpr):
+            key_types, value_types = [], []
             for k, v in expr.entries:
-                self._analyze_expr(k, scope, as_callee=False)
-                self._analyze_expr(v, scope, as_callee=False)
-            return "map"
+                key_types.append(self._analyze_expr(k, scope, as_callee=False))
+                value_types.append(self._analyze_expr(v, scope, as_callee=False))
+            key, value = self._common_type(key_types), self._common_type(value_types)
+            return f"map[{key},{value}]" if key and value else "map"
 
         return None
 
@@ -1241,10 +1398,15 @@ class SemanticAnalyzer:
     def _type_compatible(self, expected: str, actual: str) -> bool:
         expected = normalize_type_name(expected) or expected
         actual = normalize_type_name(actual) or actual
+        if actual == "mixed":
+            return expected in {"mixed", "array", "map", "object", "any"}
         if is_pointer_type(expected) or is_pointer_type(actual) or expected == "null" or actual == "null":
             return self._pointer_compatible(expected, actual)
         if expected == actual:
             return True
+        if any(ch in expected or ch in actual for ch in "[?("):
+            if not (expected.startswith("[") or actual.startswith("[")):
+                return self._structured_compatible(expected, actual)
         if expected in {"int", "i32", "usize", "u8"} and actual in {"int", "i32"}:
             return True
         if expected in {"float", "f32"} and actual in {"float", "f32", "int", "i32"}:

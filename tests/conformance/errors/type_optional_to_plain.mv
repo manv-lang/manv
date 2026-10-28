@@ -1,0 +1,4 @@
+fn main() -> int:
+    int? a = none
+    int b = a
+    return 0

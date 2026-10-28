@@ -1,0 +1,74 @@
+type Stack:
+    fn __init__(self):
+        self.items = []
+
+    fn push(self, x):
+        self.items.append(x)
+
+    fn __len__(self):
+        return len(self.items)
+
+    fn __getitem__(self, i):
+        return self.items[i]
+
+    fn __setitem__(self, i, v):
+        self.items[i] = v
+
+    fn __contains__(self, x):
+        return x in self.items
+
+    fn __iter__(self):
+        return StackIterator(self)
+
+type StackIterator:
+    fn __init__(self, stack):
+        self.stack = stack
+        self.i = len(stack) - 1
+
+    fn __next__(self):
+        if self.i < 0:
+            raise StopIteration("done")
+        value = self.stack[self.i]
+        self.i -= 1
+        return value
+
+type Countdown:
+    fn __init__(self, start):
+        self.n = start
+
+    fn __iter__(self):
+        return self
+
+    fn __next__(self):
+        if self.n == 0:
+            raise StopIteration("zero")
+        self.n -= 1
+        return self.n + 1
+
+type Callable:
+    fn __init__(self, base):
+        self.base = base
+
+    fn __call__(self, x):
+        return self.base + x
+
+fn main() -> int:
+    s = Stack()
+    print(len(s), bool(s), "empty" if not s else "full")
+    s.push(10)
+    s.push(20)
+    s.push(30)
+    print(len(s), bool(s), s[0], s[-1], 20 in s, 99 in s)
+    s[1] = 25
+    for x in s:
+        print(x)
+    print(sorted(s), sum(s))
+    for n in Countdown(3):
+        print(n)
+    add10 = Callable(10)
+    print(add10(5))
+    try:
+        print(len(add10))
+    except TypeError as e:
+        print("no length")
+    return 0

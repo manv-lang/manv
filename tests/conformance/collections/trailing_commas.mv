@@ -1,0 +1,20 @@
+fn pair(a, b):
+    return a + b
+
+fn main() -> int:
+    xs = [
+        1,
+        2,
+    ]
+    m = {
+        "a": 1,
+        "b": 2,
+    }
+    t = (1, 2,)
+    print(xs, m, t)
+    print(pair(
+        3,
+        4,
+    ))
+    print([1, 2,][1], {"k": 5,}["k"])
+    return 0

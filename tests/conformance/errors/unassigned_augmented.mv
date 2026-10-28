@@ -1,0 +1,4 @@
+fn main() -> int:
+    int x
+    x += 1
+    return 0

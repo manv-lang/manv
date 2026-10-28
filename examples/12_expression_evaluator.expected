@@ -1,0 +1,32 @@
+1 + 2 * 3 => 7
+(1 + 2) * 3 => 9
+2 ^ 3 ^ 2 => 512
+-2 ^ 2 => -4
+10 / 4 => 2.5
+17 % 5 => 2
+x = 3 * (4 + 5) => 27
+y = x / 2 => 13.5
+x + y => 40.5
+sqrt(2) => 1.414214
+sqrt(144) + abs(-7) => 19
+max(3, 9, 4) - min(3, 9, 4) => 6
+sum(1, 2, 3, 4) => 10
+floor(-2.5) => -3
+2 ^ -2 => 0.25
+pi * 2 => 6.283185
+variables:
+  e = 2.718282
+  pi = 3.141593
+  x = 27
+  y = 13.5
+1 / 0 => error: division by zero
+2 + => error: unexpected end of input (at column 4)
+3 $ 4 => error: unexpected character '$' (at column 3)
+(1 + 2 => error: expected ')' but found end of input (at column 7)
+foo(1) => error: unknown function 'foo'
+sqrt(1, 2) => error: sqrt takes 1 argument(s) but got 2
+z + 1 => error: undefined variable 'z'
+1.2.3 => error: number has two decimal points (at column 4)
+2 ^ 0.5 => error: only whole-number exponents are supported
+a = ((-(b + 2.0)) * f(x, 3.0))
+16 calculations, 9 errors, 26 lines read

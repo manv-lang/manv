@@ -56,7 +56,8 @@ def run_file(
     source_path = Path(path).resolve()
     source = source_path.read_text(encoding="utf-8")
     program = parse_program(source, str(source_path))
-    analyze_program(program, str(source_path))
+    for warning in analyze_program(program, str(source_path)):
+        print(warning.render(), file=sys.stderr)
 
     if mode == "interpreter":
         interpreter = Interpreter(

@@ -1,0 +1,10 @@
+2147483647
+i32 overflow
+2147483647
+u8 overflow
+u8 negative
+argument too big
+7
+-128
+3.0 1.5
+1.0

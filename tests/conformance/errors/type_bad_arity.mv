@@ -1,0 +1,3 @@
+fn main() -> int:
+    map[int] m = {}
+    return 0

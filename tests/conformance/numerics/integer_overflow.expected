@@ -1,0 +1,8 @@
+9223372036854775807
+overflow add
+overflow mul
+overflow pow
+overflow shift
+-9223372036854775808
+overflow sub
+9223372036854775807

@@ -1,0 +1,31 @@
+fn show(label: str, f):
+    try:
+        print(label, f())
+    except ValueError as e:
+        print(label, "ValueError")
+    except TypeError as e:
+        print(label, "TypeError")
+    except OverflowError as e:
+        print(label, "OverflowError")
+
+fn main() -> int:
+    print(int("12"), int(" -7 "), int("1_000"), int(3.9), int(-3.9), int(true), int(false), int())
+    print(int("ff", 16), int("101", 2), int("-z", 36), int("0x1f", 16))
+    print(float("1e3"), float(" 2.5 "), float(2), float(true), float("-0"), float())
+    print(bool(""), bool("a"), bool([]), bool([0]), bool({}), bool(0), bool(0.0), bool(1), bool(none), bool(()), bool((0,)))
+    print(str(1), str(1.5), str(true), str(none), str([1, "a"]), str((1, 2)), str({"k": 1}), str())
+    show("int(3.5 text)", fn(): int("3.5"))
+    show("int(empty)", fn(): int(""))
+    show("int(none)", fn(): int(none))
+    show("int(array)", fn(): int([1]))
+    show("int(nan)", fn(): int(float("nan")))
+    show("int(inf)", fn(): int(float("inf")))
+    show("int(huge)", fn(): int("9223372036854775808"))
+    show("int(base on number)", fn(): int(5, 2))
+    show("int(bad base)", fn(): int("1", 99))
+    show("int(bad digit)", fn(): int("12", 2))
+    show("float(text)", fn(): float("abc"))
+    show("float(none)", fn(): float(none))
+    show("float(array)", fn(): float([1]))
+    print(float("inf"), -float("inf"), float("nan"), float("inf") > 1e308)
+    return 0

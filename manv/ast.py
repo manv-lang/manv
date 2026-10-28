@@ -189,7 +189,7 @@ class AssignStmt:
     value: Any
     span: Span
     declares: bool = False
-    pointer_type: str | None = None  # set by semantic analysis when the variable was declared `T*`
+    declared_type: str | None = None  # the type the variable was declared with, when it had one
 
 
 @dataclass
@@ -312,6 +312,13 @@ class ContinueStmt:
 
 
 @dataclass
+class PassStmt:
+    """`pass`: does nothing; fills a block that needs no statements."""
+
+    span: Span
+
+
+@dataclass
 class WithStmt:
     context: Any
     bind_name: str | None
@@ -430,6 +437,7 @@ class RangeExpr:
     start: Any
     stop: Any
     span: Span
+    step: Any = None  # `a..b step n`
 
 
 @dataclass

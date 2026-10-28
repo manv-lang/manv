@@ -672,6 +672,9 @@ class HLIRLowerer:
                 state.terminate("unreachable", [], node=stmt)
             return
 
+        if isinstance(stmt, ast.PassStmt):
+            return
+
         if isinstance(stmt, ast.ContinueStmt):
             if state.loop_targets:
                 _, continue_label = state.loop_targets[-1]

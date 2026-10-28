@@ -1,0 +1,7 @@
+fn main() -> int:
+    int x
+    match 1:
+        case 1:
+            x = 1
+    print(x)
+    return 0

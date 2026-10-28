@@ -1,6 +1,8 @@
-15.0
-a shape
-0.0
-yes
-yes
-no
+square sq3 with 4 sides 9 4 0 4
+square cube with 4 sides 24 cube
+abstract: area is not defined for x
+true true true false false
+true false true
+D>B>C>A only_a only_c
+true true true
+not indexable

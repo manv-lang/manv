@@ -106,6 +106,9 @@ class BuiltinMethods:
                     "endswith": lambda: s.endswith(arg),
                     "contains": lambda: arg in s,
                 }[method]()
+            if method in {"strip", "lstrip", "rstrip"} and args:
+                chars = self._require_str(args[0], "characters", span)
+                return getattr(s, method)(chars)
             return getattr(s, method)()
 
         return impl
@@ -211,9 +214,9 @@ _S = BuiltinMethods._s_text
 BuiltinMethods._STR = {
     "upper": (0, 0, _S("upper")),
     "lower": (0, 0, _S("lower")),
-    "strip": (0, 0, _S("strip")),
-    "lstrip": (0, 0, _S("lstrip")),
-    "rstrip": (0, 0, _S("rstrip")),
+    "strip": (0, 1, _S("strip")),
+    "lstrip": (0, 1, _S("lstrip")),
+    "rstrip": (0, 1, _S("rstrip")),
     "split": (0, 1, BuiltinMethods._s_split),
     "join": (1, 1, BuiltinMethods._s_join),
     "replace": (2, 2, BuiltinMethods._s_replace),

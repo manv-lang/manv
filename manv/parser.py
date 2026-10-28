@@ -301,6 +301,10 @@ class Parser:
             stmt = self._parse_syscall_stmt()
             self._consume_required_newline("expected newline after syscall")
             return stmt
+        if self._match_keyword("pass"):
+            tok = self._prev()
+            self._consume_required_newline("expected newline after pass")
+            return ast.PassStmt(span=self._span(tok))
         if self._match_keyword("break"):
             tok = self._prev()
             self._consume_required_newline("expected newline after break")
@@ -328,7 +332,7 @@ class Parser:
             self._consume_required_newline("expected newline")
             return ast.UnsupportedStmt(feature="memory", detail=detail, span=self._span(token))
 
-        if self._is_op("*"):
+        if self._is_op("*") or self._is_op("**"):
             return self._parse_deref_assignment()
 
         if self._is("IDENT") and self._peek(1).kind == "OP" and self._peek(1).lexeme in {"+=", "-=", "*=", "/=", "%="}:
@@ -483,19 +487,50 @@ class Parser:
         value = self._parse_expression()
         return ast.TypeAttrDecl(name=name_tok.lexeme, type_name=type_name, value=value, span=self._span(start))
 
+    _GENERIC_TYPE_WORDS = {"array", "map", "tuple"}
+
+    def _generic_args_end(self, offset: int) -> int | None:
+        """If the tokens at `offset` are `[ ... ]` with something inside (`[int]`, `[str, int]`), the offset
+        just after the closing bracket; otherwise None (`[]` and an index expression are not type arguments)."""
+        first, second = self._peek(offset), self._peek(offset + 1)
+        if not (first.kind == "OP" and first.lexeme == "[" and not (second.kind == "OP" and second.lexeme == "]")):
+            return None
+        depth = 0
+        i = offset
+        while True:
+            tok = self._peek(i)
+            if tok.kind in {"NEWLINE", "EOF"}:
+                return None
+            if tok.kind == "OP" and tok.lexeme == "[":
+                depth += 1
+            elif tok.kind == "OP" and tok.lexeme == "]":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+
     def _parse_decl_type(self) -> str:
-        """Consume the type in `T name`: a type word, optionally `const`, `*`s (`int**`) and `[]` pairs (`f32[]`)."""
+        """Consume the type in `T name`: a type word, optional type arguments (`array[int]`, `map[str, int]`),
+        `const`, `*`s (`int**`), `[]` pairs (`f32[]`) and a trailing `?` (optional)."""
         type_name = self._advance().lexeme
-        if self._is("KEYWORD") and self._current().lexeme == "const" and self._peek(1).lexeme == "*":
+        if type_name in self._GENERIC_TYPE_WORDS:
+            relative_end = self._generic_args_end(0)
+            if relative_end is not None:
+                end = self.pos + relative_end
+                while self.pos < end:
+                    type_name += self._advance().lexeme
+        if self._is("KEYWORD") and self._current().lexeme == "const" and self._peek(1).lexeme in {"*", "**"}:
             self._advance()
             type_name = "const " + type_name
-        while self._is_op("*"):
-            self._advance()
-            type_name += "*"
+        while self._is_op("*") or self._is_op("**"):
+            type_name += "*" * len(self._advance().lexeme)
         while self._is_op("[") and self._peek(1).kind == "OP" and self._peek(1).lexeme == "]":
             self._advance()
             self._advance()
             type_name += "[]"
+        if self._is_op("?"):
+            self._advance()
+            type_name += "?"
         return type_name
 
     def _parse_c_decl_stmt(self) -> ast.LetStmt:
@@ -977,11 +1012,12 @@ class Parser:
             if tok.kind == "EOF":
                 break
             if tok.kind == "OP":
+                depth_here = bracket_depth  # a closing bracket stops the type only if it closes something outside it
                 if tok.lexeme in {"[", "{", "("}:
                     bracket_depth += 1
                 elif tok.lexeme in {"]", "}", ")"}:
                     bracket_depth = max(0, bracket_depth - 1)
-                if bracket_depth == 0 and tok.lexeme in stop_ops:
+                if depth_here == 0 and tok.lexeme in stop_ops:
                     break
             if tok.kind == "KEYWORD" and bracket_depth == 0 and stop_keywords and tok.lexeme in stop_keywords:
                 break
@@ -1013,8 +1049,16 @@ class Parser:
         expr = self._parse_or()
         if self._match_op(".."):
             right = None if self._is_op("]") else self._parse_or()
-            return ast.RangeExpr(start=expr, stop=right, span=self._span_from_expr(expr))
+            step = self._parse_range_step()
+            return ast.RangeExpr(start=expr, stop=right, span=self._span_from_expr(expr), step=step)
         return expr
+
+    def _parse_range_step(self) -> object | None:
+        """The optional `step n` after `a..b` (`step` is a word only here, so it stays a valid name elsewhere)."""
+        if self._is("IDENT") and self._current().lexeme == "step":
+            self._advance()
+            return self._parse_or()
+        return None
 
     def _parse_or(self) -> object:
         expr = self._parse_and()
@@ -1052,8 +1096,36 @@ class Parser:
             expr = ast.BinaryExpr(left=expr, op=op, right=right, span=self._span_from_expr(expr))
         return expr
 
-    def _parse_comparison(self) -> object:
+    def _parse_bit_or(self) -> object:
+        expr = self._parse_bit_xor()
+        while self._is_op("|"):
+            op = self._advance().lexeme
+            expr = ast.BinaryExpr(left=expr, op=op, right=self._parse_bit_xor(), span=self._span_from_expr(expr))
+        return expr
+
+    def _parse_bit_xor(self) -> object:
+        expr = self._parse_bit_and()
+        while self._is_op("^"):
+            op = self._advance().lexeme
+            expr = ast.BinaryExpr(left=expr, op=op, right=self._parse_bit_and(), span=self._span_from_expr(expr))
+        return expr
+
+    def _parse_bit_and(self) -> object:
+        expr = self._parse_shift()
+        while self._is_op("&"):
+            op = self._advance().lexeme
+            expr = ast.BinaryExpr(left=expr, op=op, right=self._parse_shift(), span=self._span_from_expr(expr))
+        return expr
+
+    def _parse_shift(self) -> object:
         expr = self._parse_term()
+        while self._is_op("<<") or self._is_op(">>"):
+            op = self._advance().lexeme
+            expr = ast.BinaryExpr(left=expr, op=op, right=self._parse_term(), span=self._span_from_expr(expr))
+        return expr
+
+    def _parse_comparison(self) -> object:
+        expr = self._parse_bit_or()
         while True:
             if self._match_op("<"):
                 op = self._prev().lexeme
@@ -1074,7 +1146,7 @@ class Parser:
                 continue
             else:
                 break
-            right = self._parse_term()
+            right = self._parse_bit_or()
             expr = ast.BinaryExpr(left=expr, op=op, right=right, span=self._span_from_expr(expr))
         return expr
 
@@ -1100,6 +1172,8 @@ class Parser:
                 op = self._prev().lexeme
             elif self._match_op("%"):
                 op = self._prev().lexeme
+            elif self._match_op("//"):
+                op = self._prev().lexeme
             else:
                 break
             right = self._parse_unary()
@@ -1123,13 +1197,29 @@ class Parser:
             op_tok = self._prev()
             right = self._parse_prefix()
             return ast.UnaryExpr(op="!", expr=right, span=self._span(op_tok))
+        if self._match_op("~"):
+            op_tok = self._prev()
+            return ast.UnaryExpr(op="~", expr=self._parse_prefix(), span=self._span(op_tok))
         if self._match_op("&"):
             op_tok = self._prev()
             return ast.AddrOfExpr(operand=self._parse_prefix(), span=self._span(op_tok))
         if self._match_op("*"):
             op_tok = self._prev()
             return ast.DerefExpr(operand=self._parse_prefix(), span=self._span(op_tok))
-        return self._parse_postfix()
+        if self._match_op("**"):  # `**pp`: two dereferences (the lexer reads `**` as one token)
+            op_tok = self._prev()
+            inner = ast.DerefExpr(operand=self._parse_prefix(), span=self._span(op_tok))
+            return ast.DerefExpr(operand=inner, span=self._span(op_tok))
+        return self._parse_power()
+
+    def _parse_power(self) -> object:
+        """`a ** b`: right associative, binds tighter than unary minus on its left (`-2 ** 2` is -4)
+        and accepts a unary operator on its right (`2 ** -1`)."""
+        base = self._parse_postfix()
+        if self._match_op("**"):
+            op_tok = self._prev()
+            return ast.BinaryExpr(left=base, op="**", right=self._parse_prefix(), span=self._span_from_expr(base))
+        return base
 
     _CAST_TYPE_WORDS = C_DECL_TYPES | {"void", "u16", "u32", "u64", "i8", "i16", "f64"}
 
@@ -1146,9 +1236,8 @@ class Parser:
         name = tok.lexeme
         if const:
             name = "const " + name
-        while self._is_op("*") and self._star_is_pointer():
-            self._advance()
-            name += "*"
+        while (self._is_op("*") or self._is_op("**")) and self._star_is_pointer():
+            name += "*" * len(self._advance().lexeme)
         return name
 
     def _star_is_pointer(self) -> bool:
@@ -1158,7 +1247,7 @@ class Parser:
         if nxt.kind in {"NEWLINE", "EOF"}:
             return True
         if nxt.kind == "OP":
-            return nxt.lexeme in {")", "]", "}", ",", ":", "=", "==", "!=", "<", "<=", ">", ">=", "+", "*", "..", "->", "&&", "||"}
+            return nxt.lexeme in {")", "]", "}", ",", ":", "=", "==", "!=", "<", "<=", ">", ">=", "+", "*", "**", "..", "->", "&&", "||"}
         if nxt.kind == "KEYWORD":
             return nxt.lexeme in {"and", "or", "if", "else", "in", "as", "for"}
         return False
@@ -1229,8 +1318,8 @@ class Parser:
         """The inside of `[...]`: an expression or a slice `a..b`; either bound may be left out."""
         if self._is_op(".."):
             tok = self._advance()
-            stop = None if self._is_op("]") else self._parse_or()
-            return ast.RangeExpr(start=None, stop=stop, span=self._span(tok))
+            stop = None if self._is_op("]") or self._is("IDENT") and self._current().lexeme == "step" else self._parse_or()
+            return ast.RangeExpr(start=None, stop=stop, span=self._span(tok), step=self._parse_range_step())
         return self._parse_expression()
 
     def _parse_primary(self) -> object:
@@ -1281,6 +1370,8 @@ class Parser:
                 while True:
                     elements.append(self._parse_expression())
                     if self._match_op(","):
+                        if self._is_op("]"):
+                            break  # a trailing comma
                         continue
                     break
             close = self._expect_op("]")
@@ -1294,6 +1385,8 @@ class Parser:
                     value = self._parse_expression()
                     entries.append((key, value))
                     if self._match_op(","):
+                        if self._is_op("}"):
+                            break  # a trailing comma
                         continue
                     break
             close = self._expect_op("}")
@@ -1390,8 +1483,8 @@ class Parser:
         if is_word:
             stars = 0
             probe = offset + 1
-            while self._peek(probe).kind == "OP" and self._peek(probe).lexeme == "*":
-                stars += 1
+            while self._peek(probe).kind == "OP" and self._peek(probe).lexeme in {"*", "**"}:
+                stars += len(self._peek(probe).lexeme)
                 probe += 1
             if self._peek(probe).kind == "OP" and self._peek(probe).lexeme == ")":
                 const = "const " if offset else ""
@@ -1510,11 +1603,15 @@ class Parser:
         if not (tok.kind == "IDENT" or (tok.kind == "KEYWORD" and tok.lexeme in C_DECL_TYPES)):
             return False
         offset = 1
-        if self._peek(offset).kind == "KEYWORD" and self._peek(offset).lexeme == "const" and self._peek(offset + 1).lexeme == "*":
+        if tok.lexeme in self._GENERIC_TYPE_WORDS:
+            end = self._generic_args_end(1)
+            if end is not None:
+                offset = end
+        if self._peek(offset).kind == "KEYWORD" and self._peek(offset).lexeme == "const" and self._peek(offset + 1).lexeme in {"*", "**"}:
             offset += 1
         stars = 0
-        while self._peek(offset).kind == "OP" and self._peek(offset).lexeme == "*":
-            stars += 1
+        while self._peek(offset).kind == "OP" and self._peek(offset).lexeme in {"*", "**"}:
+            stars += len(self._peek(offset).lexeme)
             offset += 1
         while (
             self._peek(offset).kind == "OP"
@@ -1523,6 +1620,8 @@ class Parser:
             and self._peek(offset + 1).lexeme == "]"
         ):
             offset += 2
+        if self._peek(offset).kind == "OP" and self._peek(offset).lexeme == "?":
+            offset += 1
         if self._peek(offset).kind != "IDENT":
             return False
         if stars:

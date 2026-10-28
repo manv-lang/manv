@@ -1,0 +1,54 @@
+type Resource:
+    fn __init__(self, name: str, swallow: bool = false):
+        self.name = name
+        self.swallow = swallow
+
+    fn __enter__(self):
+        print("enter", self.name)
+        return self
+
+    fn __exit__(self, kind, error, trace):
+        if kind == none:
+            print("exit", self.name, "clean")
+        else:
+            print("exit", self.name, "after", error.message)
+        return self.swallow
+
+    fn greet(self):
+        return "hello from " + self.name
+
+fn early(r: Resource) -> int:
+    with r as inner:
+        return 42
+    return 0
+
+fn main() -> int:
+    with Resource("a") as r:
+        print(r.greet())
+    with Resource("b"):
+        print("no name bound")
+    with Resource("outer") as o:
+        with Resource("inner") as i:
+            print(o.name, i.name)
+    try:
+        with Resource("c") as r:
+            raise ValueError("boom")
+    except ValueError as e:
+        print("caught", e.message)
+    with Resource("d", true) as r:
+        raise ValueError("swallowed")
+    print("after swallow")
+    for n in 0..3:
+        with Resource("loop" + str(n)) as r:
+            if n == 1:
+                continue
+            if n == 2:
+                break
+            print("body", n)
+    print(early(Resource("e")))
+    try:
+        with 5 as x:
+            print("never")
+    except TypeError as e:
+        print("TypeError")
+    return 0

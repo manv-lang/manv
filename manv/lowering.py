@@ -187,6 +187,8 @@ def _stmt_to_hir(stmt: object) -> HIRStatement:
         return HIRStatement(kind="break", attrs={})
     if isinstance(stmt, ast.ContinueStmt):
         return HIRStatement(kind="continue", attrs={})
+    if isinstance(stmt, ast.PassStmt):
+        return HIRStatement(kind="pass", attrs={})
     if isinstance(stmt, ast.MatchStmt):
         return HIRStatement(
             kind="match",

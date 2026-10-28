@@ -1,0 +1,6 @@
+fn main() -> int:
+    int x
+    if 1 < 2:
+        x = 1
+    print(x)
+    return 0

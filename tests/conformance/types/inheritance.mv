@@ -1,28 +1,72 @@
-fn show(b: bool) -> str:
-    if b:
-        return "yes"
-    return "no"
-
 type Shape:
-    fn area(self) -> float:
-        return 0.0
+    SIDES = 0
+    NAME = "shape"
 
-    fn describe(self) -> str:
-        return "a shape"
+    fn __init__(self, label: str):
+        self.label = label
 
-type Rect(Shape):
-    fn __init__(self, w: float, h: float):
-        self.w = w
-        self.h = h
+    fn area(self):
+        raise NotImplementedError("area is not defined for " + self.label)
 
-    fn area(self) -> float:
-        return self.w * self.h
+    fn describe(self):
+        return f"{self.NAME} {self.label} with {self.SIDES} sides"
+
+type Square(Shape):
+    SIDES = 4
+    NAME = "square"
+
+    fn __init__(self, side):
+        super().__init__("sq" + str(side))
+        self.side = side
+
+    fn area(self):
+        return self.side * self.side
+
+type Cube(Square):
+    fn __init__(self, side):
+        super().__init__(side)
+        self.label = "cube"
+
+    fn area(self):
+        return 6 * super().area()
+
+# diamond: D -> B, C -> A
+type A:
+    fn who(self):
+        return "A"
+    fn only_a(self):
+        return "only_a"
+
+type B(A):
+    fn who(self):
+        return "B>" + super().who()
+
+type C(A):
+    fn who(self):
+        return "C>" + super().who()
+    fn only_c(self):
+        return "only_c"
+
+type D(B, C):
+    fn who(self):
+        return "D>" + super().who()
 
 fn main() -> int:
-    print(Rect(5.0, 3.0).area())
-    print(Rect(5.0, 3.0).describe())
-    print(Shape().area())
-    print(show(isinstance(Rect(1.0, 1.0), Rect)))
-    print(show(isinstance(Rect(1.0, 1.0), Shape)))
-    print(show(isinstance(Shape(), Rect)))
+    s = Square(3)
+    print(s.describe(), s.area(), Square.SIDES, Shape.SIDES, s.SIDES)
+    c = Cube(2)
+    print(c.describe(), c.area(), c.label)
+    try:
+        Shape("x").area()
+    except NotImplementedError as e:
+        print("abstract:", e.message)
+    print(isinstance(c, Cube), isinstance(c, Square), isinstance(c, Shape), isinstance(s, Cube), isinstance(3, Shape))
+    print(issubclass(Cube, Shape), issubclass(Shape, Cube), issubclass(Square, Square))
+    d = D()
+    print(d.who(), d.only_a(), d.only_c())
+    print(isinstance(d, A), isinstance(d, B), isinstance(d, C))
+    try:
+        print(d[1])
+    except Exception as e:
+        print("not indexable")
     return 0

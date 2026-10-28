@@ -1,0 +1,90 @@
+type Vec:
+    fn __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    fn __add__(self, other):
+        return Vec(self.x + other.x, self.y + other.y)
+
+    fn __sub__(self, other):
+        return Vec(self.x - other.x, self.y - other.y)
+
+    fn __mul__(self, k):
+        return Vec(self.x * k, self.y * k)
+
+    fn __rmul__(self, k):
+        return Vec(self.x * k, self.y * k)
+
+    fn __neg__(self):
+        return Vec(-self.x, -self.y)
+
+    fn __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+
+    fn __lt__(self, other):
+        return self.x * self.x + self.y * self.y < other.x * other.x + other.y * other.y
+
+    fn __hash__(self):
+        return self.x * 31 + self.y
+
+    fn __str__(self):
+        return f"({self.x}, {self.y})"
+
+    fn __repr__(self):
+        return f"Vec({self.x}, {self.y})"
+
+    fn __bool__(self):
+        return self.x != 0 or self.y != 0
+
+type Bits:
+    fn __init__(self, n):
+        self.n = n
+    fn __and__(self, o):
+        return Bits(self.n & o.n)
+    fn __or__(self, o):
+        return Bits(self.n | o.n)
+    fn __xor__(self, o):
+        return Bits(self.n ^ o.n)
+    fn __lshift__(self, k):
+        return Bits(self.n << k)
+    fn __rshift__(self, k):
+        return Bits(self.n >> k)
+    fn __invert__(self):
+        return Bits(~self.n)
+    fn __floordiv__(self, k):
+        return Bits(self.n // k)
+    fn __mod__(self, k):
+        return Bits(self.n % k)
+    fn __pow__(self, k):
+        return Bits(self.n ** k)
+    fn __str__(self):
+        return "Bits(" + str(self.n) + ")"
+
+fn main() -> int:
+    a = Vec(1, 2)
+    b = Vec(3, 4)
+    print(a + b, b - a, a * 3, 2 * b, -a)
+    print(a == Vec(1, 2), a != b, a < b, a > b, a <= b, a >= b, a <= Vec(1, 2))
+    print(sorted([b, a, Vec(0, 1)]))
+    print(min(b, a), max([a, b, Vec(5, 5)]))
+    m = {Vec(1, 2): "first"}
+    m[Vec(3, 4)] = "second"
+    print(m[Vec(1, 2)], m[a], len(m), Vec(3, 4) in m)
+    print(bool(Vec(0, 0)), bool(a), "yes" if a else "no", "yes" if Vec(0, 0) else "no")
+    print(repr(a), str(a), [a, b])
+    total = a
+    total += b
+    total -= Vec(1, 1)
+    print(total)
+    x = Bits(12)
+    y = Bits(10)
+    print(x & y, x | y, x ^ y, x << 2, x >> 1, ~x, x // 5, x % 5, x ** 2)
+    try:
+        print(a / b)
+    except TypeError as e:
+        print("TypeError")
+    try:
+        print(a + 1)
+    except AttributeError as e:
+        print("AttributeError")
+    return 0

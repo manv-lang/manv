@@ -1,0 +1,28 @@
+fn attempt(kind: int):
+    if kind == 0:
+        return 1 / 0
+    if kind == 1:
+        return [1][5]
+    if kind == 2:
+        return {"a": 1}["b"]
+    if kind == 3:
+        return 2 ** 64 * 2 ** 64
+    if kind == 4:
+        raise NotImplementedError("later")
+    return "ok"
+
+fn classify(kind: int) -> str:
+    try:
+        attempt(kind)
+    except ArithmeticError as e:
+        return "arithmetic:" + e.type
+    except LookupError as e:
+        return "lookup:" + e.type
+    except RuntimeError as e:
+        return "runtime:" + e.type
+    return "none"
+
+fn main() -> int:
+    for k in 0..6:
+        print(classify(k))
+    return 0

@@ -1,0 +1,6 @@
+arithmetic:ZeroDivisionError
+lookup:IndexError
+lookup:KeyError
+arithmetic:OverflowError
+runtime:NotImplementedError
+none

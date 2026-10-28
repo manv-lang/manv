@@ -1,0 +1,367 @@
+# ---
+# 12_expression_evaluator.mv
+#
+# A larger program written only with the language and its builtins (no standard
+# library): a calculator that tokenizes, parses and evaluates arithmetic.
+#
+#   - Statements:  x = 3 * (4 + 5)      expression      "show" to list variables
+#   - Operators:   + - * / %  ^ (power, right associative)  unary -
+#   - Functions:   sqrt abs min max floor sum
+#   - Constants:   pi, e
+#   - Errors:      reported with the position in the input, and the calculator keeps going
+#
+# It uses types with methods, custom exceptions, recursion, maps, arrays, tuples,
+# f-strings, default arguments and try/except/finally.
+# ---
+
+# ----------------------------------------------------------------------------
+# Errors
+# ----------------------------------------------------------------------------
+
+type CalcError(Exception):
+    fn __init__(self, message: str, position: int = -1):
+        self.message = message
+        self.position = position
+
+    fn describe(self) -> str:
+        if self.position < 0:
+            return self.message
+        return f"{self.message} (at column {self.position + 1})"
+
+# ----------------------------------------------------------------------------
+# Tokens
+# ----------------------------------------------------------------------------
+
+const DIGITS = "0123456789"
+const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+const OPERATORS = "+-*/%^(),="
+
+type Token:
+    fn __init__(self, kind: str, text: str, position: int):
+        self.kind = kind          # "number", "name", "op" or "end"
+        self.text = text
+        self.position = position
+
+    fn __repr__(self) -> str:
+        return f"{self.kind}({self.text})"
+
+fn tokenize(source: str) -> array:
+    tokens = []
+    i = 0
+    n = len(source)
+    while i < n:
+        c = source[i]
+        if c == " ":
+            i += 1
+        elif c in DIGITS or c == ".":
+            start = i
+            seen_dot = false
+            while i < n and (source[i] in DIGITS or source[i] == "."):
+                if source[i] == ".":
+                    if seen_dot:
+                        raise CalcError("number has two decimal points", i)
+                    seen_dot = true
+                i += 1
+            tokens.append(Token("number", source[start..i], start))
+        elif c in LETTERS:
+            start = i
+            while i < n and (source[i] in LETTERS or source[i] in DIGITS):
+                i += 1
+            tokens.append(Token("name", source[start..i], start))
+        elif c in OPERATORS:
+            tokens.append(Token("op", c, i))
+            i += 1
+        else:
+            raise CalcError(f"unexpected character '{c}'", i)
+    tokens.append(Token("end", "", n))
+    return tokens
+
+# ----------------------------------------------------------------------------
+# Syntax tree
+# ----------------------------------------------------------------------------
+
+type Node:
+    fn __init__(self, kind: str, value = none, children = none):
+        self.kind = kind          # number, variable, binary, negate, call, assign
+        self.value = value        # a number, a name or an operator
+        self.children = children if children != none else []
+
+    fn show(self) -> str:
+        if self.kind == "number" or self.kind == "variable":
+            return str(self.value)
+        if self.kind == "negate":
+            return "(-" + self.children[0].show() + ")"
+        if self.kind == "assign":
+            return f"{self.value} = " + self.children[0].show()
+        if self.kind == "binary":
+            return "(" + self.children[0].show() + " " + self.value + " " + self.children[1].show() + ")"
+        parts = []
+        for child in self.children:
+            parts.append(child.show())
+        return f"{self.value}({', '.join(parts)})"
+
+# ----------------------------------------------------------------------------
+# Parser (recursive descent)
+# ----------------------------------------------------------------------------
+
+type Parser:
+    fn __init__(self, tokens: array):
+        self.tokens = tokens
+        self.pos = 0
+
+    fn peek(self) -> Token:
+        return self.tokens[self.pos]
+
+    fn advance(self) -> Token:
+        token = self.tokens[self.pos]
+        self.pos += 1
+        return token
+
+    fn at_op(self, text: str) -> bool:
+        token = self.peek()
+        return token.kind == "op" and token.text == text
+
+    fn expect_op(self, text: str):
+        if not self.at_op(text):
+            found = self.peek()
+            what = "end of input" if found.kind == "end" else f"'{found.text}'"
+            raise CalcError(f"expected '{text}' but found {what}", found.position)
+        self.advance()
+
+    fn parse_statement(self) -> Node:
+        first = self.peek()
+        second = self.tokens[self.pos + 1]
+        if first.kind == "name" and second.kind == "op" and second.text == "=":
+            self.pos += 2
+            return Node("assign", first.text, [self.parse_expression()])
+        return self.parse_expression()
+
+    fn finish(self, tree: Node) -> Node:
+        if self.peek().kind != "end":
+            raise CalcError(f"unexpected '{self.peek().text}'", self.peek().position)
+        return tree
+
+    fn parse_expression(self) -> Node:
+        left = self.parse_term()
+        while self.at_op("+") or self.at_op("-"):
+            op = self.advance().text
+            left = Node("binary", op, [left, self.parse_term()])
+        return left
+
+    fn parse_term(self) -> Node:
+        left = self.parse_unary()
+        while self.at_op("*") or self.at_op("/") or self.at_op("%"):
+            op = self.advance().text
+            left = Node("binary", op, [left, self.parse_unary()])
+        return left
+
+    fn parse_unary(self) -> Node:
+        if self.at_op("-"):
+            self.advance()
+            return Node("negate", "-", [self.parse_unary()])   # -2 ^ 2 is -(2 ^ 2)
+        return self.parse_power()
+
+    fn parse_power(self) -> Node:
+        base = self.parse_primary()
+        if self.at_op("^"):
+            self.advance()
+            return Node("binary", "^", [base, self.parse_unary()])   # right associative, and 2 ^ -2 works
+        return base
+
+    fn parse_primary(self) -> Node:
+        token = self.advance()
+        if token.kind == "number":
+            return Node("number", float(token.text))
+        if token.kind == "name":
+            if self.at_op("("):
+                self.advance()
+                args = []
+                if not self.at_op(")"):
+                    args.append(self.parse_expression())
+                    while self.at_op(","):
+                        self.advance()
+                        args.append(self.parse_expression())
+                self.expect_op(")")
+                return Node("call", token.text, args)
+            return Node("variable", token.text)
+        if token.kind == "op" and token.text == "(":
+            inner = self.parse_expression()
+            self.expect_op(")")
+            return inner
+        what = "end of input" if token.kind == "end" else f"'{token.text}'"
+        raise CalcError(f"unexpected {what}", token.position)
+
+fn parse(source: str) -> Node:
+    parser = Parser(tokenize(source))
+    return parser.finish(parser.parse_statement())
+
+# ----------------------------------------------------------------------------
+# Evaluation
+# ----------------------------------------------------------------------------
+
+fn square_root(x: float) -> float:
+    if x < 0:
+        raise CalcError("sqrt of a negative number")
+    if x == 0:
+        return 0.0
+    guess = x if x > 1 else 1.0
+    for step in 0..60:
+        guess = (guess + x / guess) / 2
+    return guess
+
+fn floor_of(x: float) -> float:
+    whole = float(int(x))
+    return whole - 1 if whole > x else whole
+
+fn power(base: float, exponent: float) -> float:
+    if exponent != floor_of(exponent):
+        raise CalcError("only whole-number exponents are supported")
+    count = int(exponent)
+    if count < 0:
+        return 1 / power(base, -count)
+    result = 1.0
+    for step in 0..count:
+        result *= base
+    return result
+
+type Calculator:
+    fn __init__(self):
+        self.variables = {"pi": 3.141592653589793, "e": 2.718281828459045}
+        self.history = []
+
+    fn call_function(self, name: str, args: array) -> float:
+        if name == "sqrt":
+            self.need(name, args, 1)
+            return square_root(args[0])
+        if name == "abs":
+            self.need(name, args, 1)
+            return -args[0] if args[0] < 0 else args[0]
+        if name == "floor":
+            self.need(name, args, 1)
+            return floor_of(args[0])
+        if name == "min" or name == "max":
+            if len(args) == 0:
+                raise CalcError(f"{name} needs at least one argument")
+            best = args[0]
+            for value in args[1..]:
+                if (name == "min" and value < best) or (name == "max" and value > best):
+                    best = value
+            return best
+        if name == "sum":
+            return sum(args)
+        raise CalcError(f"unknown function '{name}'")
+
+    fn need(self, name: str, args: array, count: int):
+        if len(args) != count:
+            raise CalcError(f"{name} takes {count} argument(s) but got {len(args)}")
+
+    fn evaluate(self, node: Node) -> float:
+        if node.kind == "number":
+            return node.value
+        if node.kind == "variable":
+            if not self.variables.has(node.value):
+                raise CalcError(f"undefined variable '{node.value}'")
+            return self.variables[node.value]
+        if node.kind == "negate":
+            return -self.evaluate(node.children[0])
+        if node.kind == "assign":
+            value = self.evaluate(node.children[0])
+            self.variables[node.value] = value
+            return value
+        if node.kind == "call":
+            values = []
+            for child in node.children:
+                values.append(self.evaluate(child))
+            return self.call_function(node.value, values)
+        left = self.evaluate(node.children[0])
+        right = self.evaluate(node.children[1])
+        op = node.value
+        if op == "+":
+            return left + right
+        if op == "-":
+            return left - right
+        if op == "*":
+            return left * right
+        if op == "^":
+            return power(left, right)
+        try:
+            return left / right if op == "/" else left % right
+        except ZeroDivisionError as e:
+            raise CalcError("division by zero")
+
+    fn run(self, line: str) -> str:
+        """Evaluate one line and return the text to show."""
+        if line.strip() == "":
+            return ""
+        if line.strip() == "show":
+            names = sorted(self.variables.keys())
+            lines = []
+            for name in names:
+                lines.append(f"  {name} = {format_number(self.variables[name])}")
+            return "\n".join(lines)
+        tree = parse(line)
+        value = self.evaluate(tree)
+        self.history.append((line, value))
+        return format_number(value)
+
+fn format_number(x: float) -> str:
+    if x == floor_of(x) and abs_value(x) < 1e15:
+        return str(int(x))
+    return f"{x:.6f}".rstrip("0")
+
+fn abs_value(x: float) -> float:
+    return -x if x < 0 else x
+
+# ----------------------------------------------------------------------------
+# Driver
+# ----------------------------------------------------------------------------
+
+fn main() -> int:
+    calc = Calculator()
+    lines = [
+        "1 + 2 * 3",
+        "(1 + 2) * 3",
+        "2 ^ 3 ^ 2",
+        "-2 ^ 2",
+        "10 / 4",
+        "17 % 5",
+        "x = 3 * (4 + 5)",
+        "y = x / 2",
+        "x + y",
+        "sqrt(2)",
+        "sqrt(144) + abs(-7)",
+        "max(3, 9, 4) - min(3, 9, 4)",
+        "sum(1, 2, 3, 4)",
+        "floor(-2.5)",
+        "2 ^ -2",
+        "pi * 2",
+        "show",
+        "1 / 0",
+        "2 +",
+        "3 $ 4",
+        "(1 + 2",
+        "foo(1)",
+        "sqrt(1, 2)",
+        "z + 1",
+        "1.2.3",
+        "2 ^ 0.5",
+    ]
+    failures = 0
+    total = 0
+    for line in lines:
+        try:
+            result = calc.run(line)
+            if line == "show":
+                print("variables:")
+                print(result)
+            elif result != "":
+                print(f"{line} => {result}")
+        except CalcError as e:
+            failures += 1
+            print(f"{line} => error: {e.describe()}")
+        finally:
+            total += 1
+    tree = parse("a = -(b + 2) * f(x, 3)")
+    print(tree.show())
+    print(f"{len(calc.history)} calculations, {failures} errors, {total} lines read")
+    return 0

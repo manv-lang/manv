@@ -1,0 +1,6 @@
+fn f(xs: array[int]) -> int:
+    return 1
+
+fn main() -> int:
+    print(f(["a"]))
+    return 0

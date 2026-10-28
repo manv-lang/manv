@@ -1,0 +1,28 @@
+enter a
+hello from a
+exit a clean
+enter b
+no name bound
+exit b clean
+enter outer
+enter inner
+outer inner
+exit inner clean
+exit outer clean
+enter c
+exit c after boom
+caught boom
+enter d
+exit d after swallowed
+after swallow
+enter loop0
+body 0
+exit loop0 clean
+enter loop1
+exit loop1 clean
+enter loop2
+exit loop2 clean
+enter e
+exit e clean
+42
+TypeError

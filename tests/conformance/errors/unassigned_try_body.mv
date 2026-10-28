@@ -1,0 +1,8 @@
+fn main() -> int:
+    int x
+    try:
+        x = 1
+    except ValueError as e:
+        print("failed")
+    print(x)
+    return 0

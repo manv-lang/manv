@@ -1,0 +1,3 @@
+fn main() -> int:
+    array[str] xs = [1, 2]
+    return 0

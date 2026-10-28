@@ -1,0 +1,39 @@
+type Point:
+    fn __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+fn total(xs: array[int]) -> int:
+    return sum(xs)
+
+fn lookup(table: map[str, int], key: str) -> int?:
+    if table.has(key):
+        return table[key]
+    return none
+
+fn apply(f: fn(int) -> int, x: int) -> int:
+    return f(x)
+
+fn names(points: array[Point]) -> array[str]:
+    return []
+
+fn pairs() -> tuple:
+    return (1, "a")
+
+fn main() -> int:
+    array[int] nums = [1, 2, 3]
+    map[str, int] ages = {"ann": 30, "bob": 25}
+    array[float] ratios = [1, 2.5]
+    array[array[int]] grid = [[1, 2], [3]]
+    int? maybe = none
+    int? present = 4
+    f32[] samples = [1.5, 2.5]
+    print(total(nums), total([4, 5]), lookup(ages, "ann"), lookup(ages, "zed"))
+    print(maybe, present, ratios, grid, samples)
+    print(apply(fn(n): n * 2, 21))
+    add = fn(a: int, b: int) -> int: a + b
+    print(apply(fn(n): add(n, 1), 1))
+    print(pairs())
+    array[Point] pts = [Point(1, 2)]
+    print(len(names(pts)), len(pts))
+    return 0

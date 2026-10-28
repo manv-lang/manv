@@ -1,0 +1,6 @@
+fn main() -> int:
+    int x
+    for i in 0..3:
+        x = i
+    print(x)
+    return 0

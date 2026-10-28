@@ -47,6 +47,7 @@ from .intrinsics import (
     StdNamespace,
     format_field,
     format_memory_value,
+    format_value,
     invoke_intrinsic,
     resolve_call_alias_name,
     std_namespace_attr,
@@ -109,6 +110,42 @@ class ExitSignal(BaseException):
 
 MAX_CALL_DEPTH = 1000  # ManV calls; deeper raises a catchable RecursionError
 _NO_DECLARED = object()  # `_declared_value` found nothing special about this declaration
+
+
+class _InstanceHooks:
+    """What Python's `==`, `hash()` and `bool()` do on a ManV object: ask its type's methods."""
+
+    def __init__(self, interpreter: "Interpreter"):
+        self.interp = interpreter
+
+    def equals(self, a: InstanceObject, b: object) -> bool:
+        method = self.interp._lookup_method(a.type_obj, "__eq__") or self.interp._lookup_method(a.type_obj, "eq")
+        if method is None:
+            return False
+        return bool(self.interp._call_function(method, [a, b]))
+
+    def hash(self, a: InstanceObject) -> int:
+        interp = self.interp
+        method = interp._lookup_method(a.type_obj, "__hash__")
+        if method is not None:
+            value = interp._call_function(method, [a])
+            if isinstance(value, bool) or not isinstance(value, int):
+                interp._raise_runtime("TypeError", "__hash__ must return an int", None)
+            return value
+        if interp._lookup_method(a.type_obj, "__eq__") is not None:
+            interp._raise_runtime("TypeError", f"unhashable map key: {a.type_obj.name} defines __eq__ but not __hash__", None)
+        return id(a)
+
+    def truth(self, a: InstanceObject) -> bool:
+        interp = self.interp
+        for hook in ("__bool__", "bool_"):
+            method = interp._lookup_method(a.type_obj, hook)
+            if method is not None:
+                return bool(interp._call_function(method, [a]))
+        method = interp._lookup_method(a.type_obj, "__len__")
+        if method is not None:
+            return bool(interp._call_function(method, [a]))
+        return True
 
 
 class MemCell:
@@ -223,6 +260,7 @@ class Interpreter:
         self.memory = Memory()
         self._frame_cells: list[list[tuple[Environment, str, MemCell]]] = [[]]
         Environment.on_fault = lambda fault: self._raise_fault(fault, None)
+        InstanceObject.hooks = _InstanceHooks(self)
         self._install_memory_builtins()
         self.argv: list[str] = []
         self.stdin: TextIO | None = None  # defaults to sys.stdin when input() is called
@@ -248,14 +286,17 @@ class Interpreter:
         self._define_type("ImportError", "Exception")
         self._define_type("TypeError", "Exception")
         self._define_type("AttributeError", "Exception")
-        self._define_type("KeyError", "Exception")
-        self._define_type("IndexError", "Exception")
+        self._define_type("LookupError", "Exception")
+        self._define_type("KeyError", "LookupError")
+        self._define_type("IndexError", "LookupError")
         self._define_type("ValueError", "Exception")
-        self._define_type("OverflowError", "Exception")
+        self._define_type("ArithmeticError", "Exception")
+        self._define_type("OverflowError", "ArithmeticError")
         self._define_type("RuntimeError", "Exception")
+        self._define_type("NotImplementedError", "RuntimeError")
         self._define_type("OSError", "Exception")
         self._define_type("OutOfMemoryError", "RuntimeError")
-        self._define_type("ZeroDivisionError", "Exception")
+        self._define_type("ZeroDivisionError", "ArithmeticError")
         self._define_type("RecursionError", "RuntimeError")
         self._define_type("EOFError", "Exception")
         self._define_type("PointerError", "Exception")
@@ -494,8 +535,8 @@ class Interpreter:
 
         if isinstance(stmt, ast.AssignStmt):
             value = self._own(self.eval_expr(stmt.value, env))
-            if stmt.pointer_type is not None:
-                value = self._coerce_pointer(value, stmt.pointer_type)
+            if stmt.declared_type is not None:
+                value = self._coerce_declared(value, stmt.declared_type, stmt.span)
             if stmt.declares:
                 env.define(stmt.name, value)
                 return None
@@ -691,11 +732,7 @@ class Interpreter:
 
         if isinstance(stmt, ast.ForStmt):
             if isinstance(stmt.iterable, ast.RangeExpr):
-                raw_start = self.eval_expr(stmt.iterable.start, env)
-                raw_stop = self.eval_expr(stmt.iterable.stop, env)
-                if not isinstance(raw_start, int) or not isinstance(raw_stop, int):
-                    self._raise_runtime("TypeError", "range bounds must be integers", stmt.span)
-                items: list[object] = list(range(raw_start, raw_stop))
+                items: Any = self.eval_expr(stmt.iterable, env)  # a range: iterated lazily
                 broke = False
                 for item in items:
                     loop_env = Environment(parent=env)
@@ -721,8 +758,8 @@ class Interpreter:
                     iterable = list(iterable.keys())
                 if isinstance(iterable, tuple):
                     iterable = list(iterable)
-                if isinstance(iterable, list):
-                    items = list(iterable)
+                if isinstance(iterable, (list, range)):
+                    items = list(iterable) if isinstance(iterable, list) else iterable
                     broke = False
                     for item in items:
                         loop_env = Environment(parent=env)
@@ -754,11 +791,7 @@ class Interpreter:
                         self._raise_runtime("TypeError", f"'{iterator.type_obj.name}' has no __next__ method", stmt.span)
                     stop_iter_type = self.types.get("StopIteration")
                     broke = False
-                    guard = 0
                     while True:
-                        guard += 1
-                        if guard > 1_000_000:
-                            self._raise_runtime("RuntimeError", "iterator guard exceeded", stmt.span)
                         try:
                             item = self._call_function(next_method, [iterator])
                         except RaiseSignal as rs:
@@ -791,6 +824,9 @@ class Interpreter:
                 self._raise_runtime("RuntimeError", "'break' used outside loop", stmt.span)
             raise BreakSignal()
 
+        if isinstance(stmt, ast.PassStmt):
+            return None
+
         if isinstance(stmt, ast.ContinueStmt):
             if not in_loop:
                 self._raise_runtime("RuntimeError", "'continue' used outside loop", stmt.span)
@@ -799,10 +835,17 @@ class Interpreter:
         if isinstance(stmt, ast.WithStmt):
             ctx_value = self.eval_expr(stmt.context, env)
             enter_val = None
+            enter_method = exit_check = None
             if isinstance(ctx_value, InstanceObject):
                 enter_method = self._lookup_method(ctx_value.type_obj, "__enter__")
-                if enter_method is not None:
-                    enter_val = self._call_function(enter_method, [ctx_value])
+                exit_check = self._lookup_method(ctx_value.type_obj, "__exit__")
+            if enter_method is None or exit_check is None:
+                self._raise_runtime(
+                    "TypeError",
+                    f"a {self._runtime_type_name(ctx_value)} cannot be used in 'with': its type needs __enter__ and __exit__ methods",
+                    stmt.span,
+                )
+            enter_val = self._call_function(enter_method, [ctx_value])
             with_env = Environment(parent=env)
             if stmt.bind_name is not None:
                 with_env.define(stmt.bind_name, enter_val if enter_val is not None else ctx_value)
@@ -819,7 +862,7 @@ class Interpreter:
                         if exc_to_raise is not None:
                             err = exc_to_raise.error
                             exc_type = err.type_obj
-                            exc_val = err
+                            exc_val = err.payload if isinstance(err.payload, InstanceObject) else err
                             exc_tb = str(err.stacktrace) if err.stacktrace else None
                             suppress = self._call_function(exit_method, [ctx_value, exc_type, exc_val, exc_tb])
                             if suppress:
@@ -894,7 +937,10 @@ class Interpreter:
                     handled = True
                     clause_env = Environment(parent=env)
                     if clause.bind_name:
-                        clause_env.define(clause.bind_name, rs.error)
+                        # A raised instance of a user-defined exception type is bound as itself, so its own
+                        # fields and methods are reachable; anything else is bound as the exception record.
+                        payload = rs.error.payload
+                        clause_env.define(clause.bind_name, payload if isinstance(payload, InstanceObject) else rs.error)
                     self.active_exceptions.append(rs.error)
                     try:
                         for inner in clause.body:
@@ -974,6 +1020,10 @@ class Interpreter:
                         result, found = self._try_dunder(value, "neg", [])
                     if found:
                         return result
+                elif expr.op == "~":
+                    result, found = self._try_dunder(value, "__invert__", [])
+                    if found:
+                        return result
                 elif expr.op == "not":
                     result, found = self._try_dunder(value, "__bool__", [])
                     if not found:
@@ -1010,6 +1060,8 @@ class Interpreter:
                         result, found = self._try_dunder(right, "contains", [left])
                     if found:
                         return bool(result)
+                if isinstance(right, range):
+                    return type(left) is int and left in right
                 if isinstance(right, (list, tuple)):
                     return any(self._equals(item, left, expr.span) for item in right)
                 if isinstance(right, dict):
@@ -1020,17 +1072,8 @@ class Interpreter:
                         self._raise_runtime("TypeError", "'in <string>' needs a string on the left", expr.span)
                     return left in right
                 self._raise_runtime("TypeError", "'in' needs an array, map or string on the right", expr.span)
-            # All other binary operators: try dunder on left operand
-            DUNDER_MAP = {
-                "+": ("__add__", "add"), "-": ("__sub__", "sub"), "*": ("__mul__", "mul"),
-                "/": ("__truediv__", "truediv"), "%": ("__mod__", "mod"), "**": ("__pow__", "pow"),
-                "<": ("__lt__", "lt"), "<=": ("__le__", "le"), ">": ("__gt__", "gt"), ">=": ("__ge__", "ge"),
-            }
-            if isinstance(left, InstanceObject) and expr.op in DUNDER_MAP:
-                dunder, alias = DUNDER_MAP[expr.op]
-                result, found = self._try_dunder(left, dunder, [right])
-                if not found:
-                    result, found = self._try_dunder(left, alias, [right])
+            if isinstance(left, InstanceObject) or isinstance(right, InstanceObject):
+                result, found = self._binary_dunder(expr.op, left, right)
                 if found:
                     return result
             return self._binary_value(expr.op, left, right, expr.span)
@@ -1040,6 +1083,9 @@ class Interpreter:
 
         if isinstance(expr, ast.TupleExpr):
             return tuple(self.eval_expr(e, env) for e in expr.elements)
+
+        if isinstance(expr, ast.RangeExpr):
+            return self._eval_range(expr, env)
 
         if isinstance(expr, ast.AddrOfExpr):
             return self._eval_address_of(expr, env)
@@ -1092,7 +1138,7 @@ class Interpreter:
             if isinstance(target, (Pointer, ArrayRef)):
                 slot, slot_type = self._element_slot(target, index, expr.span)
                 return self._guard(lambda: self.memory.load(slot, slot_type), expr.span)
-            if isinstance(target, (list, tuple)):
+            if isinstance(target, (list, tuple, range)):
                 idx = self._normalize_list_index(target, index, expr.span)
                 return target[idx]
             if isinstance(target, str):
@@ -1196,6 +1242,10 @@ class Interpreter:
 
             if isinstance(expr.callee, ast.IdentifierExpr):
                 alias = self._resolve_unshadowed_call_alias(expr.callee, env)
+                if alias is not None and not kwargs:
+                    handled, value = self._builtin_on_instances(alias, args, expr.span)
+                    if handled:
+                        return value
                 if alias is not None:
                     if kwargs:
                         self._raise_runtime("TypeError", f"builtin '{expr.callee.name}' does not take keyword arguments", expr.span)
@@ -1279,9 +1329,8 @@ class Interpreter:
         if isinstance(callee, StructType):
             return self._construct_struct(callee, args, kwargs or {}, span)
         if isinstance(callee, TypeObject):
-            cast = self._try_primitive_cast(callee, args, span)
-            if cast is not None:
-                return cast
+            if callee.name in {"int", "float", "str", "bool"} and callee.name in self.types and callee is self.types[callee.name]:
+                return self._convert(callee.name, args, span)
             return self._construct_instance(callee, args, span)
         if isinstance(callee, InstanceObject):
             call_method = self._lookup_method(callee.type_obj, "__call__") or self._lookup_method(callee.type_obj, "call_")
@@ -1304,49 +1353,71 @@ class Interpreter:
                 self._raise_runtime("RuntimeError", str(exc), span)
         self._raise_runtime("TypeError", "call target is not callable", span)
 
-    def _try_primitive_cast(self, type_obj: TypeObject, args: list[Any], span: Any) -> Any | None:
-        """Handle int(), float(), str(), bool() type-cast calls on primitive types."""
-        if len(args) != 1:
-            return None
-        name = type_obj.name
-        val = args[0]
-        if name == "float":
-            if isinstance(val, float):
-                return val
-            if isinstance(val, int):
-                return float(val)
-            if isinstance(val, str):
-                try:
-                    return float(val)
-                except ValueError:
-                    self._raise_runtime("ValueError", f"cannot convert {val!r} to float", span)
-            return None
-        if name == "int":
-            if isinstance(val, int):
-                return val
-            if isinstance(val, float):
-                return int(val)
-            if isinstance(val, str):
-                try:
-                    return int(val)
-                except ValueError:
-                    self._raise_runtime("ValueError", f"cannot convert {val!r} to int", span)
-            return None
+    def _convert(self, name: str, args: list[Any], span: Any) -> Any:
+        """`int(x)`, `float(x)`, `str(x)`, `bool(x)`. The whole matrix is in syntax.md section 4.9."""
+        low, high = (0, 2) if name == "int" else (0, 1)
+        if not low <= len(args) <= high:
+            wanted = f"{low} to {high}" if low != high else str(low)
+            self._raise_runtime("TypeError", f"{name}() takes {wanted} argument(s), got {len(args)}", span)
+        if not args:
+            return {"int": 0, "float": 0.0, "str": "", "bool": False}[name]
+        value = args[0]
         if name == "str":
-            return self._to_text(val)
+            return self._to_text(value)
         if name == "bool":
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, InstanceObject):
-                result, found = self._try_dunder(val, "__bool__", [])
-                if not found:
-                    result, found = self._try_dunder(val, "bool_", [])
+            return self._truthy(value, span)
+        if isinstance(value, InstanceObject):
+            result, found = self._try_dunder(value, f"__{name}__", [])
+            if found:
+                return result
+        if name == "float":
+            return self._to_float(value, span)
+        return self._to_int(value, args[1] if len(args) > 1 else None, span)
+
+    def _truthy(self, value: Any, span: Any) -> bool:
+        if isinstance(value, InstanceObject):
+            for hook in ("__bool__", "bool_"):
+                result, found = self._try_dunder(value, hook, [])
                 if found:
                     return bool(result)
-                # Fall back: True if object exists (like Python)
-                return True
-            return bool(val)
-        return None
+            result, found = self._try_dunder(value, "__len__", [])
+            return bool(result) if found else True
+        return bool(value)
+
+    def _to_float(self, value: Any, span: Any) -> float:
+        if isinstance(value, (bool, int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                self._raise_runtime("ValueError", f"cannot convert {value!r} to float", span)
+        self._raise_runtime("TypeError", f"float() argument must be a number or string, not {self._runtime_type_name(value)}", span)
+
+    def _to_int(self, value: Any, base: Any, span: Any) -> int:
+        if base is not None:
+            if not isinstance(value, str):
+                self._raise_runtime("TypeError", "int() with a base needs a string", span)
+            if isinstance(base, bool) or not isinstance(base, int) or not 2 <= base <= 36:
+                self._raise_runtime("ValueError", "int() base must be between 2 and 36", span)
+        if isinstance(value, (bool, int)):
+            result = int(value)
+        elif isinstance(value, float):
+            if value != value:
+                self._raise_runtime("ValueError", "cannot convert nan to int", span)
+            if value in (float("inf"), float("-inf")):
+                self._raise_runtime("OverflowError", "cannot convert infinity to int", span)
+            result = int(value)  # truncates toward zero
+        elif isinstance(value, str):
+            try:
+                result = int(value.strip(), base if base is not None else 10)
+            except ValueError:
+                self._raise_runtime("ValueError", f"cannot convert {value!r} to int", span)
+        else:
+            self._raise_runtime("TypeError", f"int() argument must be a number or string, not {self._runtime_type_name(value)}", span)
+        if not -(1 << 63) <= result < (1 << 63):
+            self._raise_runtime("OverflowError", f"{result} does not fit in a 64-bit int", span)
+        return result
 
     def _construct_instance(self, type_obj: TypeObject, args: list[Any], span: Any, kwargs: dict[str, Any] | None = None) -> InstanceObject:
         instance: InstanceObject
@@ -1371,27 +1442,21 @@ class Interpreter:
         return instance
 
     def _lookup_method(self, type_obj: TypeObject, name: str) -> FunctionValue | None:
-        cur: TypeObject | None = type_obj
-        while cur is not None:
+        for cur in self._mro_chain(type_obj):
             if name in cur.methods:
                 return cur.methods[name]
-            cur = cur.base
         return None
 
     def _lookup_getter(self, type_obj: TypeObject, name: str) -> FunctionValue | None:
-        cur: TypeObject | None = type_obj
-        while cur is not None:
+        for cur in self._mro_chain(type_obj):
             if name in cur.getters:
                 return cur.getters[name]
-            cur = cur.base
         return None
 
     def _lookup_setter(self, type_obj: TypeObject, name: str) -> FunctionValue | None:
-        cur: TypeObject | None = type_obj
-        while cur is not None:
+        for cur in self._mro_chain(type_obj):
             if name in cur.setters:
                 return cur.setters[name]
-            cur = cur.base
         return None
 
     def _lookup_attr(self, base: Any, attr: str, span: Any) -> Any:
@@ -1448,6 +1513,8 @@ class Interpreter:
                     return self.heap.allocate("BoundMethod", BoundMethodObject(receiver=base, function=method))
                 except OutOfMemoryError as exc:
                     self._raise_runtime("OutOfMemoryError", str(exc), span)
+            if attr in {"message", "type"} and self._is_type_or_subtype(base.type_obj, self.types["BaseException"]):
+                return "" if attr == "message" else base.type_obj.name
             self._raise_runtime("AttributeError", f"'{base.type_obj.name}' has no attribute '{attr}'", span)
         if isinstance(base, TypeObject):
             if hasattr(base, attr) and not attr.startswith("_"):
@@ -1481,11 +1548,9 @@ class Interpreter:
         self._raise_runtime("AttributeError", f"attribute access not supported for '{attr}'", span)
 
     def _lookup_class_attr(self, type_obj: TypeObject, attr: str) -> Any | None:
-        cur: TypeObject | None = type_obj
-        while cur is not None:
+        for cur in self._mro_chain(type_obj):
             if attr in cur.attrs:
                 return cur.attrs[attr]
-            cur = cur.base
         return None
 
     def _store_attr(self, target: Any, attr: str, value: Any, span: Any) -> None:
@@ -1509,17 +1574,33 @@ class Interpreter:
             return
         self._raise_runtime("TypeError", "attribute assignment target must be an object instance", span)
 
+    def _eval_range(self, expr: "ast.RangeExpr", env: Environment) -> range:
+        """`a..b` and `a..b step n` as a value: an immutable sequence of ints, not built until used."""
+        if expr.start is None or expr.stop is None:
+            self._raise_runtime("TypeError", "a range value needs both bounds (open ends are only for slices)", expr.span)
+        bounds = [self.eval_expr(expr.start, env), self.eval_expr(expr.stop, env)]
+        bounds.append(1 if expr.step is None else self.eval_expr(expr.step, env))
+        for bound in bounds:
+            if isinstance(bound, bool) or not isinstance(bound, int):
+                self._raise_runtime("TypeError", "range bounds and step must be integers", expr.span)
+        if bounds[2] == 0:
+            self._raise_runtime("ValueError", "range step cannot be zero", expr.span)
+        return range(*bounds)
+
     def _slice(self, target: Any, rng: "ast.RangeExpr", env: Environment, span: Any) -> Any:
         """`xs[a..b]` / `s[a..b]`: a new array or string with the items from a up to (not including) b.
         Negative bounds count from the end, and bounds outside the sequence are clamped."""
-        if not isinstance(target, (list, tuple, str)):
-            self._raise_runtime("TypeError", "only arrays, tuples and strings can be sliced", span)
+        if not isinstance(target, (list, tuple, str, range)):
+            self._raise_runtime("TypeError", "only arrays, tuples, strings and ranges can be sliced", span)
         start = None if rng.start is None else self.eval_expr(rng.start, env)
         stop = None if rng.stop is None else self.eval_expr(rng.stop, env)
-        for bound in (start, stop):
+        step = None if rng.step is None else self.eval_expr(rng.step, env)
+        for bound in (start, stop, step):
             if bound is not None and (not isinstance(bound, int) or isinstance(bound, bool)):
-                self._raise_runtime("TypeError", "slice bounds must be integers", span)
-        return target[start:stop]
+                self._raise_runtime("TypeError", "slice bounds and step must be integers", span)
+        if step == 0:
+            self._raise_runtime("ValueError", "slice step cannot be zero", span)
+        return target[start:stop:step]
 
     def _normalize_list_index(self, target: list[Any], index: Any, span: Any) -> int:
         if not isinstance(index, int):
@@ -1587,7 +1668,7 @@ class Interpreter:
 
         env = Environment(parent=fn.globals_env or self.global_env)
         for param, value in zip(fn.decl.params, args, strict=True):
-            env.define(param.name, self._bind_value(value, param.type_name))
+            env.define(param.name, self._bind_value(value, param.type_name, fn.decl.span))
 
         if self._call_depth >= MAX_CALL_DEPTH:
             self._raise_runtime("RecursionError", f"maximum recursion depth exceeded ({MAX_CALL_DEPTH} nested calls)", fn.decl.span)
@@ -1598,7 +1679,7 @@ class Interpreter:
             for stmt in fn.decl.body:
                 self.execute_stmt(stmt, env, in_loop=False)
         except ReturnSignal as signal:
-            return self._bind_value(signal.value, fn.decl.return_type)
+            return self._bind_value(signal.value, fn.decl.return_type, fn.decl.span)
         finally:
             self._call_depth -= 1
             self.call_stack.pop()
@@ -1760,12 +1841,26 @@ class Interpreter:
         return self._is_type_or_subtype(error.type_obj, target)
 
     def _is_type_or_subtype(self, child: TypeObject, parent: TypeObject) -> bool:
-        cur: TypeObject | None = child
-        while cur is not None:
-            if cur.name == parent.name:
-                return True
+        return any(cur.name == parent.name for cur in self._mro_chain(child))
+
+    def _mro_chain(self, type_obj: TypeObject) -> list[TypeObject]:
+        """The type and its ancestors in method resolution order (C3 for several bases)."""
+        chain: list[TypeObject] = []
+        seen: set[str] = set()
+        for name in type_obj.mro or []:
+            found = type_obj if name == type_obj.name else self.types.get(name)
+            if found is not None and found.name not in seen:
+                chain.append(found)
+                seen.add(found.name)
+        cur: TypeObject | None = type_obj.base  # a type without a computed MRO falls back to its single-inheritance chain
+        if not chain:
+            chain.append(type_obj)
+        while cur is not None and len(chain) < 64:
+            if cur.name not in seen:
+                chain.append(cur)
+                seen.add(cur.name)
             cur = cur.base
-        return False
+        return chain
 
     def _runtime_type(self, value: Any) -> Any:
         if isinstance(value, InstanceObject):
@@ -2046,6 +2141,8 @@ class Interpreter:
                 if found:
                     return str(result)
             return self._stringify(value)
+        if isinstance(value, range):
+            return format_value(value)
         if isinstance(value, (Pointer, StructRef, ArrayRef)):
             return format_memory_value(value, lambda v: self._to_text(v, nested=True))
         if isinstance(value, list):
@@ -2163,12 +2260,35 @@ class Interpreter:
                 return value.retyped(target)
         return value
 
-    def _bind_value(self, value: Any, type_name: str | None) -> Any:
-        return self._own(self._coerce_pointer(value, type_name))
+    def _bind_value(self, value: Any, type_name: str | None, span: Any = None) -> Any:
+        return self._own(self._coerce_declared(value, type_name, span))
+
+    def _coerce_declared(self, value: Any, type_name: str | None, span: Any) -> Any:
+        """What storing `value` in a variable declared `type_name` does: pointers convert (`void*` to
+        `T*`), a float variable holds a float, and a fixed-width integer traps when the value does not fit."""
+        if not type_name:
+            return value
+        if is_pointer_type(type_name) or type_name == "ptr":
+            return self._coerce_pointer(value, type_name)
+        if type_name in INT_TYPES:
+            if type(value) is int:
+                bits = SCALARS[type_name][0] * 8
+                signed = SCALARS[type_name][1].islower()
+                low, high = (-(1 << (bits - 1)), (1 << (bits - 1)) - 1) if signed else (0, (1 << bits) - 1)
+                if not low <= value <= high:
+                    self._raise_runtime("OverflowError", f"{value} does not fit in {type_name} (range {low} to {high})", span)
+            return value
+        if type_name in FLOAT_TYPES and type(value) is int:
+            return float(value)
+        return value
 
     def _declared_value(self, stmt: "ast.LetStmt", env: Environment) -> Any:
         """The initial value for `T name [= v]` when T is a pointer or struct type; else a marker."""
         type_name = stmt.type_name or ""
+        if type_name in INT_TYPES or type_name in FLOAT_TYPES:
+            if stmt.value is None:
+                return _NO_DECLARED
+            return self._coerce_declared(self.eval_expr(stmt.value, env), type_name, stmt.span)
         if is_pointer_type(type_name):
             if stmt.value is None:
                 return Pointer(0, pointee_of(canonical_pointer_type(type_name)))
@@ -2285,16 +2405,81 @@ class Interpreter:
     def _augmented(self, op: str, current: Any, rhs: Any, span: Any) -> Any:
         if isinstance(current, (Pointer, ArrayRef)) or isinstance(rhs, (Pointer, ArrayRef)):
             return self._pointer_binary(op, current, rhs, span)
+        if isinstance(current, InstanceObject) or isinstance(rhs, InstanceObject):
+            result, found = self._binary_dunder(op, current, rhs)
+            if found:
+                return result
         return self._binary_value(op, current, rhs, span)
+
+    _ARITHMETIC_DUNDERS = {
+        "+": "add", "-": "sub", "*": "mul", "/": "truediv", "%": "mod", "**": "pow", "//": "floordiv",
+        "&": "and", "|": "or", "^": "xor", "<<": "lshift", ">>": "rshift",
+    }
+    _COMPARISON_DUNDERS = {"<": ("lt", ">"), "<=": ("le", ">="), ">": ("gt", "<"), ">=": ("ge", "<=")}
+
+    def _binary_dunder(self, op: str, left: Any, right: Any) -> tuple[Any, bool]:
+        """Operators on user types. `a + b` runs `a.__add__(b)`, and if `a` has no such method, `b.__radd__(a)`.
+        `a > b` runs `a.__gt__(b)`, and if `a` has none, the mirrored `b.__lt__(a)`."""
+        if op in self._ARITHMETIC_DUNDERS:
+            name = self._ARITHMETIC_DUNDERS[op]
+            if isinstance(left, InstanceObject):
+                for hook in (f"__{name}__", name):
+                    result, found = self._try_dunder(left, hook, [right])
+                    if found:
+                        return result, True
+            if isinstance(right, InstanceObject):
+                result, found = self._try_dunder(right, f"__r{name}__", [left])
+                if found:
+                    return result, True
+            return None, False
+        if op in self._COMPARISON_DUNDERS:
+            name, mirrored = self._COMPARISON_DUNDERS[op]
+            if isinstance(left, InstanceObject):
+                for hook in (f"__{name}__", name):
+                    result, found = self._try_dunder(left, hook, [right])
+                    if found:
+                        return result, True
+            if isinstance(right, InstanceObject):
+                mirror_name = self._COMPARISON_DUNDERS[mirrored][0]
+                for hook in (f"__{mirror_name}__", mirror_name):
+                    result, found = self._try_dunder(right, hook, [left])
+                    if found:
+                        return result, True
+            if op in {"<=", ">="}:
+                # a type that only defines __lt__ still orders completely: a <= b is not (b < a)
+                first, second = (right, left) if op == "<=" else (left, right)
+                result, found = self._binary_dunder("<", first, second)
+                if found:
+                    return not result, True
+        return None, False
+
+    def _order(self, a: Any, b: Any, span: Any) -> bool:
+        """`a < b` for sorting, using a user type's `__lt__` (or the mirrored `__gt__`)."""
+        if isinstance(a, InstanceObject) or isinstance(b, InstanceObject):
+            result, found = self._binary_dunder("<", a, b)
+            if not found:
+                self._raise_runtime("TypeError", f"cannot order {self._runtime_type_name(a)} and {self._runtime_type_name(b)}: define __lt__", span)
+            return bool(result)
+        try:
+            return bool(a < b)
+        except TypeError:
+            self._raise_runtime("TypeError", f"cannot order {self._runtime_type_name(a)} and {self._runtime_type_name(b)}", span)
 
     def _binary_value(self, op: str, left: Any, right: Any, span: Any) -> Any:
         """`left op right` on plain values, reporting failures as ManV exceptions."""
         try:
-            return eval_binary(op, left, right)
+            result = eval_binary(op, left, right)
+            if type(result) is int and not -(1 << 63) <= result < (1 << 63):
+                self._raise_runtime("OverflowError", f"integer overflow: the result of '{op}' does not fit in 64 bits", span)
+            return result
         except ZeroDivisionError:
-            self._raise_runtime("ZeroDivisionError", "modulo by zero" if op == "%" else "division by zero", span)
+            self._raise_runtime("ZeroDivisionError", "modulo by zero" if op in {"%"} else "division by zero", span)
         except RaiseSignal:
             raise
+        except OverflowError as exc:
+            self._raise_runtime("OverflowError", f"integer overflow: {exc}", span)
+        except ValueError as exc:
+            self._raise_runtime("ValueError", str(exc), span)
         except Exception:
             self._raise_runtime(
                 "TypeError",
@@ -2494,6 +2679,67 @@ class Interpreter:
         }.items():
             fn.__name__ = name
             self.global_env.define(name, fn)
+
+    _BUILTIN_DUNDERS = {"core_len": "__len__", "core_hash": "__hash__", "core_repr": "__repr__", "core_iter": "__iter__", "core_next": "__next__"}
+
+    def _builtin_on_instances(self, alias: str, args: list[Any], span: Any) -> tuple[bool, Any]:
+        """`len(obj)`, `hash(obj)`, `repr(obj)`, `iter(obj)`, `next(obj)` call the type's dunder method;
+        the sequence builtins (`sorted`, `sum`, `min`, `max`, `enumerate`, `zip`, `any`, `all`) read an
+        iterable object into an array first and order user objects with `__lt__`.
+        Returns (handled, value); anything else is left to the intrinsic."""
+        if alias in self._BUILTIN_DUNDERS and len(args) == 1 and isinstance(args[0], InstanceObject):
+            result, found = self._try_dunder(args[0], self._BUILTIN_DUNDERS[alias], [])
+            if not found:
+                return False, None
+            if alias == "core_len" and (isinstance(result, bool) or not isinstance(result, int) or result < 0):
+                self._raise_runtime("TypeError", "__len__ must return a non-negative int", span)
+            return True, result
+        if alias not in self._SEQUENCE_BUILTINS:
+            return False, None
+
+        def iterable(a: Any) -> bool:
+            return isinstance(a, InstanceObject) and self._lookup_method(a.type_obj, "__iter__") is not None
+
+        materialized = any(iterable(a) for a in args)
+        if materialized:
+            args = [self._materialize(a, span) if iterable(a) else a for a in args]
+        if alias in {"core_sorted", "core_min", "core_max"}:
+            import functools
+
+            items = args[0] if len(args) == 1 and isinstance(args[0], (list, tuple, range)) else args
+            if any(isinstance(x, InstanceObject) for x in items):
+                def compare(a: Any, b: Any) -> int:
+                    return -1 if self._order(a, b, span) else (1 if self._order(b, a, span) else 0)
+
+                ordered = sorted(items, key=functools.cmp_to_key(compare))
+                if alias == "core_sorted":
+                    return True, ordered
+                if not ordered:
+                    self._raise_runtime("ValueError", f"{alias[5:]}() of an empty sequence", span)
+                return True, ordered[0] if alias == "core_min" else ordered[-1]
+        if materialized:
+            return True, self._invoke_intrinsic(alias, args, span)
+        return False, None
+
+    _SEQUENCE_BUILTINS = {"core_sorted", "core_sum", "core_min", "core_max", "core_enumerate", "core_zip", "core_any", "core_all"}
+
+    def _materialize(self, obj: InstanceObject, span: Any) -> list[Any]:
+        """Read a user object's `__iter__` / `__next__` sequence into an array."""
+        iterator = self._call_function(self._lookup_method(obj.type_obj, "__iter__"), [obj])
+        if not isinstance(iterator, InstanceObject):
+            self._raise_runtime("TypeError", "__iter__ must return an object", span)
+        next_method = self._lookup_method(iterator.type_obj, "__next__")
+        if next_method is None:
+            self._raise_runtime("TypeError", f"'{iterator.type_obj.name}' has no __next__ method", span)
+        stop = self.types["StopIteration"]
+        items: list[Any] = []
+        while True:
+            try:
+                items.append(self._call_function(next_method, [iterator]))
+            except RaiseSignal as rs:
+                if self._is_type_or_subtype(rs.error.type_obj, stop):
+                    return items
+                raise
 
     def _install_host_builtins(self) -> None:
         """`input`, `exit`, `args` and `env`: the program's connection to its surroundings."""

@@ -1,0 +1,15 @@
+fn stub():
+    pass
+
+fn main() -> int:
+    stub()
+    for i in 0..3:
+        if i == 1:
+            pass
+        else:
+            print(i)
+    try:
+        pass
+    finally:
+        print("done")
+    return 0

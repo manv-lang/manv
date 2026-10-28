@@ -5,6 +5,16 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- Operators `//`, `**`, `& | ^ ~ << >>`. Integers are 64-bit and trap (`OverflowError`); `i8 i16 i32 u8 u16 u32 u64` declarations trap when a value does not fit; a `float` variable holds a float.
+- Conversions are specified and tested: `int(text, base)`, `int()`/`float()`/`bool()`/`str()` with no argument, `__int__`/`__float__`, consistent `ValueError`/`TypeError`/`OverflowError`.
+- Ranges as values (`r = 0..5`, `a..b step n`, `range(a, b, step)`, stepped slices), lazy and iterable.
+- The `with` statement and the context-manager protocol.
+- Operator overloading and container protocols for user types: arithmetic and bitwise methods with reflected forms, comparisons derived from `__lt__`, `__hash__`/`__eq__` for map keys, `__len__`, `__getitem__`/`__setitem__`, `__iter__`/`__next__`, `__bool__`; `sorted`, `min`, `max`, `sum`, `enumerate` and `zip` accept iterable user objects; `min`/`max` take several arguments.
+- `super()` is a known builtin; methods and class constants are found through the full C3 method resolution order (diamonds work); exception types `LookupError`, `ArithmeticError`, `NotImplementedError`.
+- Structured type annotations (`array[int]`, `map[str, int]`, `int?`, `fn(int) -> int`) with checks `E2078`, `E2002` on literal elements, `E2080` on call arguments.
+- Definite-assignment check `E2079` and the unreachable-code warning `W2001`; `analyze_program` returns warnings and `manv run` prints them.
+- `pass` statement. A trailing comma in array and map literals. Optional character set for `strip`, `lstrip` and `rstrip`.
+- `examples/12_expression_evaluator.mv`: a 360-line calculator written with only the language and its builtins.
 - `input([prompt])`, `exit([code])`, `args()` and `env(name[, default])`; `manv run prog.mv ARGS...`. `ZeroDivisionError`, `RecursionError` and `EOFError`. The interpreter streams output as it runs.
 - `zip(a, b, ...)` takes any number of arrays.
 - **C-style pointers**: `T*` types, `&x`, `*p`, `p[i]`, `p->f`, scaled pointer arithmetic, `null`, `as` casts, `sizeof`, `struct` (C layout, value semantics), C arrays (`int buf[16]`), and the checked memory builtins `malloc calloc realloc free memcpy memmove memset memcmp cstr str_from`. Memory errors raise `PointerError` / `NullPointerError`. Errors `E2070`-`E2077`, `E1021`, `E3011`. See `docs/pointers.md`.
@@ -48,6 +58,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - Compiled Python files and test build artifacts that were committed despite `.gitignore`.
 
 ### Fixed
+- `except MyError as e` bound a wrapper record instead of the raised object, so `e.code` and `e.describe()` of a user-defined exception type failed; it now binds the object itself.
 - `1 / 0` and `1 % 0` raised a misleading `TypeError: unsupported binary operator`; they raise `ZeroDivisionError`. Operand type errors name both types. Deep recursion (about 200 calls) crashed with a Python traceback; the limit is now 1000 calls with a catchable `RecursionError`. An internal interpreter failure prints `E3999` instead of a traceback.
 - `zip` returned the wrong shape for its documented one-array-of-arrays form; it now takes the arrays as separate arguments.
 - Runtime errors (uncaught exceptions) were always reported at `1:1`; they now point at the line and column where the error happened (`tests/test_runtime_positions.py`).

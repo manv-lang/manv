@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import ClassVar
 from typing import Any, Callable
 
 
@@ -45,12 +46,30 @@ class TypeObject:
         return self.methods
 
 
-@dataclass
+@dataclass(eq=False)
 class InstanceObject:
+    """An object of a user-defined type.
+
+    Python's `==`, `hash()` and truthiness on it go through `hooks`, which the interpreter sets so
+    that a type's `__eq__`, `__hash__`, `__bool__` and `__len__` decide (a map key, `in`, `if obj:`).
+    Without hooks an object is equal only to itself."""
+
     type_obj: TypeObject
     attrs: dict[str, Any] = field(default_factory=dict)
     object_id: int | None = None
     _heap_id: int | None = None
+    hooks: ClassVar[Any] = None
+
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        return InstanceObject.hooks.equals(self, other) if InstanceObject.hooks is not None else False
+
+    def __hash__(self) -> int:
+        return InstanceObject.hooks.hash(self) if InstanceObject.hooks is not None else id(self)
+
+    def __bool__(self) -> bool:
+        return InstanceObject.hooks.truth(self) if InstanceObject.hooks is not None else True
 
 
 @dataclass

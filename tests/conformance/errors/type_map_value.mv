@@ -1,0 +1,3 @@
+fn main() -> int:
+    map[str, int] m = {"a": "b"}
+    return 0

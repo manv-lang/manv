@@ -95,7 +95,7 @@ Reserved words (they cannot be used as identifiers):
 
 ```
 fn const type class impl macro module include from extern as
-if else while for in break continue return
+if elif else while for in break continue pass return
 try except finally raise with match
 and or not true false True False none
 int i32 i64 u8 usize float f32 bool str array map ptr void null sizeof struct
@@ -200,19 +200,26 @@ Typing is gradual. Annotations are optional on parameters, returns and inferred 
 | 5 | `not` | right |
 | 6 | `==`, `!=` | left |
 | 7 | `<`, `<=`, `>`, `>=`, `in`, `not in` | left |
+| 7a | `\|` (bitwise or), then `^`, then `&` | left |
+| 7b | `<<`, `>>` | left |
 | 8 | `+`, `-` | left |
-| 9 | `*`, `/`, `%` | left |
-| 10 | unary `-`, `!`, `&` (address of), `*` (dereference), then casts `x as T` | right |
+| 9 | `*`, `/`, `//`, `%` | left |
+| 10 | unary `-`, `~`, `!`, `&` (address of), `*` (dereference), then casts `x as T` | right |
+| 10a | `**` (power): right associative, binds tighter than a unary operator on its left (`-2 ** 2` is `-4`) and accepts one on its right (`2 ** -1`) | right |
 | 11 | call `f(x)`, index `a[i]`, member `a.b` | left |
 
-Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a chained comparison.
+Comparisons parse left-associatively, so `1 < 2 < 3` is `(1 < 2) < 3`, not a chained comparison. Bitwise operators bind tighter than comparisons (as in Python, unlike C), so `x & 1 == 0` means `(x & 1) == 0`.
 
-### 4.2 Arithmetic semantics
+### 4.2 Arithmetic and numbers ✅
 
-- ✅ `/` is **always true division**: `24 / 4` is `6.0`, and `7 / 2` is `3.5`, even for two `int` operands. Use `int(a / b)` to truncate. An integer-division operator (`//`) is an open decision 🧭.
-- ✅ `%` takes the sign of the divisor: `-7 % 3` is `2`.
-- ✅ `+` concatenates two strings. `"a" + 1` is a `TypeError`, so convert with `str(1)`.
-- ✅ Strings compare lexicographically with `<`, `==` and so on.
+- `/` is **always true division**: `24 / 4` is `6.0`, and `7 / 2` is `3.5`, even for two `int` operands. `//` is **floor division** (`7 // 2` is `3`, `-7 // 2` is `-4`, `7.5 // 2` is `3.0`), `%` takes the sign of the divisor (`-7 % 3` is `2`), and `**` is power (`2 ** 10` is `1024`, `2 ** -1` is `0.5`). `x / 0`, `x // 0` and `x % 0` raise `ZeroDivisionError` for ints and floats alike.
+- **Bitwise operators** `& | ^ ~ << >>` work on `int` only (a float or a bool is `E2025`/`TypeError`). `>>` keeps the sign; shifting by more than 64 is an `OverflowError`, by a negative count a `ValueError`.
+- **Integers are 64-bit and trap**: an arithmetic result outside `-9223372036854775808 .. 9223372036854775807` raises `OverflowError` instead of wrapping or growing (`9223372036854775807 + 1`, `2 ** 63`, `1 << 64`). `int("9223372036854775808")` is also an `OverflowError`.
+- **Fixed-width types trap when stored**: a variable, parameter or result declared `i8 i16 i32 u8 u16 u32 u64` raises `OverflowError` if the value does not fit (`i32 a = 2147483647; a = a + 1`, `u8 b = -1`). The intermediate arithmetic is 64-bit; the check happens at the store. `int` and `i64` are the 64-bit range, `usize` and `u64` are `0 .. 2**64-1`.
+- A variable declared `float` or `f32` holds a float: `float f = 3` is `3.0`.
+- Floats are IEEE doubles and print with the shortest text that reads back the same (`0.1 + 0.2` is `0.30000000000000004`). There are no `inf`/`nan` literals: `float("inf")`, `-float("inf")` and `float("nan")` make them and they print as `inf`, `-inf` and `nan`. Math functions (`sqrt`, `floor`, ...) wait for the standard library.
+- `+` concatenates two strings. `"a" + 1` is a `TypeError`, so convert with `str(1)`.
+- Strings compare lexicographically with `<`, `==` and so on.
 - ✅ `and` / `or` short-circuit: the right operand is evaluated only when it can change the result. The result is always a `bool`. The HLIR (compiled-mode) interpreter does the same.
 
 ### 4.3 Calls, members and indexing ✅
@@ -227,7 +234,7 @@ m["key"]         # map lookup
 shapes.area(r)   # member of an included module
 ```
 
-Argument lists may span lines, and a trailing comma is allowed. Keyword arguments (`f(x, scale=2)`) are described in §6.1.
+Argument lists may span lines. A trailing comma is allowed in argument lists, array and map literals, and tuples. Keyword arguments (`f(x, scale=2)`) are described in §6.1.
 
 ### 4.4 Function literals ✅
 
@@ -263,8 +270,9 @@ for i in 0..5:                # ✅ range: 0,1,2,3,4 (end is exclusive)
     print(i)
 ```
 
-- `a .. b` is a half-open range. It is accepted in `for ... in` ✅ and as an index, where it slices (§4.6).
-- Open-ended slices work: `a[1..]`, `a[..2]`, `a[..]`. Missing 🧭: stepped ranges `0..10..2`. Note that `..` binds tighter than `if/else`, so write `a[(x if c else y)..]`.
+- `a .. b` is a half-open range, and **a range is a value**: `r = 0..5`, `len(r)` is 5, `r[1]` is 1, `3 in r`, `r == (0..5)`, and `for i in r` all work. A range is immutable and not built in memory, so `0..1000000000` costs nothing until it is walked. It prints as `0..5`.
+- `a..b step n` steps by `n` (`0..10 step 4` is 0, 4, 8; `10..0 step -3` counts down; a step of 0 is a `ValueError`). `range(n)`, `range(a, b)` and `range(a, b, step)` make the same values. `sum`, `sorted`, `enumerate`, `zip` and slicing accept a range; `sorted(r)` gives an array. Because `..` is looser than comparison, write `r == (0..5)`, and `1.5..4` is a type error.
+- A range is also used as an index to slice, where either end may be left out (`a[1..]`, `a[..2]`, `a[..]`) and a step is allowed (`a[0..10 step 2]`, `s[.. step 2]`). Note that `..` binds tighter than `if/else`, so write `a[(x if c else y)..]`.
 - `for` also iterates the characters of a string and the keys of a map (in insertion order).
 - Arrays and maps are reference values: assigning or passing one shares it, and `a.copy()` makes an independent shallow copy. `a[i] = v` mutates in place. ⚠️ `array_append(a, x)` also mutates `a` in place (and returns it), although `examples/05_collections.mv` used to describe it as returning a new array; write `a = array_append(a, x)` or, better, `a.append(x)`. Decision 9 in [TODO.md](TODO.md) records these as the recommended defaults.
 
@@ -284,7 +292,7 @@ Methods are called with a dot, like methods of your own types. A mutating method
 
 | Type | Methods |
 |------|---------|
-| string | `upper()` `lower()` `strip()` `lstrip()` `rstrip()` `split([sep])` `join(items)` `replace(old, new)` `find(sub)` (index, or -1) `startswith(p)` `endswith(p)` `contains(sub)` |
+| string | `upper()` `lower()` `strip([chars])` `lstrip([chars])` `rstrip([chars])` (whitespace, or any of the given characters) `split([sep])` `join(items)` `replace(old, new)` `find(sub)` (index, or -1) `startswith(p)` `endswith(p)` `contains(sub)` |
 | array | `append(x)` `pop([i])` `insert(i, x)` `extend(items)` `remove(x)` `index(x)` `contains(x)` `count(x)` `reverse()` `sort()` `copy()` `clear()` |
 | map | `keys()` `values()` `items()` (an array of `(key, value)` tuples) `get(key[, default])` `has(key)` `remove(key)` `copy()` `clear()` |
 
@@ -362,6 +370,24 @@ Rules and limits:
 - Syntax errors in an f-string (`E1018`): an unterminated `{`, an empty `{}`, a lone `}`, or text after the expression.
 - Not there yet 🧭: nested specs (`{n:>{width}}`), `!r`, `{x=}`, multi-line and triple-quoted f-strings, and a `format()` method or `%` formatting.
 
+### 4.9 Conversions: `int`, `float`, `str`, `bool` ✅
+
+| From \ To | `int(x)` | `float(x)` | `bool(x)` | `str(x)` |
+|-----------|----------|------------|-----------|----------|
+| `int` | itself | exact | `x != 0` | decimal text |
+| `float` | truncates toward zero (`int(-3.9)` is `-3`); `nan` is `ValueError`, `inf` is `OverflowError` | itself | `x != 0` (`nan` is true) | shortest text |
+| `bool` | `0` or `1` | `0.0` or `1.0` | itself | `true` / `false` |
+| `str` | decimal text, surrounding spaces and `_` allowed (`int(" 1_000 ")`); anything else is `ValueError` | decimal or exponent text, `"inf"`, `"nan"`; else `ValueError` | `true` unless empty | itself |
+| `none` | `TypeError` | `TypeError` | `false` | `none` |
+| array, map, tuple | `TypeError` | `TypeError` | `true` unless empty | the printed form |
+| your own type | its `__int__` | its `__float__` | `__bool__`, else `__len__` != 0, else `true` | `__str__`, else `__repr__` |
+
+- `int(text, base)` reads digits in base 2 to 36 (`int("ff", 16)` is 255, `int("-z", 36)` is -35); a base on a non-string is a `TypeError`, a base outside 2..36 or a digit outside the base a `ValueError`.
+- A result outside the 64-bit range (`int("9223372036854775808")`) is an `OverflowError`.
+- `int()`, `float()`, `str()` and `bool()` with no argument give `0`, `0.0`, `""` and `false`.
+- Failures are always catchable: `ValueError` for a value that cannot be read, `TypeError` for a kind that cannot be converted, `OverflowError` for a value that is too big.
+
+
 ---
 
 ## 5. Statements
@@ -413,10 +439,14 @@ const float PI = 3.14159
 - A declaration without a value (`int x`) parses. Semantic analysis decides whether it is legal.
 - Reading a name that was never declared is `E2010`, as today.
 - Scope is by block. A name first assigned inside an `if`, loop body or function is local to that block and gone after it (using it later is `E2010`). Assigning to a name that is already bound in an enclosing scope assigns to that variable; it never creates a shadowing one. This is the recommendation of Decision 2b in [TODO.md](TODO.md), still open to change.
+- **Definite assignment** ✅: `int x` (a plain declaration without a value) leaves `x` unassigned. Reading it on a path where it may not have been assigned is `E2079` (`if c: x = 1` then `print(x)`; assignments inside a loop body or a `try` body do not count afterwards; an `if` that assigns on both branches, or a `match` with a `case _`, does). Only variables declared without a value are tracked; pointer, struct and array declarations always have a value.
+- **Unreachable code** ✅: a statement after `return`, `raise`, `break` or `continue` in the same block can never run and gets the warning `W2001`. Warnings are printed to standard error and do not stop the program.
 
 **The typo hazard.** Because `name = value` declares, a misspelled name on the left (`totl = total + 1`) silently creates a new variable instead of failing. Keep this in view. The linter is expected to flag variables that are assigned and never read (TODO Phase 6). Typed declarations (`int total = ...`) are the explicit, typo-proof form.
 
 **Types.** A typed declaration accepts any type name: a builtin (`int`, `i64`, `ptr`, ...), a user-defined `type` (`Point p = Point(1, 2)`), or a type with `[]` suffixes (`f32[] xs = [1.0, 2.0]`). The REPL has no semantic pass, so it tracks constants itself and reports the same `E2064`.
+
+**Type annotations are structured** ✅. An annotation can be `array[int]` (or `int[]`), `map[str, int]`, `tuple`, `int?` (an int or `none`), `T*` (a pointer), `fn(int, str) -> bool` (a function) or any combination (`array[map[str, int]]`). The checker (1) rejects an unknown type name or the wrong number of type arguments (`E2078`: `array` takes one, `map` two), (2) compares element types of literals against the annotation (`array[int] xs = [1, "a"]`, `map[str, int] m = {"a": "b"}` and `array[array[int]] g = [[1], ["x"]]` are `E2002`), (3) rejects `none` or an `int?` where a plain `int` is declared, and (4) compares each argument of a call to a known function with its parameter's annotation (`E2080`) and each `return` with the declared result (`E2005`). A plain `array` or `map` annotation, an untyped parameter and a variable whose type is inferred accept anything, since their element types are not known. Names brought in with `include` are trusted. Element types are not enforced at run time: `xs.append("s")` on an `array[int]` is not caught.
 
 ### 5.2 Assignment
 
@@ -502,8 +532,9 @@ raise ValueError("message")
 ```
 
 - A `try` needs at least one `except` or a `finally` (`E1011`).
+- **Your own exception types** are `type`s that extend `Exception` (or another exception type): `type AppError(Exception):`. `raise AppError("text", 3)` runs the type's `__init__`; the field `message` is the text. `except AppError as e` binds the raised object itself, so `e.code`, `e.describe()` and every other field and method of your type work. `e.message` (empty if you never set it) and `e.type` (the type's name) work on every exception.
 - `except` names exactly one type. Multiple clauses are allowed, and the first match wins.
-- Built-in exception types: `Exception` (the base of the rest), `ValueError`, `TypeError`, `IndexError`, `KeyError`, `AttributeError`, `ZeroDivisionError` (`/` or `%` by zero), `OverflowError`, `RuntimeError`, `RecursionError` (a `RuntimeError`; more than 1000 nested calls), `EOFError` (`input()` with nothing left), `ImportError`, `StopIteration`, `OSError`, `OutOfMemoryError`, and `PointerError` / `NullPointerError` (§9.2).
+- Built-in exception types form a hierarchy: `Exception` is the base. `LookupError` (`IndexError`, `KeyError`), `ArithmeticError` (`ZeroDivisionError`, `OverflowError`), `RuntimeError` (`RecursionError`, `NotImplementedError`), and `ValueError`, `TypeError`, `AttributeError`, `EOFError` (`input()` with nothing left), `ImportError`, `StopIteration`, `OSError`, `OutOfMemoryError`, `PointerError` (`NullPointerError`) (§9.2). `except LookupError` also catches an `IndexError` or a `KeyError`.
 - Operators on the wrong kinds of value are a `TypeError` that names both types (`unsupported operand types for '+': int and str`); an index outside an array or string is an `IndexError` that gives the index and the length; a missing map key is a `KeyError`.
 - A function that finishes without `return` (or with a bare `return`) gives `none`, so `print(f())` prints `none`.
 - An uncaught exception terminates the program with an `E3900` diagnostic.
@@ -514,10 +545,26 @@ raise ValueError("message")
 |------|--------|
 | `return` / `return expr` | ✅ |
 | expression statement (`f(x)`) | ✅ |
-| `with expr as name:` | ⚠️ parses, rejected at semantic analysis |
+| `pass` | ✅ does nothing; fills a block that needs no statements |
+| `with expr as name:` | ✅ see below |
 | nested `fn` inside a function body | ✅ visible from its declaration on, and can read (and recurse through) the enclosing scope. Declaring the same name twice in one scope is `E2007`. |
 | `syscall(target, args...)` as statement or expression | ✅ |
 | `gpu ...`, `memory ...` | ⚠️ reserved. Parse as "unsupported statement". |
+
+**`with`** runs a block between `__enter__` and `__exit__` of a context manager:
+
+```manv
+type Resource:
+    fn __enter__(self):
+        return self                       # what `as name` binds
+    fn __exit__(self, kind, error, trace):
+        return false                      # true swallows an exception raised in the block
+
+with Resource() as r:
+    use(r)
+```
+
+`__exit__` always runs, also on `return`, `break`, `continue` and a raised exception. For a clean exit its arguments are `none, none, none`; for an exception they are the exception's type, the exception (your own object if it is a user-defined exception) and a trace. A value without `__enter__` and `__exit__` is a `TypeError`. `as name` is optional. Inside the `with` header `as` always binds the name (it is not a cast).
 
 ---
 
@@ -550,7 +597,6 @@ A runnable program defines `fn main() -> int`. The return value is the process e
 
 **Script mode** ✅: a file with top-level statements and no `main` just runs those statements, top to bottom, and exits with `0`. Functions and types in the file are available from the start (they are declared before any statement runs). A file with neither `main` nor any statement fails with `E3001`. If a file has both, the statements run first, then `main`. Script mode is not available in compiled mode yet.
 
-⚠️ Top-level statements outside functions parse, but a file with them and no `main` is rejected. A "script mode" is an open decision 🧭.
 
 ### 6.3 Decorators ✅
 
@@ -630,8 +676,37 @@ type Rectangle(Shape):              # inheritance; several bases allowed: (A, B)
 - Fields require `= default`. `const` members are read through the type or an instance (`Point.DIMENSIONS`) and cannot be assigned.
 - The first parameter of a method is `self`. Methods are called as `p.translate(1, -1)`.
 - `__init__` is the constructor and is invoked as `Point(3, 4)`.
-- `isinstance(x, Type)` tests membership.
+- `isinstance(x, Type)` is true for the type and everything derived from it; `issubclass(A, B)` compares two types.
+- **Class constants**: a field or `const` written in the type body (`SIDES = 4`, `NAME = "square"`) belongs to the type and is read through the type or an instance (`Square.SIDES`, `s.SIDES`). A derived type may redefine it and `self.NAME` then finds the redefinition.
+- **Inheritance**: `type Square(Shape):`. A method found in the derived type wins; `super().method(args)` calls the next one in the method resolution order, and `super().__init__(...)` runs the base constructor. With several bases (`type D(B, C):`) the order is C3 linearization, so a diamond calls each base once (`D`, `B`, `C`, `A`).
+- **Abstract methods** are a convention: a base method that does `raise NotImplementedError("name")` must be overridden. `NotImplementedError` is a `RuntimeError`.
 - `print(p)` and `str(p)` use `__str__` if the type defines it, otherwise `__repr__`, otherwise `<Point x=3, y=4>`. Objects inside an array or map are shown with `__repr__`.
+
+### 8.1a Operators and protocols on your own types ✅
+
+Define these methods and the matching syntax works on your objects:
+
+| Syntax | Method | Notes |
+|--------|--------|-------|
+| `a + b` `a - b` `a * b` `a / b` `a // b` `a % b` `a ** b` | `__add__` `__sub__` `__mul__` `__truediv__` `__floordiv__` `__mod__` `__pow__` | if `a` has no such method, `b.__radd__(a)` (`__rsub__`, ...) is tried, so `2 * v` works with `__rmul__` |
+| `a & b` `a \| b` `a ^ b` `a << n` `a >> n` `~a` | `__and__` `__or__` `__xor__` `__lshift__` `__rshift__` `__invert__` | |
+| `-a` | `__neg__` | |
+| `a == b` `a != b` | `__eq__` | without it objects are equal only to themselves |
+| `a < b` `a <= b` `a > b` `a >= b` | `__lt__` `__le__` `__gt__` `__ge__` | a missing one is derived from `__lt__`: `a > b` is `b < a`, `a <= b` is `not (b < a)`, so `__lt__` alone orders a type completely |
+| `sorted(xs)` `min(xs)` `max(xs)` | `__lt__` | |
+| `{obj: v}`, `m[obj]`, `obj in m` | `__hash__` and `__eq__` | defining `__eq__` without `__hash__` makes the type unhashable (a `TypeError` when used as a key) |
+| `len(obj)` | `__len__` | must return a non-negative int |
+| `obj[i]`, `obj[i] = v`, `obj[i] += v` | `__getitem__`, `__setitem__` | |
+| `x in obj` | `__contains__` | |
+| `for x in obj`, `sorted(obj)`, `sum(obj)`, `enumerate(obj)`, `zip(obj, ...)` | `__iter__` (returns an object with `__next__`, or `self`), `__next__` | `__next__` signals the end by raising `StopIteration` |
+| `obj(args)` | `__call__` | |
+| `if obj:`, `bool(obj)`, `not obj` | `__bool__`, else `__len__` != 0, else always true | |
+| `int(obj)` `float(obj)` | `__int__` `__float__` | |
+| `str(obj)`, `print(obj)`, `repr(obj)`, `hash(obj)` | `__str__` / `__repr__`, `__hash__` | |
+| `a += b` | the method of `a + b` | there is no separate in-place method |
+
+A user-defined exception is a `type` that extends `Exception` (§5.6).
+
 
 ### 8.2 `impl` ✅
 

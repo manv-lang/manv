@@ -411,7 +411,7 @@ def _expect_type(name: str, value: Any, kind: str) -> None:
             raise TypeError(f"{name} expects float")
         return
     if kind == "array":
-        if not isinstance(value, list):
+        if not isinstance(value, (list, range)):
             raise TypeError(f"{name} expects array")
         return
     if kind == "map":
@@ -577,15 +577,21 @@ def _core_hash(args: list[Any], **_: Any) -> int:
 
 
 def _core_min(args: list[Any], **_: Any) -> Any:
-    _ensure_arity("core_min", args, min_n=1, max_n=1)
-    _expect_type("core_min", args[0], "array")
-    return min(args[0])
+    """`min(array)` or `min(a, b, ...)`."""
+    _ensure_arity("core_min", args, min_n=1)
+    if len(args) == 1:
+        _expect_type("core_min", args[0], "array")
+        return min(args[0])
+    return min(args)
 
 
 def _core_max(args: list[Any], **_: Any) -> Any:
-    _ensure_arity("core_max", args, min_n=1, max_n=1)
-    _expect_type("core_max", args[0], "array")
-    return max(args[0])
+    """`max(array)` or `max(a, b, ...)`."""
+    _ensure_arity("core_max", args, min_n=1)
+    if len(args) == 1:
+        _expect_type("core_max", args[0], "array")
+        return max(args[0])
+    return max(args)
 
 
 def _core_sum(args: list[Any], **_: Any) -> Any:
@@ -613,19 +619,21 @@ def _core_sorted(args: list[Any], **_: Any) -> list[Any]:
     return sorted(args[0])
 
 
-def _core_range(args: list[Any], **_: Any) -> list[Any]:
+def _core_range(args: list[Any], **_: Any) -> range:
     _ensure_arity("core_range", args, min_n=1, max_n=3)
     if len(args) == 1:
         _expect_type("core_range", args[0], "int")
-        return list(range(int(args[0])))
+        return range(int(args[0]))
     if len(args) == 2:
         _expect_type("core_range", args[0], "int")
         _expect_type("core_range", args[1], "int")
-        return list(range(int(args[0]), int(args[1])))
+        return range(int(args[0]), int(args[1]))
     _expect_type("core_range", args[0], "int")
     _expect_type("core_range", args[1], "int")
     _expect_type("core_range", args[2], "int")
-    return list(range(int(args[0]), int(args[1]), int(args[2])))
+    if int(args[2]) == 0:
+        raise ValueError("range step cannot be zero")
+    return range(int(args[0]), int(args[1]), int(args[2]))
 
 
 def _core_enumerate(args: list[Any], **_: Any) -> list[Any]:
@@ -690,6 +698,11 @@ def _read_element(ref: Any, i: int) -> Any:
     return ref.memory.load(Pointer(ref.address + i * size, ref.elem_type), ref.elem_type)
 
 
+def _format_range(value: range) -> str:
+    text = f"{value.start}..{value.stop}"
+    return text if value.step == 1 else f"{text} step {value.step}"
+
+
 def format_value(value: Any, *, nested: bool = False) -> str:
     """How print() and str() write a value: `true`/`false`/`none`, collections of the same, and a
     string as itself (quoted when it sits inside a collection)."""
@@ -701,6 +714,8 @@ def format_value(value: Any, *, nested: bool = False) -> str:
         return "none"
     if isinstance(value, str):
         return repr(value) if nested else value
+    if isinstance(value, range):
+        return _format_range(value)
     if type(value).__name__ in {"Pointer", "StructRef", "ArrayRef"}:
         return format_memory_value(value, lambda v: format_value(v, nested=True))
     if isinstance(value, list):

@@ -1,0 +1,3 @@
+fn main() -> int:
+    array[array[int]] g = [[1], ["x"]]
+    return 0

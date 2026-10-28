@@ -1,0 +1,11 @@
+(4, 6) (2, 2) (3, 6) (6, 8) (-1, -2)
+true true true false true false true
+[Vec(0, 1), Vec(1, 2), Vec(3, 4)]
+(1, 2) (5, 5)
+first first 2 true
+false true yes no
+Vec(1, 2) (1, 2) [Vec(1, 2), Vec(3, 4)]
+(3, 5)
+Bits(8) Bits(14) Bits(6) Bits(48) Bits(6) Bits(-13) Bits(2) Bits(2) Bits(144)
+TypeError
+AttributeError

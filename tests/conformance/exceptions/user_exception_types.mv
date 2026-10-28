@@ -1,0 +1,33 @@
+type AppError(Exception):
+    fn __init__(self, message: str, code: int = 1):
+        self.message = message
+        self.code = code
+
+    fn describe(self) -> str:
+        return f"[{self.code}] {self.message}"
+
+type NotFound(AppError):
+    fn __init__(self, what: str):
+        self.message = what + " not found"
+        self.code = 404
+
+fn find(name: str):
+    if name == "ok":
+        return name
+    if name == "missing":
+        raise NotFound(name)
+    raise AppError("bad name", 22)
+
+fn main() -> int:
+    for name in ["ok", "missing", "other"]:
+        try:
+            print(find(name))
+        except NotFound as e:
+            print("NotFound:", e.describe(), e.message, e.code)
+        except AppError as e:
+            print("AppError:", e.describe(), e.type)
+    try:
+        raise AppError("plain")
+    except Exception as e:
+        print(e.type, e.message, e.code)
+    return 0

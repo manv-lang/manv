@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **417 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **455 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -32,7 +32,7 @@ What already exists, checked by running it:
 
   These first numbers are single runs, so they are indicative. The reproducible measurements are in [benchmarks/](benchmarks/README.md) (`baseline-small.json`, `baseline-full.json`). At the full benchmark sizes the interpreter is **14× to 150× slower than CPython** depending on the workload (about 14× on map operations and string building, 60× to 130× on calls, arrays, nested loops and exceptions, 93× on a tight `while` loop, 150× on float-heavy code; single run each). They are the numbers the C engine has to beat.
 
-**Not yet true of the interpreter:** it is nearly a language you could write real programs in. Still missing: `*args`, `with`, inheritance details, definite-assignment checks, and the builtins in the stdlib's place (`input`, `argv`, `exit`). Details in the phases below.
+**Not yet true of the interpreter:** it is a language you can write real programs in (see `examples/12_expression_evaluator.mv`). Still missing: `*args`, `set`, a standard library (parked), run-time element-type checks, and everything on the compiled side (compiled mode lags; the C engine is not started).
 
 ### How the 12 failing tests were resolved
 
@@ -54,7 +54,7 @@ The interpreter is done when **all** of these are true. They are the exit criter
 - [x] Every program in `examples/` runs and its output matches a committed `.expected` file (`tests/test_examples.py`, hand-checked against the comments).
 - [ ] Every ✅ construct in [syntax.md](syntax.md) has a test. Every ⚠️ has been fixed or deliberately removed from the grammar. No construct parses and then dies with `E2099 unsupported statement`.
 - [ ] A fresh clone can build the engine and run a program with no network access, no hand-set environment variables, and no `stdlib/` directory.
-- [ ] A non-trivial program (about 300 lines: a text-processing tool, an expression evaluator, or a data-structure library) runs correctly using only the language and the native builtins.
+- [x] A non-trivial program (about 300 lines) runs correctly using only the language and the native builtins: [examples/12_expression_evaluator.mv](examples/12_expression_evaluator.mv), a 360-line tokenizer, parser and evaluator with types, custom exceptions, recursion, maps, tuples and f-strings, checked by `tests/test_examples.py`. Writing it exposed five gaps, all fixed (see the changelog); see also the builtin findings under Phase 4.
 - [ ] **The C engine runs the whole conformance suite** and agrees with the expected output on every case ([Phase 5](#phase-5--the-c-engine-fast-interpreter)), and meets its performance milestone M1.
 - [ ] Uncaught errors print a clear diagnostic with source location and exit non-zero. Nothing prints a Python traceback or an internal object dump.
 - [ ] `syntax.md` and the code agree, which is checked by a test that runs every fenced example in it.
@@ -84,8 +84,8 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 - [x] **`print(obj)` and `str(obj)`** use `__str__`, then `__repr__`, then `<Type field=value, ...>`; objects inside collections use `__repr__`. No interpreter internals leak. (`conformance/types/repr_*`)
 - [x] **String escapes.** `\n \t \r \0 \\ \" \' \xNN \uNNNN` are interpreted in the lexer. Any other escape or a malformed `\x`/`\u` is `E0006`. (`conformance/basics/string_escapes*`)
 - [x] **`zip(a, b, ...)`** takes any number of arrays and gives tuples (`conformance/collections/zip_function`).
-- [ ] **Fixed-width integers.** `i32` does not wrap or trap (`2147483647 + 1` gives `2147483648`). Pick wrap vs. trap vs. checked per type, and implement it. This matters later for compiler parity.
-- [ ] **`/` on two ints gives a float.** Intentional or not, decide it ([§Decisions](#decisions-needed-from-you)). Adding an integer-division operator or function is part of the answer.
+- [x] **Fixed-width integers** trap when stored (decision 5's recommended default): `i32 a = 2147483647; a = a + 1` is an `OverflowError`; `int` arithmetic traps outside 64 bits (`conformance/numerics/fixed_width_types`, `integer_overflow`).
+- [x] **`/` on two ints gives a float** (decision 1's recommendation, kept) and `//` is floor division.
 - [~] **Exception values.** `e.message` and `e.type` (the type's name) work (`conformance/exceptions/`), and `print(e)` shows `ValueError(msg)`. Reserved words are now allowed as attribute names after `.`, which is what makes `e.type` parse. Still open: a traceback-ish location and the full exception hierarchy (`ZeroDivisionError`, ...).
 - [x] **Division by zero, bad index, missing key**: `ZeroDivisionError` (`/` and `%`, also augmented), `IndexError` with the index and length, `KeyError`, and a `TypeError` naming both operand types (`conformance/exceptions/arithmetic_errors`, `lookup_errors`). A Python exception that escapes the interpreter is reported as `E3999` without a traceback (`MANV_DEBUG=1` shows it).
 - [ ] **Immutability is not enforced anywhere today** (`let x = 1; x = 2` is accepted, and `let mut` is parsed then ignored). This is closed by `const` in [Phase 3a](#phase-3a--declarations-remove-let-add-const).
@@ -107,7 +107,7 @@ Things that parse and run but give a wrong answer. These are the highest priorit
 - [ ] Explicit line continuation with `\` (if wanted).
 - [ ] Multi-line (triple-quoted) strings as ordinary expressions, not just docstrings (`E0005` today).
 - [ ] Raw strings (`r"..."`) and string interpolation, per the decision (f-string, `"${x}"`, or none).
-- [ ] Operators: bitwise `& | ^ ~ << >>`, exponent `**`, integer division, and decide the `&&`/`||`/`!` aliases vs. `and`/`or`/`not` only.
+- [x] Operators: bitwise `& | ^ ~ << >>`, exponent `**` and integer division `//` (`conformance/numerics/operators`). The `&&`/`||`/`!` aliases are still accepted (decision 10 is open).
 - [ ] Unicode: the lexer accepts any Unicode letter in identifiers (it uses `str.isalpha`) without that being a decision. Decide the policy (allowed identifier characters, normalization) and the source encoding (UTF-8), and test non-ASCII text in strings.
 - [x] Windows line endings (`\r\n`) lex identically to `\n` (`tests/test_lexer.py`).
 - [ ] Golden tests for diagnostic spans (line, column, end column).
@@ -123,16 +123,16 @@ The target: nothing that parses is rejected later with a generic `E2099`.
 - [x] **Nested functions**: declared in a function body, visible from the declaration on, can read the enclosing scope and recurse. A duplicate name in one scope is `E2007`. Capture semantics for *mutating* an enclosing variable are still undecided (Phase 4, closures).
 - [x] The semantic pass skipped the `else:` body of `while` entirely, so an undefined name there went unreported. It is analysed now. (`conformance/errors/while_else_undefined_name`)
 - [x] **Single-expression lambdas** (`fn(x): x * 2`), decision 7 (`conformance/functions/expression_lambdas`).
-- [ ] **`with` statement** and a context-manager protocol (`__enter__` / `__exit__`), or remove `with` from the grammar.
+- [x] **`with` statement** and the context-manager protocol (`__enter__` / `__exit__`) (`conformance/control_flow/with_statement`).
 - [x] **Conditional expression** (`a if cond else b`), right-associative, lowest precedence, `else` required (`E1017`). Only the chosen branch runs, in the interpreter and in HLIR lowering (`conformance/control_flow/conditional_expression`, `tests/test_hlir_parity.py`). Native LLVM output has not been checked.
 - [x] **Tuples** `(a, b)`, `(a,)`, `()` and unpacking: `a, b = f()`, `a, b = b, a`, `return a, b`, `for k, v in m.items()`. Tuples index, slice, compare, iterate, are map keys, and are immutable (`conformance/tuples/`). `m.items()` and `enumerate` now return tuples. Open: element/attribute targets (`xs[i], xs[j] = ...`), nested and `*rest` targets, tuple patterns in `match`, compiled-mode support (the HLIR path reports the statement as unsupported).
-- [ ] **Slices** `a[1..3]`, `s[1..]`, plus string indexing and negative-index rules, for strings, arrays and ranges.
-- [ ] **Ranges as values**: stepped `0..10 step 2` (or `range(0, 10, 2)`), inclusive vs. exclusive, and ranges stored in variables.
+- [x] **Slices** `a[1..3]`, `s[1..]`, `a[..]`, with a step, and string indexing and negative-index rules for strings, arrays, tuples and ranges.
+- [x] **Ranges as values**: `r = 0..5`, `a..b step n`, `range(a, b, step)`; lazy, immutable, iterable, indexable, sliceable, printable (`conformance/control_flow/ranges_as_values`). Ranges are half-open; there is no inclusive form.
 - [x] **Default and keyword arguments**: defaults evaluated at every call, `f(b=2)`, static checks `E2066`-`E2069`, parse errors `E1019`/`E1020` (`conformance/functions/default_arguments`, `keyword_arguments`, `conformance/errors/call_*`). Open: `*args`/`**kwargs`, keyword-only parameters, compiled mode (`E3010`).
 - [x] **Script mode** (decision 6): a file of top-level statements runs without `main`; no `main` and no statements is still `E3001` (`conformance/functions/script_mode`, `conformance/errors/no_main_no_statements`). Interpreter only.
-- [ ] **Structured type annotations.** Annotations are stored as raw strings. Parse them into a type AST (`array[int]`, `map[str, int]`, `f32[]`, function types, optional types) and check them.
-- [ ] Generic containers: `array[int]`, `map[str, int]`, with checking where annotated.
-- [ ] **Definite assignment** and **unreachable code** diagnostics.
+- [x] **Structured type annotations**: `manv/typesys.py` parses `array[int]`, `map[str, int]`, `int?`, `fn(int) -> int`, `T*` into a tree; the semantic pass validates names and arity (`E2078`), compares literal elements (`E2002`) and arguments (`E2080`). Run-time element-type enforcement is not done.
+- [x] Generic containers `array[int]` and `map[str, int]` are checked where annotated (see above). `set` does not exist.
+- [x] **Definite assignment** (`E2079`, `manv/flow.py`) and **unreachable code** (warning `W2001`, printed to stderr). `exit()` is not yet treated as a terminator, and `while true:` loops without `break` are not recognised as infinite.
 - [ ] Macros: either define expansion semantics (hygiene, argument forms, where they can appear) or cut `macro` down to what is real.
 - [ ] Parse-error recovery: report more than the first syntax error per file.
 - [ ] Review every `E2099` raise site and turn each into either an implementation or a specific, named diagnostic.
@@ -183,15 +183,15 @@ With no stdlib, **the builtins are the standard library**. Everything in this ph
 - [~] **Strings:** indexing, negative indexing, slicing (`s[a..b]`), `len` in code points, `+`, comparison, iteration, and the methods `upper lower strip lstrip rstrip split join replace find startswith endswith contains` (`conformance/strings/`). Also `in`, `not in`, open-ended slices (`s[1..]`), `ord`, `chr`, and f-strings with format specs (`conformance/strings/fstrings`, `format_specs`). Open: `*`, nested specs, a `format` method, and a byte-string type (Decision 8).
 - [~] **Arrays:** `append pop insert extend remove index contains count reverse sort copy clear` and slicing (`conformance/collections/array_*`). Reference semantics with an explicit `copy()` is in place and pinned by `collections/reference_semantics` (Decision 9's recommendation, so that file is the one to change if you decide otherwise). `array_append` still mutates; keep or remove it once the methods are final.
 - [~] **Maps:** `keys values items get has remove copy clear`, iteration over keys, and insertion order (`conformance/collections/map_*`). `k in m` works. Open: maps keyed by more than strings and ints, and equality/hashing of user types.
-- [ ] **Equality, hashing and ordering** for all built-in types, and user-defined `__eq__`, `__hash__`, `__lt__`. Allow maps keyed by more than strings.
-- [ ] **Operator overloading** protocol for user types (`__add__`, `__index__`, `__len__`, `__iter__`, ...), so `for x in my_collection` works.
-- [ ] **Type conversions**: define and test the full matrix (`int("x")`, `float("1e3")`, `bool("")`, `str(array)`, ...). Raise `ValueError` consistently.
-- [ ] **Numerics:** float formatting (shortest round-trip), `inf`/`nan`, integer size (arbitrary precision vs. 64-bit), and `math` coverage.
-- [ ] **Inheritance details:** `super`, method resolution order with multiple bases, class-level constants, `isinstance` against base types, and abstract-ish methods.
+- [x] **Equality, hashing and ordering** for user types (`__eq__`, `__hash__`, `__lt__` and the derived comparisons; map keys and `sorted`/`min`/`max`). Built-in types compare structurally; an array never equals a tuple. Maps keyed by tuples and user objects work.
+- [x] **Operator overloading** and container protocols (`__add__`..., reflected `__radd__`..., `__len__`, `__getitem__`, `__setitem__`, `__iter__`/`__next__`, `__contains__`, `__bool__`, `__call__`, `__int__`/`__float__`; table in syntax.md section 8.1a) (`conformance/types/operator_overloading`, `container_protocols`).
+- [x] **Type conversions**: the full matrix is specified in syntax.md section 4.9 and tested (`conformance/numerics/conversions`).
+- [x] **Numerics:** shortest round-trip float text, `inf`/`nan` through `float("inf")`, 64-bit trapping `int`, trapping fixed-width declarations, `//`, `**` and the bitwise operators (`conformance/numerics/`). Open: `math` coverage (waits for the standard library), wrapping/saturating arithmetic variants, `inf`/`nan` literals.
+- [x] **Inheritance details:** `super()` chains, C3 method resolution order for several bases (diamonds), class constants overridden in derived types, `isinstance`/`issubclass` against base types, abstract methods through `NotImplementedError`, and an exception hierarchy with `LookupError` and `ArithmeticError` (`conformance/types/inheritance`, `conformance/exceptions/exception_hierarchy`).
 - [ ] **Closures:** captured variable semantics (by reference vs. by value) and loop-variable capture. Add tests for each.
 - [x] **Recursion limit**: more than 1000 nested calls raise a catchable `RecursionError` instead of a Python `RecursionError` traceback (`conformance/exceptions/recursion_limit`). Tail-call policy is still open.
 - [~] **C-style pointers** (`int*`, `&x`, `*p`, `p[i]`, `p->x`, `sizeof`, `malloc`/`free`, checked memory), replacing the opaque `ptr` and its helpers. Plan and status per phase: [docs/pointers.md](docs/pointers.md). Done in the interpreter: P0-P6 and P9 (`conformance/pointers/`, `conformance/errors/pointer_*`). Open: function pointers (P7), compiled-mode and C-engine parity (P8, rejected with `E3011` today), an `--unchecked` mode.
-- [ ] **Write down the final builtin list** (name, signature, semantics, error behavior) as a table in the language reference, and mark each builtin "core" or "may move to the stdlib later". Today the set is spread across `print`, `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values`, `type`, `isinstance`, `help` and the `ptr_*` / `c_str` family.
+- [ ] **Write down the final builtin list** (name, signature, semantics, error behavior) as a table in the language reference, and mark each builtin "core" or "may move to the stdlib later". Today the set is spread across `print`, `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values`, `type`, `isinstance`, `help` and the `ptr_*` / `c_str` family. **Findings from the 300-line program:** it had to write its own `abs`, `floor` and `sqrt` (there is no `abs`/`floor`/`round`/`pow`/`sqrt`), and test digits with `c in "0123456789"` (there is no `isdigit`/`isalpha`). Decide which of these are core builtins or string methods and which wait for the standard library.
 - [ ] **Compiled mode lags the interpreter**: the HLIR and native paths know none of the builtin methods, slicing, string indexing or iteration over strings and maps. Parity belongs to §9.1 and the C engine.
 - [ ] Performance work does **not** happen here. Do not tune the Python tree-walker. See Phase 5.
 - [x] **`input()` / stdin**, `args()`, `exit(code)` and `env(name)` (`tests/test_host_builtins.py`). `manv run prog.mv a b` passes the words after the program; the interpreter now streams its output as it runs so a prompt shows before `input()` waits.
@@ -314,7 +314,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 174 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 208 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
@@ -337,13 +337,13 @@ These shape the language, so they are yours to make. Each blocks specific items 
 
 | # | Decision | Recommendation | Blocks |
 |---|----------|----------------|--------|
-| 1 | `/` on two `int`s: always float (today), or integer division with a separate `/` for float? | Keep `/` true division, add `//` for integers. It is the Python precedent, and the language already looks Python-shaped. | P1, P2, P4 |
+| 1 | `/` on two `int`s: always float (today), or integer division with a separate `/` for float? | Keep `/` true division, add `//` for integers. It is the Python precedent, and the language already looks Python-shaped. **Done:** `/` stays true division and `//` was added. | P1, P2, P4 |
 | ~~2~~ | ~~Mutability~~ **Decided:** `let` is removed. `T name = v` and `name = v` are mutable declarations. `const` is the one immutable form. See 2a and 2b for what is left open. | n/a | n/a |
 | 2a | **How immutable is a `const`?** (a) only the name can't be rebound, `ITEMS[0] = 1` still works, or (b) the name can't be rebound **and** it can't be mutated through (index/attribute assignment is rejected). | (b), as a static check on the name. It matches what `const` promises and it needs no runtime cost. It cannot see aliases (`x = ITEMS; x[0] = 1`), so true deep immutability would need frozen values or the ownership model later. Document that limit. [syntax.md §5.1](syntax.md#51-declarations) currently assumes (b). | P3a |
 | 2b | **Where does `name = v` declare, and what is the scope?** (a) function-wide like Python, (b) block-scoped like C. Also: may an inner scope shadow an outer name, or does assignment always reach the outer one? | Block scope, and assignment to an already-bound outer name assigns to it (no accidental shadowing). It is stricter, it matches the typed `int x = 0` form that already exists, and it keeps names from leaking out of `if`/`for` bodies. Also decide whether to warn on the typo hazard (`totl = total + 1`). | P3a |
 | 3 | `elif` or only nested `else: if`? | **Done:** `elif` added. Nesting 4 deep for a simple chain works against readability. | P3 |
 | 4 | String interpolation: `f"x={x}"`, `"${x}"`, or a native `format` builtin only? | f-strings. **Done.** | P2, P4 |
-| 5 | Integer model: arbitrary precision, 64-bit, or per-type fixed width with wrap/trap? | Per-type fixed width, with `int` as a 64-bit trap-on-overflow default. This keeps engine and compiler identical, and trap-on-overflow is cheap in C (`__builtin_add_overflow`). Arbitrary precision would make every `int` operation a possible allocation and undo the typed-code speedups. | P1, P4, P5, §9 |
+| 5 | Integer model: arbitrary precision, 64-bit, or per-type fixed width with wrap/trap? | Per-type fixed width, with `int` as a 64-bit trap-on-overflow default. This keeps engine and compiler identical, and trap-on-overflow is cheap in C (`__builtin_add_overflow`). Arbitrary precision would make every `int` operation a possible allocation and undo the typed-code speedups. **Done in the interpreter** (64-bit `int` traps; fixed-width declarations trap). | P1, P4, P5, §9 |
 | 6 | Script mode: may a file be just statements with no `main`? | Yes for `manv run`, with the semantics "implicit main", so `manv run x.mv` works for small programs. **Done.** | P3 |
 | 7 | Single-expression lambdas: `fn(x): x * 2`? | **Done.** Yes. Block-only lambdas make `map`/`filter` noisy. | P3 |
 | 8 | `String` model: bytes or Unicode code points for `len`/index? | Code points, stored as UTF-8, with a separate `bytes` type for raw data. Indexing by code point is O(n) on UTF-8, so the engine needs an ASCII-only fast path (a flag on the string) to keep it cheap. | P4, P5 |

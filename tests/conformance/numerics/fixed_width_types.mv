@@ -1,0 +1,32 @@
+fn takes_u8(n: u8) -> u8:
+    return n
+
+fn main() -> int:
+    i32 a = 2147483647
+    print(a)
+    try:
+        a = a + 1
+    except OverflowError as e:
+        print("i32 overflow")
+    print(a)
+    u8 b = 255
+    try:
+        b = b + 1
+    except OverflowError as e:
+        print("u8 overflow")
+    try:
+        u8 c = -1
+    except OverflowError as e:
+        print("u8 negative")
+    try:
+        takes_u8(256)
+    except OverflowError as e:
+        print("argument too big")
+    print(takes_u8(7))
+    i8 d = -128
+    print(d)
+    float f = 3
+    print(f, f / 2)
+    f32 g = 1
+    print(g)
+    return 0
