@@ -19,7 +19,7 @@ What already exists, checked by running it:
 
 - A lexer, a recursive-descent parser, a semantic pass and a tree-walking interpreter. Running `python -m manv.cli run file.mv` works.
 - All 10 programs in `examples/` run to completion with exit code 0, though several print wrong output (see [P1](#phase-1--interpreter-correctness-bugs)).
-- `pytest`: **455 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
+- `pytest`: **458 passed, 12 skipped (with stated reasons), 1 expected failure, 0 failed**. At the start the suite was 203 passed / 12 failed; Phase 0 below got it to zero failures (see [how the 12 were resolved](#how-the-12-failing-tests-were-resolved)).
 - `tests/conformance/` holds language-behaviour cases (`.mv` + hand-written `.expected`) and `benchmarks/` holds the performance harness with a recorded baseline. Both are described in their READMEs.
 - A large amount of compiler-side code already exists (HLIR, Graph IR, Kernel IR, LLVM, PTX, SPIR-V, WGSL, DAP, LSP, registry). It is out of scope until the interpreter is done.
 - **Performance baseline** (measured on this machine, 2026-10-26; `gcc` 15.2 from w64devkit is installed, `clang` and MSVC are not):
@@ -190,7 +190,7 @@ With no stdlib, **the builtins are the standard library**. Everything in this ph
 - [x] **Inheritance details:** `super()` chains, C3 method resolution order for several bases (diamonds), class constants overridden in derived types, `isinstance`/`issubclass` against base types, abstract methods through `NotImplementedError`, and an exception hierarchy with `LookupError` and `ArithmeticError` (`conformance/types/inheritance`, `conformance/exceptions/exception_hierarchy`).
 - [ ] **Closures:** captured variable semantics (by reference vs. by value) and loop-variable capture. Add tests for each.
 - [x] **Recursion limit**: more than 1000 nested calls raise a catchable `RecursionError` instead of a Python `RecursionError` traceback (`conformance/exceptions/recursion_limit`). Tail-call policy is still open.
-- [~] **C-style pointers** (`int*`, `&x`, `*p`, `p[i]`, `p->x`, `sizeof`, `malloc`/`free`, checked memory), replacing the opaque `ptr` and its helpers. Plan and status per phase: [docs/pointers.md](docs/pointers.md). Done in the interpreter: P0-P6 and P9 (`conformance/pointers/`, `conformance/errors/pointer_*`). Open: function pointers (P7), compiled-mode and C-engine parity (P8, rejected with `E3011` today), an `--unchecked` mode.
+- [~] **C-style pointers** (`int*`, `&x`, `*p`, `p[i]`, `p->x`, `sizeof`, `malloc`/`free`, checked memory), replacing the opaque `ptr` and its helpers. Plan and status per phase: [docs/pointers.md](docs/pointers.md). Done in the interpreter: P0-P6 and P9 (`conformance/pointers/`, `conformance/errors/pointer_*`). Open: function pointers (P7), compiled-mode and C-engine parity (P8, rejected with `E3011` today), an `--unchecked` mode. The memory model decision (Go's, [docs/memory.md](docs/memory.md)) is implemented in the interpreter: an address-taken local stays valid while reachable, `&xs[i]` and `&obj.field` work (P-5 resolved), and a GC pointer cannot be stored in `malloc` memory.
 - [ ] **Write down the final builtin list** (name, signature, semantics, error behavior) as a table in the language reference, and mark each builtin "core" or "may move to the stdlib later". Today the set is spread across `print`, `len`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `array_append`, `map_has_key`, `map_keys`, `map_values`, `type`, `isinstance`, `help` and the `ptr_*` / `c_str` family. **Findings from the 300-line program:** it had to write its own `abs`, `floor` and `sqrt` (there is no `abs`/`floor`/`round`/`pow`/`sqrt`), and test digits with `c in "0123456789"` (there is no `isdigit`/`isalpha`). Decide which of these are core builtins or string methods and which wait for the standard library.
 - [ ] **Compiled mode lags the interpreter**: the HLIR and native paths know none of the builtin methods, slicing, string indexing or iteration over strings and maps. Parity belongs to §9.1 and the C engine.
 - [ ] Performance work does **not** happen here. Do not tune the Python tree-walker. See Phase 5.
@@ -248,7 +248,7 @@ The lever that can make ManV unusual among interpreted languages is its **option
 - [ ] **Value representation:** 64-bit tagged values (NaN-boxing or pointer tagging) with unboxed `int`, `float`, `bool` and `none`. Heap objects carry a small header (type, GC bits).
 - [ ] **Dispatch:** `switch` as the portable baseline, computed goto behind `#ifdef __GNUC__`. Add superinstructions only for patterns the benchmarks show are hot.
 - [ ] **Calls:** one contiguous value/frame stack, no heap allocation per call, closures via upvalues, argument-count checking, and a recursion limit that raises a catchable error.
-- [ ] **Memory management:** refcounting vs. tracing GC (Decision 12). The `Heap` in Python today is only a simulation. Keep the deterministic-GC and GC-stress test modes, since they are valuable, and provide equivalents.
+- [ ] **Memory management (Decision 12, Go's model):** the engine uses the same `libmanvrt` allocator and collector as the compiled programs ([docs/memory.md](docs/memory.md)): size-class spans, type descriptors with pointer bitmaps, noscan spans for typed arrays and strings, non-moving mark-sweep (G0: stop-the-world with conservative stack scanning; later G1 pacer, G2 precise stacks, G3 concurrent marking with a write barrier). Keep the deterministic-GC and GC-stress test modes, and give the Python `Heap` simulation the same observable operations (`gc_stats`, forced collection).
 - [ ] **Strings:** immutable, UTF-8 (per Decision 8), with cached hashes and interned short strings.
 - [ ] **Arrays:** contiguous storage. Typed arrays (`f32[]`, `int[]`) store raw elements, which also makes later GPU transfer zero-copy.
 - [ ] **Maps:** open-addressing hash table with insertion-order iteration.
@@ -314,7 +314,7 @@ When the time comes, treat it as its own project with these constraints, so that
 
 ## Phase 7 — Conformance suite (do this early, grow it throughout)
 
-- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 208 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
+- [x] `tests/conformance/**/*.mv` with sibling `.expected` / `.error` / `.exit` / `.xfail` files, one feature per file, expected output written by hand (see its README). 211 cases, all passing: no known gaps are marked right now. This suite is what the engines will be held to.
 - [ ] A harness that runs every conformance case through the interpreter (done: `tests/test_conformance.py`). Still to do: also run them through the C engine and compiled mode and diff the results.
 - [x] A negative-test set: programs that must fail with a specific diagnostic code (`conformance/errors/`, 38 cases). Locations (line/column) are not asserted yet.
 - [ ] A test that extracts and runs the fenced `manv` blocks in `syntax.md`.
@@ -350,7 +350,7 @@ These shape the language, so they are yours to make. Each blocks specific items 
 | 9 | Value vs. reference semantics for `array`/`map`/`type` instances (aliasing on assignment/pass)? A concrete symptom today: `array_append(a, x)` mutates `a`, while `examples/05` documents it as pure. | Reference semantics for heap types, written down plainly, with an explicit `copy()`. This needs to be settled before the ownership model. | P4, P5, §9 |
 | 10 | Keep or cut: `class` alias, `True`/`False` aliases, `&&`/`||`/`!` aliases, the `macro` stub, `gpu`/`memory` statements? | Cut the `True`/`False` and `&&`/`||`/`!` aliases (one way to do it). Keep `class` only if it is needed for migration. Defer macros. | P2, P3 |
 | 11 | **Where do runtime fixes go?** Phases 1 and 4 are mostly runtime behavior. Fix them in the Python tree-walker now (a quick path to a "working" interpreter, throwaway work later), or write them once in the C engine and keep the tree-walker frozen as an oracle? | Write them once, in the engine. The tree-walker is ~20× slower than CPython and is going away, so effort spent there is spent twice. The cost is a longer wait before the interpreter feels "working". Cap it by building a thin vertical slice first (ints, floats, strings, functions, `if`/`while`/`for`, `print`) and growing from there. Lexer, parser and semantic fixes are shared and stay in Python. | P1, P4, P5 |
-| 12 | **Memory management in the engine:** reference counting, tracing GC, or arenas/ownership from the start? | Start with a simple precise tracing GC (mark-sweep). It handles cycles, keeps the value representation simple, and can later be replaced behind the allocator interface. Reference counting costs a write on every copy, which works against the speed goal. Revisit when the ownership model (§9.4) is designed. | P5, §9.4 |
+| 12 | **Memory management:** reference counting, tracing GC, or arenas/ownership from the start? | **Decided: Go's model**, for the compiler and, through the shared runtime, the engine: escape analysis decides stack vs heap at compile time, and a non-moving, concurrent, tri-colour mark-sweep collector with a size-class allocator reclaims the heap. Full design, milestones G0-G3 and work plan: [docs/memory.md](docs/memory.md). Consequences, implemented in the interpreter (the specification for the compiler): `&local` stays valid while reachable, GC pointers must not be stored in `malloc` memory, and P-5 is resolved (`&xs[i]` allowed). | P5, §9.2 |
 | 13 | **How is the engine hosted?** (a) a standalone `manv-vm` executable that the Python tool launches or that runs `.mvc` files on its own, (b) a CPython extension module, (c) both. | (c), with the executable first. It is the only way to get the startup target (M0), and it is what makes shipping without Python possible later. The extension or `ctypes` wrapper is for tests and the REPL only. | P5 |
 
 ---
@@ -370,7 +370,8 @@ These shape the language, so they are yours to make. Each blocks specific items 
 ### 9.2 CPU codegen
 
 - [ ] Finish HLIR → LLVM IR lowering (arrays, maps, strings, exceptions, closures, user types). `test_llvm_lowering_supports_arrays_maps_and_core_len` shows where it stops.
-- [ ] A runtime library for the compiled path: allocation and GC (or the ownership model), strings, maps, exceptions (unwinding), panic output.
+- [ ] A runtime library for the compiled path (`libmanvrt`, shared with the engine, TODO §9.1): allocator and garbage collector per [docs/memory.md](docs/memory.md) (Go's model), strings, maps, exceptions (unwinding), panic output.
+- [ ] **Escape analysis** pass over HLIR (allocation sites tagged `stack`/`heap`, per-function parameter summaries, `manv compile --report escape`), then LLVM allocation via `alloca` or the runtime accordingly, with write-barrier emission once the collector is concurrent (G3).
 - [ ] Linking and cross-compilation targets (Windows, Linux, macOS; x86_64, aarch64). Remove the old assembly codegen once LLVM reaches parity.
 - [ ] Optimization levels (`-O0`/`-O2`) and debug info (DWARF/PDB) so the DAP debugger works on compiled code.
 
@@ -383,7 +384,7 @@ These shape the language, so they are yours to make. Each blocks specific items 
 
 ### 9.4 Memory model
 
-- [ ] Ownership, move and borrow semantics: spec first (syntax.md §12), then checker, then codegen.
+- [~] Memory model: **decided, Go's** ([docs/memory.md](docs/memory.md)): garbage collection plus escape analysis, no ownership or borrowing in the default model. Ownership, move and borrow semantics are dropped from the plan for ordinary code and could return only as an opt-in for `@gpu` or real-time code.
 - [ ] Arenas and pools, and address-space annotations (`global`/`shared`/`local`).
 
 ### 9.5 Packaging and release

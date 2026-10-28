@@ -1,0 +1,4 @@
+fn main() -> int:
+    m = {"a": 1}
+    p = &m["a"]
+    return 0

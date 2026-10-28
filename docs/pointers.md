@@ -146,6 +146,14 @@ Every phase ends with conformance programs in `tests/conformance/pointers/` (exp
 
 The checked interpreter implementation (P1-P4) can start without the C engine. It is also what defines the behaviour the engine and LLVM must match.
 
+## 6a. Superseded by the memory-model decision
+
+[docs/memory.md](memory.md) adopts Go's memory solution (escape analysis plus a non-moving concurrent tracing collector). Two rules in this plan change:
+
+- **Address-taken locals are never dangling.** `&local` stays valid while a pointer to it is reachable, so returning `&local` is legal. ✅ Implemented in the checked interpreter (`conformance/pointers/escaping_locals`); the old `dangling_local` test is gone.
+- **P-5 is resolved: allowed.** ✅ Pointers into managed arrays (`&xs[i]`) and object fields (`&obj.field`) work (`SlotPointer`; `conformance/pointers/managed_pointers`). `&some_str`, `&map[k]` and `&tuple[i]` stay forbidden (`E2074`).
+- New rule from the model: a pointer to GC memory must not be stored in `malloc` memory (the collector does not scan it). ✅ Enforced as a `PointerError` (`conformance/pointers/gc_pointer_in_malloc`).
+
 ## 7. Implementation notes (where the code differs from the plan above)
 
 - **Address-taken locals** are promoted lazily: the first `&x` moves `x` into a small memory cell (`MemCell` in `interpreter.py`), instead of the semantic pass marking the variable up front. The effect is the same; the cell is freed, and the variable demoted to its last value, when the function returns.

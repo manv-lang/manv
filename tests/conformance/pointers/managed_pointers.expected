@@ -1,0 +1,17 @@
+20 30 10
+[10, 21, 35, 40]
+40 2 true true true
+35
+[10, 21, 35, 0]
+['a', 'b', 'z']
+6
+renamed
+[[1, 2], [30, 4]]
+1
+0
+array changed size
+9
+2
+one past the end
+not an address
+not malloc memory

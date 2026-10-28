@@ -62,9 +62,11 @@ from .memory import (
     INT_TYPES,
     NULL,
     SCALARS,
+    Lifetime,
     Memory,
     MemoryFault,
     Pointer,
+    SlotPointer,
     StructRef,
     canonical_pointer_type,
     is_pointer_type,
@@ -152,12 +154,13 @@ class MemCell:
     """A variable whose address was taken (`&x`): its value lives in raw memory, so a pointer and
     the variable always agree. Lookups and assignments go through the cell."""
 
-    __slots__ = ("memory", "ptr", "type_name")
+    __slots__ = ("memory", "ptr", "type_name", "owner")
 
-    def __init__(self, memory: Memory, ptr: Pointer, type_name: str):
+    def __init__(self, memory: Memory, ptr: Pointer, type_name: str, owner: Lifetime):
         self.memory = memory
         self.ptr = ptr
         self.type_name = type_name
+        self.owner = owner  # the variable's lifetime: pointers to it share it, so it lives while any of them does
 
     def load(self) -> object:
         return self.memory.load(self.ptr, self.type_name)
@@ -258,7 +261,6 @@ class Interpreter:
         self._bootstrap_runtime_types()
         self._builtin_methods = BuiltinMethods(self)
         self.memory = Memory()
-        self._frame_cells: list[list[tuple[Environment, str, MemCell]]] = [[]]
         Environment.on_fault = lambda fault: self._raise_fault(fault, None)
         InstanceObject.hooks = _InstanceHooks(self)
         self._install_memory_builtins()
@@ -608,7 +610,7 @@ class Interpreter:
         if isinstance(stmt, ast.AugAssignIndexStmt):
             target = self.eval_expr(stmt.target, env)
             index = self.eval_expr(stmt.index, env)
-            if isinstance(target, (Pointer, ArrayRef)):
+            if isinstance(target, (Pointer, ArrayRef, SlotPointer)):
                 slot, slot_type = self._element_slot(target, index, stmt.span)
                 rhs = self.eval_expr(stmt.value, env)
                 self._store_result(slot, slot_type, stmt.op[:-1], rhs, stmt.span)
@@ -665,7 +667,7 @@ class Interpreter:
             target = self.eval_expr(stmt.target, env)
             index = self.eval_expr(stmt.index, env)
             value = self.eval_expr(stmt.value, env)
-            if isinstance(target, (Pointer, ArrayRef)):
+            if isinstance(target, (Pointer, ArrayRef, SlotPointer)):
                 slot, slot_type = self._element_slot(target, index, stmt.span)
                 self._guard(lambda: self.memory.store(slot, value, slot_type), stmt.span)
                 return None
@@ -1047,7 +1049,7 @@ class Interpreter:
             if expr.op in {"or", "||"}:
                 return bool(left) or bool(self.eval_expr(expr.right, env))
             right = self.eval_expr(expr.right, env)
-            if isinstance(left, (Pointer, ArrayRef)) or isinstance(right, (Pointer, ArrayRef)):
+            if isinstance(left, (Pointer, ArrayRef, SlotPointer)) or isinstance(right, (Pointer, ArrayRef, SlotPointer)):
                 return self._pointer_binary(expr.op, left, right, expr.span)
             if expr.op in {"==", "!="}:
                 eq = self._equals(left, right, expr.span)
@@ -1135,7 +1137,7 @@ class Interpreter:
             if isinstance(expr.index, ast.RangeExpr):
                 return self._slice(target, expr.index, env, expr.span)
             index = self.eval_expr(expr.index, env)
-            if isinstance(target, (Pointer, ArrayRef)):
+            if isinstance(target, (Pointer, ArrayRef, SlotPointer)):
                 slot, slot_type = self._element_slot(target, index, expr.span)
                 return self._guard(lambda: self.memory.load(slot, slot_type), expr.span)
             if isinstance(target, (list, tuple, range)):
@@ -1673,7 +1675,6 @@ class Interpreter:
         if self._call_depth >= MAX_CALL_DEPTH:
             self._raise_runtime("RecursionError", f"maximum recursion depth exceeded ({MAX_CALL_DEPTH} nested calls)", fn.decl.span)
         self.call_stack.append({"function": fn.decl.name, "span": fn.decl.span, "env": env.values, "owner_type": fn.owner_type})
-        self._frame_cells.append([])
         self._call_depth += 1
         try:
             for stmt in fn.decl.body:
@@ -1683,7 +1684,6 @@ class Interpreter:
         finally:
             self._call_depth -= 1
             self.call_stack.pop()
-            self._end_frame()
         return None
 
     def _help_text(self, value: Any) -> str:
@@ -2143,7 +2143,7 @@ class Interpreter:
             return self._stringify(value)
         if isinstance(value, range):
             return format_value(value)
-        if isinstance(value, (Pointer, StructRef, ArrayRef)):
+        if isinstance(value, (Pointer, StructRef, ArrayRef, SlotPointer)):
             return format_memory_value(value, lambda v: self._to_text(v, nested=True))
         if isinstance(value, list):
             return "[" + ", ".join(self._to_text(v, nested=True) for v in value) + "]"
@@ -2225,24 +2225,33 @@ class Interpreter:
             self._raise_fault(fault, span)
 
     def _as_pointer(self, value: Any, span: Any, what: str) -> Pointer:
-        if isinstance(value, Pointer):
+        if isinstance(value, (Pointer, SlotPointer)):
             return value
         if isinstance(value, ArrayRef):
-            return Pointer(value.address, value.elem_type)
+            return Pointer(value.address, value.elem_type, keep=value.keep)
         self._raise_runtime("TypeError", f"cannot {what} a {self._runtime_type_name(value)}: it is not a pointer", span)
+
+    def _raw_pointer(self, value: Any, span: Any, what: str) -> Pointer:
+        """A pointer to raw memory. A pointer into a managed array or object is not an address."""
+        pointer = self._as_pointer(value, span, what)
+        if isinstance(pointer, SlotPointer):
+            self._raise_runtime("TypeError", f"cannot {what} a pointer into a managed array or object: it is not an address in raw memory", span)
+        return pointer
 
     def _element_slot(self, target: Any, index: Any, span: Any) -> tuple[Pointer, str]:
         """The address and type of `target[index]` for a pointer or a C array."""
         if isinstance(index, bool) or not isinstance(index, int):
             self._raise_runtime("TypeError", "pointer index must be an int", span)
+        if isinstance(target, SlotPointer):
+            return self._guard(lambda: target.moved(index), span), "slot"
         if isinstance(target, ArrayRef):
             if not 0 <= index < target.count:
                 self._raise_runtime("IndexError", f"array index {index} out of range for an array of {target.count}", span)
             elem = target.elem_type
-            return Pointer(target.address + index * self._guard(lambda: self.memory.sizeof(elem), span), elem), elem
+            return Pointer(target.address + index * self._guard(lambda: self.memory.sizeof(elem), span), elem, keep=target.keep), elem
         pointee = target.pointee
         size = self._guard(lambda: self.memory.sizeof(pointee), span)
-        return Pointer(target.address + index * size, pointee, target.foreign), pointee
+        return Pointer(target.address + index * size, pointee, target.foreign, target.keep), pointee
 
     def _own(self, value: Any) -> Any:
         """Struct values are copied when bound to a new name (value semantics, as in C)."""
@@ -2255,7 +2264,7 @@ class Interpreter:
         if type_name and is_pointer_type(type_name):
             target = pointee_of(canonical_pointer_type(type_name))
             if isinstance(value, ArrayRef):
-                return Pointer(value.address, target if target != "void" else value.elem_type)
+                return Pointer(value.address, target if target != "void" else value.elem_type, keep=value.keep)
             if isinstance(value, Pointer) and value.pointee != target:
                 return value.retyped(target)
         return value
@@ -2317,17 +2326,6 @@ class Interpreter:
                 self._guard(lambda slot=slot, item=item: self.memory.store(slot, item, elem), stmt.span)
         return ref
 
-    def _end_frame(self) -> None:
-        """Leaving a function: its address-taken locals die. A pointer that outlives them now faults
-        ("use after free"), and a closure that kept the variable sees its last value."""
-        for owner, name, cell in self._frame_cells.pop():
-            if owner.values.get(name) is cell:
-                try:
-                    owner.values[name] = cell.load()
-                except MemoryFault:
-                    owner.values.pop(name, None)
-            self.memory.release(cell.ptr.address)
-
     def _eval_address_of(self, expr: "ast.AddrOfExpr", env: Environment) -> Pointer:
         operand = expr.operand
         if isinstance(operand, ast.IdentifierExpr):
@@ -2336,37 +2334,54 @@ class Interpreter:
                 self._raise_runtime("TypeError", f"cannot take the address of '{operand.name}'", expr.span)
             raw = owner.values[operand.name]
             if isinstance(raw, MemCell):
-                return Pointer(raw.ptr.address, raw.type_name)
+                return Pointer(raw.ptr.address, raw.type_name, keep=raw.owner)
             if isinstance(raw, StructRef):
-                return Pointer(raw.address, raw.sdef.name)
+                return Pointer(raw.address, raw.sdef.name, keep=raw.keep)
             if isinstance(raw, ArrayRef):
-                return Pointer(raw.address, raw.elem_type)
+                return Pointer(raw.address, raw.elem_type, keep=raw.keep)
+            # The variable moves into memory of its own. That memory lives as long as the variable or any pointer
+            # to it does (so returning `&local` is fine): the pointer and the cell both hold the same owner.
             type_name = self._cell_type(raw, expr.pointee, expr.span)
             size = self._guard(lambda: self.memory.sizeof(type_name), expr.span)
-            slot = self.memory.alloc(size)
-            cell = MemCell(self.memory, slot, type_name)
+            lifetime = Lifetime()
+            slot = self.memory.adopt(self.memory.alloc(size), lifetime)
+            cell = MemCell(self.memory, slot, type_name, lifetime)
             self._guard(lambda: cell.store(raw), expr.span)
             owner.values[operand.name] = cell
-            self._frame_cells[-1].append((owner, operand.name, cell))
-            return Pointer(slot.address, type_name)
+            return Pointer(slot.address, type_name, keep=lifetime)
         if isinstance(operand, ast.IndexExpr):
             base = self.eval_expr(operand.value, env)
+            index = self.eval_expr(operand.index, env)
+            if isinstance(base, list):
+                # a pointer into a managed array: valid while the array keeps its length
+                if isinstance(index, bool) or not isinstance(index, int):
+                    self._raise_runtime("TypeError", "array index must be an int", expr.span)
+                if index < 0:
+                    index += len(base)
+                if not 0 <= index <= len(base):
+                    self._raise_runtime("IndexError", f"index {index} out of range for an array of length {len(base)}", expr.span)
+                return SlotPointer(base, index, len(base))
+            if isinstance(base, SlotPointer):
+                return self._element_slot(base, index, expr.span)[0]
             if not isinstance(base, (Pointer, ArrayRef)):
                 self._raise_runtime("TypeError", f"cannot take the address of an element of a {self._runtime_type_name(base)}", expr.span)
-            index = self.eval_expr(operand.index, env)
             if isinstance(base, ArrayRef):
                 if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= base.count:
                     self._raise_runtime("IndexError", f"array index {index} out of range for an array of {base.count}", expr.span)
                 size = self._guard(lambda: self.memory.sizeof(base.elem_type), expr.span)
-                return Pointer(base.address + index * size, base.elem_type)
+                return Pointer(base.address + index * size, base.elem_type, keep=base.keep)
             slot, slot_type = self._element_slot(base, index, expr.span)
-            return Pointer(slot.address, slot_type, base.foreign)
+            return Pointer(slot.address, slot_type, base.foreign, base.keep)
         if isinstance(operand, ast.AttributeExpr):
             base = self.eval_expr(operand.value, env)
+            if isinstance(base, InstanceObject):
+                if operand.attr not in base.attrs:
+                    self._raise_runtime("AttributeError", f"'{base.type_obj.name}' has no field '{operand.attr}'", expr.span)
+                return SlotPointer(base.attrs, operand.attr)
             if not isinstance(base, StructRef):
                 self._raise_runtime("TypeError", f"cannot take the address of a field of a {self._runtime_type_name(base)}", expr.span)
             ptr, field = self._guard(lambda: self.memory.field_pointer(base, operand.attr), expr.span)
-            return Pointer(ptr.address, field.type_name)
+            return Pointer(ptr.address, field.type_name, keep=base.keep)
         if isinstance(operand, ast.DerefExpr):
             return self._as_pointer(self.eval_expr(operand.operand, env), expr.span, "take the address through")
         self._raise_runtime("TypeError", "cannot take the address of this expression", expr.span)
@@ -2396,14 +2411,14 @@ class Interpreter:
         """`*slot = rhs`, or `*slot op= rhs` when `op` is set."""
         if op is not None:
             current = self._guard(lambda: self.memory.load(slot, slot_type), span)
-            if isinstance(current, Pointer):
+            if isinstance(current, (Pointer, SlotPointer)):
                 rhs = self._pointer_binary(op, current, rhs, span)
             else:
                 rhs = self._binary_value(op, current, rhs, span)
         self._guard(lambda: self.memory.store(slot, rhs, slot_type), span)
 
     def _augmented(self, op: str, current: Any, rhs: Any, span: Any) -> Any:
-        if isinstance(current, (Pointer, ArrayRef)) or isinstance(rhs, (Pointer, ArrayRef)):
+        if isinstance(current, (Pointer, ArrayRef, SlotPointer)) or isinstance(rhs, (Pointer, ArrayRef, SlotPointer)):
             return self._pointer_binary(op, current, rhs, span)
         if isinstance(current, InstanceObject) or isinstance(rhs, InstanceObject):
             result, found = self._binary_dunder(op, current, rhs)
@@ -2487,7 +2502,38 @@ class Interpreter:
                 span,
             )
 
+    def _slot_pointer_binary(self, op: str, left: Any, right: Any, span: Any) -> Any:
+        """Operators on pointers into a managed array or object."""
+        ls, rs = isinstance(left, SlotPointer), isinstance(right, SlotPointer)
+        if op in {"==", "!="}:
+            if not (ls and rs):
+                self._raise_runtime("TypeError", "a pointer can only be compared with another pointer (use null for no pointer)", span)
+            return (left == right) == (op == "==")
+        if op in {"<", "<=", ">", ">="}:
+            if not (ls and rs) or left.container is not right.container:
+                self._raise_runtime("TypeError", "pointers into different arrays cannot be ordered", span)
+            a, b = left.key, right.key
+            return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+
+        def whole(n: Any) -> int:
+            if isinstance(n, bool) or not isinstance(n, int):
+                self._raise_runtime("TypeError", "pointer arithmetic needs an int", span)
+            return n
+
+        if op == "+" and ls != rs:
+            ptr, n = (left, right) if ls else (right, left)
+            return self._guard(lambda: ptr.moved(whole(n)), span)
+        if op == "-" and ls and not rs:
+            return self._guard(lambda: left.moved(-whole(right)), span)
+        if op == "-" and ls and rs:
+            if left.container is not right.container:
+                self._raise_runtime("TypeError", "cannot subtract pointers into different arrays", span)
+            return left.key - right.key
+        self._raise_runtime("TypeError", f"operator '{op}' is not defined for pointers", span)
+
     def _pointer_binary(self, op: str, left: Any, right: Any, span: Any) -> Any:
+        if isinstance(left, SlotPointer) or isinstance(right, SlotPointer):
+            return self._slot_pointer_binary(op, left, right, span)
         lp = isinstance(left, (Pointer, ArrayRef))
         rp = isinstance(right, (Pointer, ArrayRef))
         if lp:
@@ -2512,9 +2558,9 @@ class Interpreter:
 
         if op == "+" and lp != rp:
             ptr, n = (left, right) if lp else (right, left)
-            return Pointer(ptr.address + whole(n) * scale(ptr), ptr.pointee, ptr.foreign)
+            return Pointer(ptr.address + whole(n) * scale(ptr), ptr.pointee, ptr.foreign, ptr.keep)
         if op == "-" and lp and not rp:
-            return Pointer(left.address - whole(right) * scale(left), left.pointee, left.foreign)
+            return Pointer(left.address - whole(right) * scale(left), left.pointee, left.foreign, left.keep)
         if op == "-" and lp and rp:
             size = scale(left)
             if size != scale(right):
@@ -2526,13 +2572,17 @@ class Interpreter:
         target = canonical_pointer_type(type_name) if (type_name == "ptr" or type_name.endswith("*")) else type_name.replace("const ", "").strip()
         if is_pointer_type(target):
             pointee = pointee_of(target)
+            if isinstance(value, SlotPointer):
+                return value  # a pointer into a managed array has no layout to reinterpret
             if isinstance(value, ArrayRef):
-                return Pointer(value.address, pointee)
+                return Pointer(value.address, pointee, keep=value.keep)
             if isinstance(value, Pointer):
                 return value.retyped(pointee)
             if isinstance(value, int) and not isinstance(value, bool):
                 return Pointer(value, pointee) if value else Pointer(0, pointee)
             self._raise_runtime("TypeError", f"cannot cast a {self._runtime_type_name(value)} to {type_name}", span)
+        if isinstance(value, SlotPointer):
+            self._raise_runtime("TypeError", "a pointer into a managed array or object is not an address; it cannot be cast to a number", span)
         if isinstance(value, (Pointer, ArrayRef)):
             address = value.address
             if target in INT_TYPES:
@@ -2592,7 +2642,7 @@ class Interpreter:
     def _struct_get(self, ref: StructRef, attr: str) -> Any:
         ptr, field = self.memory.field_pointer(ref, attr)
         if field.count is not None:
-            return ArrayRef(self.memory, ptr.address, field.type_name, field.count, owned=False)
+            return ArrayRef(self.memory, ptr.address, field.type_name, field.count, owned=False, keep=ref.keep)
         return self.memory.load(ptr, field.type_name)
 
     def _struct_set(self, ref: StructRef, attr: str, value: Any) -> None:

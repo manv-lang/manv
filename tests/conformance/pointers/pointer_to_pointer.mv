@@ -9,9 +9,8 @@ fn main() -> int:
     print(*p)
     **pp += 1
     print(other)
-    int** table = malloc(2 * sizeof(int*))
+    int* table[2]
     table[0] = &value
     table[1] = &other
     print(*table[0], *table[1])
-    free(table)
     return 0

@@ -1,0 +1,66 @@
+struct Box:
+    int value
+    int* link
+
+fn counter() -> int*:
+    int count = 10
+    return &count
+
+fn pair() -> int*:
+    int a = 1
+    int b = 2
+    int* first = &a
+    int* second = &b
+    return second
+
+fn boxed(n: int) -> Box*:
+    Box b = Box(n)
+    return &b
+
+fn chain() -> Box*:
+    int tail = 99
+    Box inner = Box(7, &tail)
+    Box outer = Box(8, null)
+    outer.link = &inner.value
+    return &outer
+
+fn grid() -> int*:
+    int cells[4] = [5, 6, 7, 8]
+    return &cells[2]
+
+fn deep(n: int) -> int*:
+    int here = n
+    if n == 0:
+        return &here
+    int* below = deep(n - 1)
+    *below += n
+    return below
+
+fn bump(p: int*):
+    *p += 1
+
+fn main() -> int:
+    int* c = counter()
+    *c += 5
+    bump(c)
+    print(*c)
+    print(*pair())
+    Box* b = boxed(3)
+    b->value *= 2
+    print(b->value)
+    Box* o = chain()
+    print(o->value, *o->link)
+    int* g = grid()
+    print(*g, g[1], g[-1])
+    print(*deep(3))
+    total = 0
+    for i in 0..1000:
+        int* tmp = counter()
+        total += *tmp
+    print(total)
+    int* kept = counter()
+    for i in 0..200:
+        int* other = counter()
+        *other = i
+    print(*kept)
+    return 0

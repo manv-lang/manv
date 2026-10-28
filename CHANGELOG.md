@@ -5,6 +5,9 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 ## Unreleased
 
 ### Added
+- Pointers into managed values: `&xs[i]` on an array and `&obj.field` on an object (valid while the array keeps its length).
+- Go's memory model in the interpreter: an address-taken local lives while any pointer to it does, so returning `&local` is legal; a pointer to a local, struct or array cannot be stored in `malloc` memory (`PointerError`).
+- `docs/memory.md`: the memory model for the compiler and engine is Go's (escape analysis plus a non-moving concurrent tri-colour mark-sweep collector with a size-class allocator). Design, milestones and work plan only; nothing implemented yet.
 - Operators `//`, `**`, `& | ^ ~ << >>`. Integers are 64-bit and trap (`OverflowError`); `i8 i16 i32 u8 u16 u32 u64` declarations trap when a value does not fit; a `float` variable holds a float.
 - Conversions are specified and tested: `int(text, base)`, `int()`/`float()`/`bool()`/`str()` with no argument, `__int__`/`__float__`, consistent `ValueError`/`TypeError`/`OverflowError`.
 - Ranges as values (`r = 0..5`, `a..b step n`, `range(a, b, step)`, stepped slices), lazy and iterable.
@@ -35,6 +38,7 @@ All notable changes to ManV are recorded here. The format follows [Keep a Change
 - A GitHub Actions workflow that runs the tests on Linux, macOS and Windows (not yet run).
 
 ### Changed
+- A pointer to a local that outlives its function is no longer a `PointerError`; the local stays alive (the old `dangling_local` behavior is replaced).
 - `int buf[16]` (an element type other than `array`) now declares a C array in raw memory instead of a padded managed array; `array xs[16]` is unchanged.
 - `extern "c"` functions with pointer types pass and return `Pointer` values (returned pointers are foreign and unchecked).
 - `m.items()` and `enumerate()` return tuples instead of two-element arrays.

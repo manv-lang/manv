@@ -1,0 +1,72 @@
+type Counter:
+    fn __init__(self):
+        self.hits = 0
+        self.name = "c"
+
+fn reset(slot: int*):
+    *slot = 0
+
+fn main() -> int:
+    array xs = [10, 20, 30, 40]
+    int* p = &xs[1]
+    print(*p, p[1], p[-1])
+    *p = 21
+    p[1] += 5
+    print(xs)
+    int* q = p + 2
+    print(*q, q - p, p < q, p == &xs[1], p != q)
+    q -= 1
+    print(*q)
+    reset(&xs[3])
+    print(xs)
+
+    names = ["a", "b", "c"]
+    str* s = &names[2]
+    *s = "z"
+    print(names)
+
+    c = Counter()
+    int* hits = &c.hits
+    *hits += 3
+    *hits = *hits * 2
+    print(c.hits)
+    str* label = &c.name
+    *label = "renamed"
+    print(c.name)
+
+    grid = [[1, 2], [3, 4]]
+    int* cell = &grid[1][0]
+    *cell = 30
+    print(grid)
+
+    print(xs[-1] + 1)
+    int* last = &xs[-1]
+    print(*last)
+
+    big = [1, 2, 3]
+    ptr_to_first = &big[0]
+    big.append(4)
+    try:
+        print(*ptr_to_first)
+    except PointerError as e:
+        print("array changed size")
+    again = &big[0]
+    big[0] = 9
+    print(*again)
+    big.sort()
+    print(*again)
+    one_past = &big[len(big)]
+    try:
+        print(*one_past)
+    except PointerError as e:
+        print("one past the end")
+
+    try:
+        print(p as usize)
+    except TypeError as e:
+        print("not an address")
+    try:
+        free(p)
+    except Exception as e:
+        print("not malloc memory")
+    return 0

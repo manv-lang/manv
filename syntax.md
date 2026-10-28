@@ -774,7 +774,7 @@ print(nothing == null) # true
 
 | Expression | Meaning |
 |------------|---------|
-| `&x`, `&p[i]`, `&s.f`, `&*p` | address of a variable, element or field (not of a `str`, `array`, `map`, `tuple` or `type` instance: `E2074`) |
+| `&x`, `&xs[i]`, `&p[i]`, `&s.f`, `&obj.f`, `&*p` | address of a variable, an element or a field. Not of a `str`, a whole `array`, a `map` or its elements, or a tuple element (`E2074`). See *Memory and lifetime* below. |
 | `*p`, `*p = v`, `*p += v` | read, write, update the value pointed at |
 | `p[i]`, `p[i] = v` | the `i`-th element after `p` (negative indexes allowed) |
 | `p + n`, `n + p`, `p - n`, `p += n` | move by `n` elements (`n * sizeof(T)` bytes) |
@@ -817,16 +817,25 @@ A field may be a scalar, a pointer, another struct, or a fixed array (`i32 cells
 |---------|-----------|
 | dereferencing `null` | `NullPointerError` (a `PointerError`) |
 | reading or writing outside the block, before its start, or misaligned | `PointerError` |
-| using memory after `free`, or after the function that owned a local returned | `PointerError` |
+| using memory after `free`, or through a pointer into an array that has grown or shrunk | `PointerError` |
 | `free` twice, `free` of a local, struct or array, or of a pointer that did not come from `malloc` | `PointerError` |
 | dereferencing an address that was made up (`12345 as int*`) | `PointerError` |
+| storing a pointer to a local, struct or array in `malloc` memory | `PointerError` |
 | storing a value of the wrong kind (`*p = "text"` into an `int*`) | `TypeError` |
 
-A local whose address is taken (`&x`) lives in memory for as long as its function runs; a pointer to it that outlives the function is dangling, and using it is a `PointerError`. Pointers from C are foreign and unchecked (see §9.1).
+**Memory and lifetime** ([docs/memory.md](docs/memory.md): ManV follows Go's memory model).
+
+- **Garbage-collected memory** is everything the language makes: locals, `struct` values, C arrays, arrays, objects. It is reclaimed when nothing can reach it, so **`&x` of a local is always safe**: the local lives for as long as the variable or any pointer to it does, and a function may return `&local`, a pointer to a struct it built, or `&cells[2]` of a local C array.
+- **Manual memory** is what `malloc`, `calloc`, `realloc` and `cstr` return, and what C libraries return. It lives until `free` and is not scanned. `free` accepts only manual memory.
+- **A pointer to garbage-collected memory cannot be stored in manual memory** (`PointerError`): the collector would not see it. Storing it in a local, a struct or a C array is fine, and copying a struct that holds such pointers keeps them valid. A pointer to manual memory can be stored anywhere.
+- **Pointers into managed values**: `&xs[i]` (an `array`) and `&obj.field` (a `type` instance) give a pointer to that slot, usable with `*p`, `*p = v`, `p[i]`, `p + n`, `p - q` and comparison. It is not an address: it cannot be cast to a number, passed to C or stored in manual memory. A pointer into an array stops being valid when the array changes length (`append`, `pop`, `insert`, ...: `PointerError`); sorting, reversing or assigning elements keeps it valid. One past the end can be formed (`&xs[len(xs)]`) but not read. `&some_str`, `&map[k]`, `&tuple[i]` and `&xs` (the whole array) stay forbidden.
+- Turning a pointer into a number (`p as usize`) loses what keeps its target alive. Pointers made from numbers (`n as void*`) and pointers from C are not tracked.
+
+Pointers from C are foreign and unchecked (see §9.1).
 
 **Compile-time errors.** `E2070` dereferencing or storing through a non-pointer or a `void*`; `E2071` address of something that is not a variable, element or field; `E2072` writing through a `const` pointer; `E2073` incompatible pointer types or operators (adding two pointers, comparing with an int, casting a float to a pointer); `E2074` address of a managed value; `E2075` unknown struct field type; `E2076` a struct that contains itself; `E1021` missing type after `as`.
 
-**Not there yet 🧭:** function pointers and passing a ManV function to C as a callback, `char`-style literals, pointer-to-array types, `union`, and everything in compiled mode (pointers, structs and C arrays are rejected there with `E3011`). Printing a pointer writes its address (`0x...`), which differs from run to run, so tests compare pointers instead.
+**Not there yet 🧭:** function pointers and passing a ManV function to C as a callback, `char`-style literals, pointer-to-array types, `union`, and everything in compiled mode (pointers, structs and C arrays are rejected there with `E3011`; the interpreter's behavior in this section is the specification the compiler must match). Printing a pointer writes its address (`0x...`), which differs from run to run, so tests compare pointers instead.
 
 ### 9.3 `syscall` ✅
 

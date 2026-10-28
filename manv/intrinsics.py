@@ -667,8 +667,10 @@ def _core_bool(args: list[Any], **_: Any) -> bool:
 
 def format_memory_value(value: Any, fmt: Any) -> str:
     """How a pointer, struct or C array is written. `fmt` formats the elements inside."""
-    from .memory import ArrayRef, MemoryFault, Pointer, StructRef
+    from .memory import ArrayRef, MemoryFault, Pointer, SlotPointer, StructRef
 
+    if isinstance(value, SlotPointer):
+        return "<pointer into an array>" if isinstance(value.container, list) else f"<pointer to field {value.key}>"
     if isinstance(value, Pointer):
         return "null" if value.address == 0 else f"0x{value.address:x}"
     try:
@@ -716,7 +718,7 @@ def format_value(value: Any, *, nested: bool = False) -> str:
         return repr(value) if nested else value
     if isinstance(value, range):
         return _format_range(value)
-    if type(value).__name__ in {"Pointer", "StructRef", "ArrayRef"}:
+    if type(value).__name__ in {"Pointer", "StructRef", "ArrayRef", "SlotPointer"}:
         return format_memory_value(value, lambda v: format_value(v, nested=True))
     if isinstance(value, list):
         return "[" + ", ".join(format_value(v, nested=True) for v in value) + "]"

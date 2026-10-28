@@ -1,0 +1,50 @@
+struct Node:
+    int value
+    Node* next
+
+fn main() -> int:
+    int local = 5
+    int* table = malloc(2 * sizeof(int*)) as int*
+    int** slots = malloc(2 * sizeof(int*))
+    try:
+        slots[0] = &local
+    except PointerError as e:
+        print("local into malloc memory")
+    slots[1] = null
+    slots[1] = slots[0]
+    print(slots[1] == null)
+
+    Node* heap_node = malloc(sizeof(Node))
+    Node stack_node = Node(1)
+    try:
+        heap_node->next = &stack_node
+    except PointerError as e:
+        print("struct into malloc memory")
+    heap_node->next = heap_node
+    print(heap_node->next == heap_node)
+
+    Node a = Node(1)
+    Node b = Node(2, &a)
+    Node c = b
+    print(c.next->value)
+    Node* in_heap = malloc(sizeof(Node))
+    try:
+        *in_heap = b
+    except PointerError as e:
+        print("copy into malloc memory")
+    try:
+        memcpy(in_heap, &b, sizeof(Node))
+    except PointerError as e:
+        print("memcpy into malloc memory")
+
+    int* ok = malloc(4) as int*
+    Node* other = malloc(sizeof(Node))
+    other->next = in_heap
+    print(other->next == in_heap)
+    free(ok)
+    free(other)
+    free(in_heap)
+    free(heap_node)
+    free(slots)
+    free(table)
+    return 0

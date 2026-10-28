@@ -79,6 +79,9 @@ class Pointer:
     address: int
     pointee: str = "void"
     foreign: bool = field(default=False, compare=False)
+    # What keeps the target alive: the owner of the memory this points into (a promoted local, a struct
+    # or array value). Copying or offsetting the pointer keeps it; turning it into an integer does not.
+    keep: Any = field(default=None, compare=False)
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Pointer) and other.address == self.address
@@ -90,10 +93,75 @@ class Pointer:
         return self.address != 0
 
     def retyped(self, pointee: str) -> "Pointer":
-        return Pointer(self.address, pointee, self.foreign)
+        return Pointer(self.address, pointee, self.foreign, self.keep)
+
+    def moved(self, delta: int) -> "Pointer":
+        return Pointer(self.address + delta, self.pointee, self.foreign, self.keep)
 
 
 NULL = Pointer(0, "void")
+
+_GC_POINTER_IN_MANUAL_MEMORY = (
+    "a pointer to garbage-collected memory (a local, struct or array) cannot be stored in malloc memory: "
+    "the collector does not scan it, so the target could be freed while the pointer is still in use"
+)
+
+
+class Lifetime:
+    """Owns an address-taken local's memory: the block is released when this object, and every pointer
+    and variable that refers to it, is gone."""
+
+    def __init__(self) -> None:
+        self.refs: dict[int, tuple[int, Any]] = {}
+
+
+class SlotPointer:
+    """A pointer to a slot of a managed array (`&xs[i]`) or to a field of a managed object (`&obj.f`).
+
+    It supports `*p`, `*p = v`, `p[i]`, `p + n`, `p - q` and comparison like a raw pointer, but it is not an
+    address: it cannot be turned into an integer, passed to C or stored in raw memory. For an array it is valid
+    only while the array keeps its length (growing or shrinking may move the elements)."""
+
+    __slots__ = ("container", "key", "length")
+    pointee = "slot"
+    foreign = False
+    keep = None
+
+    def __init__(self, container: Any, key: Any, length: int | None = None):
+        self.container = container
+        self.key = key
+        self.length = length
+
+    def _check(self) -> None:
+        if isinstance(self.container, list):
+            if len(self.container) != self.length:
+                raise MemoryFault("pointer", "this pointer into an array is no longer valid: the array changed size")
+            if not 0 <= self.key < self.length:
+                raise MemoryFault("pointer", f"out-of-bounds access (slot {self.key} of an array of {self.length})")
+        elif self.key not in self.container:
+            raise MemoryFault("pointer", f"the object has no field '{self.key}'")
+
+    def load(self) -> Any:
+        self._check()
+        return self.container[self.key]
+
+    def store(self, value: Any) -> None:
+        self._check()
+        self.container[self.key] = value
+
+    def moved(self, delta: int) -> "SlotPointer":
+        if not isinstance(self.container, list):
+            raise MemoryFault("type", "pointer arithmetic needs a pointer into an array")
+        return SlotPointer(self.container, self.key + delta, self.length)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, SlotPointer) and other.container is self.container and other.key == self.key
+
+    def __hash__(self) -> int:
+        return hash((id(self.container), self.key))
+
+    def __bool__(self) -> bool:
+        return True
 
 
 @dataclass
@@ -127,23 +195,29 @@ class _Block:
 class StructRef:
     """A struct value: the address of its bytes. Owned values free their block when collected."""
 
-    def __init__(self, memory: "Memory", address: int, sdef: StructDef, owned: bool):
+    def __init__(self, memory: "Memory", address: int, sdef: StructDef, owned: bool, keep: Any = None):
         self.memory = memory
         self.address = address
         self.sdef = sdef
+        self.refs: dict[int, tuple[int, Any]] = {}  # pointer fields: offset -> (address, what keeps it alive)
+        self.keep = self if owned else keep  # a view into another value shares that value's lifetime
         if owned:
+            memory._holders[address] = self
             weakref.finalize(self, memory.release, address)
 
 
 class ArrayRef:
     """A C array (`int buf[16]`): contiguous elements with a known count. Decays to a pointer."""
 
-    def __init__(self, memory: "Memory", address: int, elem_type: str, count: int, owned: bool):
+    def __init__(self, memory: "Memory", address: int, elem_type: str, count: int, owned: bool, keep: Any = None):
         self.memory = memory
         self.address = address
         self.elem_type = elem_type
         self.count = count
+        self.refs: dict[int, tuple[int, Any]] = {}
+        self.keep = self if owned else keep
         if owned:
+            memory._holders[address] = self
             weakref.finalize(self, memory.release, address)
 
 
@@ -153,6 +227,8 @@ class Memory:
         self._bases: list[int] = []
         self._blocks: dict[int, _Block] = {}
         self._tombstones: list[int] = []
+        # block base -> the object that owns the block (weak: ownership must not keep it alive)
+        self._holders: "weakref.WeakValueDictionary[int, Any]" = weakref.WeakValueDictionary()
 
     # ------------------------------------------------------------------ layout
     def sizeof(self, type_name: str) -> int:
@@ -303,6 +379,7 @@ class Memory:
         if size:
             self.check(src.address, size, src.foreign)
             self.check(dst.address, size, dst.foreign)
+            self._copy_refs(dst, src, size)
             ctypes.memmove(dst.address, src.address, size)
 
     def fill(self, dst: Pointer, byte: int, size: int) -> None:
@@ -342,21 +419,31 @@ class Memory:
     # ------------------------------------------------------------------ typed access
     def load(self, ptr: Pointer, type_name: str | None = None) -> Any:
         """Read a value of `type_name` (default: the pointer's pointee) from `ptr`."""
+        if isinstance(ptr, SlotPointer):
+            return ptr.load()
         type_name = (type_name or ptr.pointee).strip()
         if type_name == "void":
             raise MemoryFault("type", "cannot dereference a void*")
         if type_name in self.structs:
             self.check(ptr.address, self.structs[type_name].size, ptr.foreign, self.structs[type_name].align)
-            return StructRef(self, ptr.address, self.structs[type_name], owned=False)
+            return StructRef(self, ptr.address, self.structs[type_name], owned=False, keep=ptr.keep)
         size, align = self._layout(type_name)
         self.check(ptr.address, size, ptr.foreign, align)
         data = ctypes.string_at(ptr.address, size)
         if is_pointer_type(type_name):
             (address,) = struct.unpack("<Q", data)
-            return Pointer(address, pointee_of(type_name), foreign=address != 0 and self._find(address) is None)
+            return Pointer(
+                address,
+                pointee_of(type_name),
+                foreign=address != 0 and self._find(address) is None,
+                keep=self._stored_keep(ptr.address, address),
+            )
         return struct.unpack("<" + SCALARS[type_name][1], data)[0]
 
     def store(self, ptr: Pointer, value: Any, type_name: str | None = None) -> None:
+        if isinstance(ptr, SlotPointer):
+            ptr.store(value)
+            return
         type_name = (type_name or ptr.pointee).strip()
         if type_name == "void":
             raise MemoryFault("type", "cannot store through a void*")
@@ -368,7 +455,60 @@ class Memory:
             return
         size, align = self._layout(type_name)
         self.check(ptr.address, size, ptr.foreign, align)
-        ctypes.memmove(ptr.address, self.encode(value, type_name), size)
+        data = self.encode(value, type_name)
+        if is_pointer_type(type_name):
+            self._record_ref(ptr, value)
+        else:
+            self._clear_refs(ptr.address, size)
+        ctypes.memmove(ptr.address, data, size)
+
+    # -- what keeps the targets of stored pointers alive ---------------------------------------
+    def _holder_of(self, address: int) -> tuple[Any, int, "_Block | None"]:
+        block = self._find(address)
+        if block is None:
+            return None, 0, None
+        return self._holders.get(block.base), address - block.base, block
+
+    def _record_ref(self, where: Pointer, value: Any) -> None:
+        """A pointer stored in garbage-collected memory keeps its target alive; stored in malloc memory it cannot."""
+        if isinstance(value, ArrayRef):
+            value = Pointer(value.address, value.elem_type, keep=value.keep)
+        keep = value.keep if isinstance(value, Pointer) and value.address != 0 else None
+        holder, offset, block = self._holder_of(where.address)
+        if keep is not None:
+            if block is None or block.heap or holder is None:
+                raise MemoryFault("pointer", _GC_POINTER_IN_MANUAL_MEMORY)
+            holder.refs[offset] = (value.address, keep)
+        elif holder is not None:
+            holder.refs.pop(offset, None)
+
+    def _clear_refs(self, address: int, size: int) -> None:
+        holder, offset, _ = self._holder_of(address)
+        if holder is not None and holder.refs:
+            for key in [k for k in holder.refs if offset <= k < offset + size]:
+                del holder.refs[key]
+
+    def _stored_keep(self, where: int, target: int) -> Any:
+        holder, offset, _ = self._holder_of(where)
+        if holder is None:
+            return None
+        entry = holder.refs.get(offset)
+        return entry[1] if entry is not None and entry[0] == target else None
+
+    def _copy_refs(self, dst: Pointer, src: Pointer, size: int) -> None:
+        """Copying bytes that contain pointers copies what keeps their targets alive."""
+        self._clear_refs(dst.address, size)
+        s_holder, s_off, _ = self._holder_of(src.address)
+        if s_holder is None or not s_holder.refs:
+            return
+        moved = {k: v for k, v in s_holder.refs.items() if s_off <= k < s_off + size}
+        if not moved:
+            return
+        d_holder, d_off, d_block = self._holder_of(dst.address)
+        if d_holder is None or d_block is None or d_block.heap:
+            raise MemoryFault("pointer", _GC_POINTER_IN_MANUAL_MEMORY)
+        for key, entry in moved.items():
+            d_holder.refs[key - s_off + d_off] = entry
 
     def encode(self, value: Any, type_name: str) -> bytes:
         if is_pointer_type(type_name):
@@ -399,6 +539,12 @@ class Memory:
         return struct.pack("<?", bool(value))
 
     # ------------------------------------------------------------------ owned values
+    def adopt(self, pointer: Pointer, owner: Any) -> Pointer:
+        """Make `owner` the owner of the block at `pointer`: the block is released when `owner` is collected."""
+        self._holders[pointer.address] = owner
+        weakref.finalize(owner, self.release, pointer.address)
+        return Pointer(pointer.address, pointer.pointee, keep=owner)
+
     def new_struct(self, name: str) -> StructRef:
         sdef = self.structs[name]
         ptr = self.alloc(sdef.size)
@@ -418,4 +564,4 @@ class Memory:
         if f is None:
             raise MemoryFault("type", f"struct {ref.sdef.name} has no field '{name}'")
         elem = f.type_name
-        return Pointer(ref.address + f.offset, elem), f
+        return Pointer(ref.address + f.offset, elem, keep=ref.keep), f

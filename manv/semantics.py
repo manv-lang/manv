@@ -1330,7 +1330,7 @@ class SemanticAnalyzer:
         if isinstance(operand, ast.IdentifierExpr):
             inner = self._analyze_expr(operand, scope, as_callee=False)
             if inner in {"str", "map", "tuple", "fn"} or inner == "array":
-                self._add_error("E2074", f"cannot take the address of '{operand.name}': it is a managed {inner} value, not raw memory", line, col)
+                self._add_error("E2074", f"cannot take the address of '{operand.name}': it is a managed {inner} value; take the address of an element (&xs[0]) instead", line, col)
                 return None
             declared = scope.annotation_of(operand.name)
             expr.pointee = declared
@@ -1341,9 +1341,12 @@ class SemanticAnalyzer:
         if isinstance(operand, ast.IndexExpr):
             base = self._analyze_expr(operand.value, scope, as_callee=False)
             self._analyze_expr(operand.index, scope, as_callee=False)
-            if base in {"str", "map", "tuple", "array"}:
-                self._add_error("E2074", f"cannot take the address of an element of a managed {base}", line, col)
+            if base in {"str", "map", "tuple"} or (base is not None and base.startswith("map[")):
+                self._add_error("E2074", f"cannot take the address of an element of a {base.split('[')[0]}: its slots move or are immutable", line, col)
                 return None
+            if base == "array" or (base is not None and base.startswith("array[") and base.endswith("]")):
+                element = None if base == "array" else base[len("array["):-1]
+                return canonical_pointer_type(f"{element}*") if element and element != "mixed" else None
             return base if is_pointer_type(base) else None
         if isinstance(operand, ast.AttributeExpr):
             self._analyze_expr(operand, scope, as_callee=False)
